@@ -1,6 +1,7 @@
 using WowEmu.Core;
 using WowEmu.Data.Client;
 using WowEmu.Data.Db;
+using WowEmu.Game.Maps;
 using WowEmu.Protocol;
 
 namespace WowEmu.Game;
@@ -31,6 +32,22 @@ public sealed class Player : WorldObject
     }
 
     public string Name { get; private set; } = string.Empty;
+
+    /// <summary>How to reach this player's client. Null for a player with no session.</summary>
+    public IPlayerConnection? Connection { get; set; }
+
+    /// <summary>Which cell the map currently has this player filed under.</summary>
+    public CellCoord Cell { get; set; }
+
+    /// <summary>
+    /// Guids this player's client has been told about and has not been told to forget.
+    /// </summary>
+    /// <remarks>
+    /// The server has to track this because the client cannot be asked. Sending a create for
+    /// something already visible makes it flicker; forgetting to send a destroy leaves a ghost
+    /// standing where a player used to be.
+    /// </remarks>
+    public HashSet<ObjectGuid> VisibleObjects { get; } = [];
 
     public byte Race => Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_0, 0);
 

@@ -65,6 +65,19 @@ internal static class WorldStartup
 
         WorldContent content = services.GetRequiredService<WorldContent>();
 
+        if (content.Terrain.IsAvailable)
+        {
+            // Counted once here rather than inside the log call: enumerating 5,000 files is too
+            // expensive to do speculatively if the log level turns out to be disabled.
+            int tileCount = content.Terrain.CountTileFiles();
+            Log.TerrainAvailable(logger, tileCount, content.Terrain.MapsDirectory);
+        }
+        else
+        {
+            // Not fatal: a character still logs in and walks. The server just cannot check any of it.
+            Log.TerrainMissing(logger, content.Terrain.MapsDirectory);
+        }
+
         Log.ContentLoaded(
             logger,
             content.Stores.Races.Count,

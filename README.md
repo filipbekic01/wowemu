@@ -74,7 +74,9 @@ src/WowEmu.WorldServer/    The world server (port 8085)
 tools/WowEmu.AccountCli/   Account and realm maintenance
 tools/harness/             Headless protocol clients that drive the milestone gates
 tools/codegen/             Generates the opcode enum and table from upstream's headers
+tools/db/                  World-table import and vendoring scripts
 tools/vectors/             Reference implementations + golden test vectors
+sql/world/                 Vendored world-database content (AGPL-3.0, see sql/README.md)
 tests/WowEmu.Tests.Unit/   xUnit tests
 azerothcore-wotlk/         The C++ server being ported (reference only, not built)
 database-wotlk/            AzerothCore's world database dump (reference only, not imported)
@@ -131,18 +133,30 @@ The world server is a second process. It reads the auth database for session key
 characters database, and reads `world` for static content:
 
 ```bash
-# One-off, on a database volume created before the world schema existed:
-docker exec -i wowemu-mysql mysql -uroot -pwowemu < docker/mysql-init/01-create-databases.sql
-docker exec wowemu-mysql mysql -uroot -pwowemu -e \
-    "CREATE DATABASE IF NOT EXISTS wowemu_world; GRANT ALL ON wowemu_world.* TO 'wowemu'@'%';"
-docker exec -i wowemu-mysql mysql -uroot -pwowemu wowemu_world \
-    < database-wotlk/sql/base/playercreateinfo.sql
-
+tools/db/import-world.sh                   # world content: start positions, base stats
 dotnet run --project src/WowEmu.WorldServer
 ```
 
-A fresh volume gets the schemas from `docker/mysql-init` automatically; only `playercreateinfo`
-has to be imported by hand until Phase 4 brings a real importer.
+**Where each database comes from.** The three are filled three different ways, which is worth
+knowing when something is missing:
+
+| Database | Schema from | Data from |
+|---|---|---|
+| `wowemu_auth` | EF Core migrations, applied by the logon server at startup | the account CLI |
+| `wowemu_characters` | EF Core migrations, applied by the world server at startup | players, at runtime |
+| `wowemu_world` | the dumps in `sql/world/` | `tools/db/import-world.sh` |
+
+The schemas are created by `docker/mysql-init/` when the volume is first made. On a volume that
+predates a schema, apply it by hand:
+
+```bash
+docker exec -i wowemu-mysql mysql -uroot -pwowemu < docker/mysql-init/01-create-databases.sql
+```
+
+`world` is content rather than schema we own, so it is imported rather than migrated — see
+[PLAN.md](PLAN.md) §5.2. The dumps are committed in [`sql/world/`](sql/README.md), so a fresh clone
+needs nothing but Docker; `database-wotlk/` is only required to vendor a *new* table. Each file
+records what reads it. A real importer is tracked in [TODO.md](TODO.md).
 
 Verify both without launching a client:
 

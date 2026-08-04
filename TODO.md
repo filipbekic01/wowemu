@@ -2,9 +2,9 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** M3 is done and confirmed in-game. Movement is tracked and position persists across
-logout. Next: a real `Map` object and terrain, so the server knows where the ground is — everything
-after that (visibility, other players, creatures) needs it.
+**Now:** Movement is validated as far as it can be without vmaps — coordinates, teleports, speed
+and flag sanity. The remaining checks (height, swimming) are blocked on the vmap and liquid
+loaders, not on effort. Next: creature and gameobject spawns.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -88,14 +88,17 @@ after that (visibility, other players, creatures) needs it.
 
 **Terrain**
 
-- [ ] `.map` header — magic `MAPS`, version 9, 44-byte `map_fileheader`
-- [ ] Area data (16×16 `uint16`)
-- [ ] Height data — float / `uint16` / `uint8` variants, V9 129×129 + V8 128×128
-- [ ] Liquid data + queries
-- [ ] Holes
-- [ ] Height lookup at a coordinate
-- [ ] **Trap:** filenames encode tileY before tileX — `gridX` is the ADT row (PLAN §5.1)
+- [x] `.map` header — magic `MAPS`, version 9, 44-byte `map_fileheader`
+- [x] Area data (16×16 `uint16`), including the single-area shortcut
+- [x] Height data — all three widths (float / `uint16` / `uint8`), V9 129×129 + V8 128×128
+- [x] Holes, with upstream's lookup tables
+- [x] Height lookup — four-triangle interpolation per cell
+- [x] Tiles loaded on demand and cached, absence cached too
+- [x] Verified against three race start positions on two maps (within 2 yards)
+- [x] Zone id derived from terrain on login and refreshed as the player moves
+- [ ] Liquid data + queries (swimming, drowning, fall damage)
 - [ ] Verify a height query against the C++ server's `.gps` output
+- [ ] Unload tiles when a grid empties (Phase 6)
 
 **World database**
 
@@ -154,23 +157,36 @@ after that (visibility, other players, creatures) needs it.
 - [ ] `character_homebind`, `character_spell`, `character_action`
 - [ ] Level, stats and health saved (only position is written today)
 
-## Phase 6 — Maps, grids, visibility ⬜
+## Phase 6 — Maps, grids, visibility 🔵
 
-- [ ] `Map` owning a 64×64 grid array, 8×8 cells per grid
-- [ ] Inverted axis: `gx = 32 - x/533.3333`
-- [ ] Grid creation (terrain) vs grid object loading (spawns) as two steps
-- [ ] Spawn loading per grid
-- [ ] Visibility — per-object visible-player maps, relocation notifiers
+- [x] `Map` per map id, objects filed into 8×8 cells per grid (512×512 across a map)
+- [x] Inverted, origin-centred axis for grids and cells
+- [x] Visibility — per-player visible set, create on enter, destroy on leave, no duplicate creates
+- [x] Movement broadcast to everyone who can see the mover, never back to the mover
+- [x] Players added on login, removed on logout *and* on disconnect
+- [ ] Creature and gameobject spawn loading per grid
+- [ ] Grid creation (terrain) vs grid object loading as two distinct steps
+- [ ] Unload cells and tiles when a grid empties
 - [ ] `MapUpdater` worker pool, `MapMgr` 4-phase round-robin
-- [ ] Move sessions onto the `TickScheduler` (it already exists, unused)
+- [ ] Move sessions onto the `TickScheduler` — the map lock is a stand-in for it
+- [ ] 400-yard far-visibility second pass
 
 ## Phase 7 — Movement 🔵 → **M4**
 
 - [x] 27 movement opcodes → one handler, routed by the generated opcode table
 - [x] `MovementInfo` read/write, round-trip tested
 - [x] Server tracks the player's position (accepted on trust)
-- [ ] Broadcast to nearby players (needs Phase 6 visibility)
-- [ ] Speed and anti-cheat plausibility checks — position is currently believed unconditionally
+- [x] Broadcast to nearby players, under the opcode the client sent
+- [x] Coordinate sanity — NaN, infinity and out-of-map refused before they reach the map or the DB
+- [x] Teleport cap — no single packet may move more than 150 yards
+- [x] Speed check against server-measured elapsed time, not the client's own timestamp
+- [x] Contradictory flag combinations refused
+- [x] Rejected packets leave player state untouched and snap the client back
+- [ ] Height check against terrain — needs vmaps first, or every bridge and building is a false
+      positive (Phase 8)
+- [ ] Swim/fly distinction — needs the liquid chunk parsed
+- [ ] Speed checks against *applied* speeds rather than a fixed ceiling — needs auras (Phase 9)
+- [ ] Fall damage
 - [ ] Transport movement (both directions refuse rather than guess)
 
 ## Phase 8+ ⬜
@@ -180,6 +196,67 @@ spells, progression, AI.
 
 ---
 
+## Stubs and silent gaps
+
+Things that currently work by returning nothing, zero, or a constant. Each is invisible in normal
+play, which is exactly why they are written down.
+
+**Auth server**
+
+- [ ] Bans and suspensions — `FailBanned` / `FailSuspended` exist as codes but nothing ever sends
+      them; there is no `account_banned` table and no IP ban list
+- [ ] Failed-login lockout — passwords can be guessed at socket speed
+- [ ] Realm flags are static — a realm shows as online whether or not the world server is running
+- [ ] Realm population is always 0, and the character count per realm in the realm list is always 0
+
+**World server**
+
+- [ ] `CMSG_TIME_SYNC_RESP` is never handled — the request is sent once and the reply ignored, so
+      the server has no clock offset for the client
+- [ ] Latency is never measured, despite answering every ping
+- [ ] Account data (`CMSG_UPDATE_ACCOUNT_DATA`) is never stored — `SMSG_ACCOUNT_DATA_TIMES` always
+      reports zeros, so client-side settings do not follow the account
+- [ ] Tutorial flags are always zero and never saved
+- [ ] MOTD comes from config, not from a database table
+- [ ] Banned-addon list is always empty
+- [ ] Client cache version is a static config value
+- [ ] Logout is instant — upstream makes a player sit for 20 seconds unless resting or a GM, which
+      needs a tick to expire on
+- [ ] `SessionStatus.Transfer` is never entered; nothing moves between maps yet
+
+**Update objects**
+
+- [ ] Per-observer field filtering — `UpdateMask.IntersectWith` exists but nothing computes which
+      fields a given observer may see, so every observer currently gets every non-zero field
+      (a real information leak once there is anything private to leak)
+- [ ] Create-block branches for `Transport`, `HasTarget`, `Vehicle`, `Rotation` and `LowGuid` are
+      unwritten — only `Living | StationaryPosition | Self` is produced
+- [ ] Our deflate output is not byte-identical to upstream's, by design (PLAN §9 excludes
+      compressed bodies from byte-exact comparison) — worth remembering when diffing captures
+
+**Characters**
+
+- [ ] Only position, zone, map and orientation are saved — level, health and stats are recomputed
+      from base tables on every login, so any change to them is lost
+- [ ] No name profanity or reserved-name checks
+- [ ] No declined names (the Russian client asks for them)
+- [ ] Character deletion is immediate — no in-progress state, no undelete window
+
+**Data**
+
+- [ ] Only 3 of 109 DBC stores are loaded (`ChrRaces`, `ChrClasses`, `Map`)
+- [ ] `.map` flight bounds are parsed past but discarded
+- [ ] Terrain holes are implemented but never exercised by a test against a known hole
+- [ ] World tables are imported by piping vendored `.sql` dumps from `sql/world/` — there is no
+      real importer, no schema mapping and no type cleanup. Only 3 of upstream's 309 tables are
+      vendored so far; `tools/db/export-world.sh` adds more one at a time.
+- [ ] `world` structure is upstream's verbatim, not a schema we own. PLAN §5.2 wants cleaned types
+      and names with columns and semantics preserved — that belongs in `WowEmu.Data.Import`, and
+      until it exists the vendored `CREATE` is what is guaranteed to match the vendored rows.
+      (Considered EF migrations for `world` and rejected: nothing queries it through EF, it is
+      309 tables of someone else's shape, and owning the `CREATE` without a transform breaks the
+      match with upstream's `INSERT`s. See `sql/README.md`.)
+
 ## Cross-cutting
 
 - [ ] CI — build, test, vector verification on every push
@@ -187,11 +264,31 @@ spells, progression, AI.
 - [ ] `tests/WowEmu.Tests.Integration` — Docker MySQL + the gate harnesses
 - [ ] Analyzer banning bare `Task.Run` in gameplay code (PLAN §4.2)
 - [ ] Seeded differential testing against a running C++ server
+- [ ] A harness client that deliberately misbehaves — nothing has yet proven a real client is
+      snapped back correctly when its movement is rejected
+- [ ] Startup timing report (PLAN §6 Phase 4 wants under ~30 s)
+
+## Conventions
+
+- **Anything used from `database-wotlk/` gets vendored into `sql/world/` first**, via
+  `tools/db/export-world.sh`, with a note saying what reads it. The server never reads the
+  reference checkout at runtime — it is gitignored and a fresh clone will not have it. See
+  `sql/README.md`.
+- Extracted client data (`data/`) is the same idea in reverse: too large to commit, so it stays
+  out and `data/README.md` records how to regenerate it.
+- Golden vectors and generated code are committed so that regenerating them is a visible diff.
 
 ## Known gaps worth remembering
 
+- The world server has no tick loop; every session runs on its own task, and the map's lock stands
+  in for the per-map worker PLAN §4.2 describes.
+- `TickScheduler` is built and tested but still unused.
+- Movement is validated for coordinates, teleports, speed and flag sanity — but not against
+  terrain height or liquid, because both need vmaps to avoid false positives.
 - Character creation accepts any race/class the client offers — no expansion or faction gating.
-- The world server has no tick loop yet; every session runs on its own task.
-- `TickScheduler` is built and tested but nothing uses it until Phase 6.
 - Both reference trees (`azerothcore-wotlk`, `database-wotlk`) have no git root — updating means
   re-cloning.
+- `data/` is 3 GB of extracted client data and is not committed; a fresh clone needs the extractors
+  run again. See `data/README.md`.
+- `sql/world/` redistributes AGPL-3.0 content from AzerothCore's database. Deliberate — see
+  `sql/README.md` — but it is a licence obligation worth being aware of.

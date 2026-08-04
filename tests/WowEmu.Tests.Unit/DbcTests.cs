@@ -21,6 +21,42 @@ public sealed class RequiresClientDataFactAttribute : FactAttribute
     }
 }
 
+/// <summary>Marks a theory that reads extracted client data. See <see cref="RequiresClientDataFactAttribute"/>.</summary>
+public sealed class RequiresClientDataTheoryAttribute : TheoryAttribute
+{
+    public RequiresClientDataTheoryAttribute()
+    {
+        if (!ClientData.Available)
+        {
+            Skip = $"no extracted client data at {ClientData.DataDirectory}";
+        }
+    }
+}
+
+/// <summary>Marks a test that reads extracted map tiles.</summary>
+public sealed class RequiresMapsFactAttribute : FactAttribute
+{
+    public RequiresMapsFactAttribute()
+    {
+        if (!ClientData.MapsAvailable)
+        {
+            Skip = $"no extracted map tiles at {ClientData.DataDirectory}/maps";
+        }
+    }
+}
+
+/// <inheritdoc cref="RequiresMapsFactAttribute"/>
+public sealed class RequiresMapsTheoryAttribute : TheoryAttribute
+{
+    public RequiresMapsTheoryAttribute()
+    {
+        if (!ClientData.MapsAvailable)
+        {
+            Skip = $"no extracted map tiles at {ClientData.DataDirectory}/maps";
+        }
+    }
+}
+
 /// <summary>Locates the extracted client data relative to the repository.</summary>
 public static class ClientData
 {
@@ -33,13 +69,21 @@ public static class ClientData
             directory = directory.Parent;
         }
 
-        DbcDirectory = directory is null ? "data/dbc" : Path.Combine(directory.FullName, "data", "dbc");
+        DataDirectory = directory is null ? "data" : Path.Combine(directory.FullName, "data");
+        DbcDirectory = Path.Combine(DataDirectory, "dbc");
+
         Available = File.Exists(Path.Combine(DbcDirectory, "ChrRaces.dbc"));
+        MapsAvailable = Directory.Exists(Path.Combine(DataDirectory, "maps"))
+            && Directory.EnumerateFiles(Path.Combine(DataDirectory, "maps"), "*.map").Any();
     }
+
+    public static string DataDirectory { get; }
 
     public static string DbcDirectory { get; }
 
     public static bool Available { get; }
+
+    public static bool MapsAvailable { get; }
 }
 
 /// <summary>

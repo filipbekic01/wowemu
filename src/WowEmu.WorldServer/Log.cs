@@ -113,6 +113,27 @@ internal static partial class Log
         Message = "Saved '{Name}' at ({X:F1}, {Y:F1})")]
     public static partial void PlayerSaved(ILogger logger, string name, float x, float y);
 
+    [LoggerMessage(EventId = 2309, Level = LogLevel.Debug,
+        Message = "'{Name}' moved into area {AreaId}")]
+    public static partial void ZoneChanged(ILogger logger, string name, ushort areaId);
+
+    [LoggerMessage(EventId = 2310, Level = LogLevel.Information,
+        Message = "Terrain available: {TileCount} map tiles in {Directory}")]
+    public static partial void TerrainAvailable(ILogger logger, int tileCount, string directory);
+
+    [LoggerMessage(EventId = 2311, Level = LogLevel.Warning,
+        Message = "No map tiles at {Directory} — the server cannot tell where the ground is")]
+    public static partial void TerrainMissing(ILogger logger, string directory);
+
+    [LoggerMessage(EventId = 2312, Level = LogLevel.Debug,
+        Message = "'{Target}' became visible to '{Viewer}'")]
+    public static partial void ObjectBecameVisible(ILogger logger, string target, string viewer);
+
+    [LoggerMessage(EventId = 2313, Level = LogLevel.Warning,
+        Message = "Refused movement from '{Name}': {Reason} ({Detail}) — {Address}")]
+    public static partial void MovementRejected(
+        ILogger logger, string name, string reason, string detail, string address);
+
     // ------------------------------------------------------------------ addons
 
     [LoggerMessage(EventId = 2200, Level = LogLevel.Warning,

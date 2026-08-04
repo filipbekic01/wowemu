@@ -363,6 +363,13 @@ dump into a throwaway MySQL container and read it with the planned `MySqlDataRea
 the `INSERT` statements directly. The container route is preferable — it reuses the access path we
 need anyway and does not require writing a SQL parser for someone else's dialect quirks.
 
+**Vendoring rule.** Nothing reads `database-wotlk/` at runtime. Any table the server needs is
+first moved into `sql/world/` and committed, with a header recording what reads it — see
+`sql/README.md`. The reference checkout is gitignored and 193 MB, so a fresh clone does not have
+it; a server that depends on it does not start. `tools/db/export-world.sh` does the move by loading
+the upstream dump and dumping it back out of the live database, so what is committed is what the
+server actually runs against rather than a file assumed to be equivalent.
+
 **Access pattern**: EF Core for `auth` and `characters` (write-heavy, relational, ORM earns its
 keep). Dapper or raw `MySqlDataReader` for `world` (read-once bulk load at startup — startup time is
 a real metric; upstream loads 309 tables in tens of seconds).

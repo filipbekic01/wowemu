@@ -14,8 +14,10 @@ namespace WowEmu.WorldServer;
 /// row says who it is. Missing data in any of them means the character would render wrongly or not
 /// at all, so this refuses rather than logging in something broken.
 /// </remarks>
-public sealed class WorldContent(DbcStores stores, PlayerStatsStore stats)
+public sealed class WorldContent(DbcStores stores, PlayerStatsStore stats, TerrainManager terrain)
 {
+    public TerrainManager Terrain { get; } = terrain;
+
     public DbcStores Stores { get; } = stores;
 
     public PlayerStatsStore Stats { get; } = stats;
@@ -66,6 +68,16 @@ public sealed class WorldContent(DbcStores stores, PlayerStatsStore stats)
             Spirit: levelStats.Spirit);
 
         player = Player.Create(character, race, characterClass, baseStats);
+
+        // The saved zone is where the character logged out; the terrain is the authority on where
+        // it actually is. They differ whenever a character was moved by anything but walking.
+        ushort area = Terrain.GetMap(player.MapId).GetAreaId(player.Position.X, player.Position.Y);
+
+        if (area != 0)
+        {
+            player.ZoneId = area;
+        }
+
         reason = null;
         return true;
     }

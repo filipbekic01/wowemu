@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using WowEmu.Core;
 using WowEmu.Data.Db;
 using WowEmu.Game;
+using WowEmu.Game.Maps;
 using WowEmu.Network;
 using WowEmu.Protocol;
 
@@ -28,8 +29,9 @@ public sealed class WorldSession(
     ICharacterRepository characters,
     PlayerCreateInfoStore createInfo,
     WorldContent world,
+    MapManager maps,
     WorldServerOptions options,
-    ILogger logger)
+    ILogger logger) : IPlayerConnection
 {
     /// <summary>Result codes from <c>SharedDefines.h</c>. Only the ones this phase can produce.</summary>
     private const byte AuthOk = 0x0C;
@@ -60,15 +62,17 @@ public sealed class WorldSession(
 
     private AuthAccount? _account;
     private Player? _player;
+    private Map? _map;
+    private uint _lastMovementMs;
     private bool _authenticated;
 
     /// <summary>
     /// How far through login this session is, which decides what opcodes it may send.
     /// </summary>
     /// <remarks>
-    /// Phase 3 never leaves <see cref="SessionStatus.Authed"/> — there is no player yet. Phase 5
-    /// moves it to <see cref="SessionStatus.LoggedIn"/> when one enters the world, and the whole
-    /// table below starts admitting gameplay opcodes without any other change here.
+    /// Starts at <see cref="SessionStatus.Authed"/> and becomes <see cref="SessionStatus.LoggedIn"/>
+    /// when a character enters the world, which is what starts admitting gameplay opcodes.
+    /// <see cref="SessionStatus.Transfer"/> is never entered yet — nothing moves between maps.
     /// </remarks>
     public SessionStatus Status { get; private set; } = SessionStatus.Authed;
 
@@ -157,7 +161,7 @@ public sealed class WorldSession(
                 // opcode says what the client thinks it is doing, but the payload is identical.
                 if (info.Value.UpstreamHandler == "HandleMovementOpcodes")
                 {
-                    HandleMovement(payload);
+                    await HandleMovementAsync(opcode, payload, cancellationToken).ConfigureAwait(false);
                     return true;
                 }
 
@@ -359,10 +363,8 @@ public sealed class WorldSession(
     /// Answers <c>CMSG_CHAR_ENUM</c> from the characters database.
     /// </summary>
     /// <remarks>
-    /// Reaching this point at all — even with zero characters — is the Phase 3 milestone: the
-    /// client stops loading and draws the character screen. Character <i>creation</i> is not
-    /// implemented yet, so in practice the list is empty; the packet is built from real rows so
-    /// that it stops being empty the moment Phase 5 can write one.
+    /// Built from real rows in the characters database. Equipment is not included — every slot is
+    /// written as empty, because no phase has items yet.
     /// </remarks>
     private async Task SendCharacterListAsync(CancellationToken cancellationToken)
     {
@@ -530,15 +532,18 @@ public sealed class WorldSession(
     /// <remarks>
     /// All 27 movement opcodes carry a packed guid and the same <see cref="MovementInfo"/> block.
     /// <para>
-    /// The position is taken on trust for now: with one player and no map, there is nothing to
-    /// cheat against. Phase 7 adds the plausibility checks — speed, distance per tick, terrain —
-    /// and Phase 6 adds the broadcast to everyone nearby. What this does buy today is that logging
-    /// out saves where you actually walked to.
+    /// The claim is validated before it is applied — coordinates, teleport distance, speed against
+    /// a server-measured interval, and flag sanity. What is <i>not</i> checked is height against
+    /// terrain and swimming against liquid: both need vmaps, and approximating them would reject
+    /// honest players standing on bridges. See <see cref="MovementValidator"/>.
     /// </para>
     /// </remarks>
-    private void HandleMovement(ReadOnlyMemory<byte> payload)
+    private async Task HandleMovementAsync(
+        Opcode opcode,
+        ReadOnlyMemory<byte> payload,
+        CancellationToken cancellationToken)
     {
-        if (_player is null)
+        if (_player is null || _map is null)
         {
             return;
         }
@@ -551,13 +556,139 @@ public sealed class WorldSession(
             return;
         }
 
-        if (!_player.Movement.TryReadFrom(ref reader))
+        // Parsed into a scratch object, not the player's own: a rejected packet must leave the
+        // player's state exactly as it was.
+        MovementInfo claimed = new();
+
+        if (!claimed.TryReadFrom(ref reader))
         {
             return;
         }
 
-        _player.Position = _player.Movement.Position;
+        uint now = MsTime.Now;
+        uint elapsed = _lastMovementMs == 0 ? 0 : MsTime.Diff(_lastMovementMs, now);
+
+        MovementVerdict verdict = MovementValidator.Validate(_player.Position, claimed, elapsed);
+
+        if (!verdict.Accepted)
+        {
+            Log.MovementRejected(
+                logger, _player.Name, verdict.Rejection.ToString(), verdict.Detail ?? "", connection.RemoteAddress);
+
+            // The client is told where the server thinks it is, so an honest client that drifted
+            // snaps back instead of desynchronising silently.
+            await SendKnownPositionAsync(cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        _lastMovementMs = now;
+        _player.Movement.CopyFrom(claimed);
+
+        // The map owns position: moving cells is what keeps visibility queries correct.
+        await _map.RelocateAsync(_player, _player.Movement.Position, cancellationToken).ConfigureAwait(false);
+
+        // Cheap enough to do per packet: the tile is already loaded and the lookup is arithmetic
+        // plus one array read. Without it the server's idea of where the player is never changes.
+        ushort area = world.Terrain
+            .GetMap(_player.MapId)
+            .GetAreaId(_player.Position.X, _player.Position.Y);
+
+        if (area != 0 && area != _player.ZoneId)
+        {
+            _player.ZoneId = area;
+            Log.ZoneChanged(logger, _player.Name, area);
+        }
+
+        // Relayed under the opcode the client used, so other clients animate it the same way —
+        // a walk arrives as a walk, a jump as a jump.
+        await _map.BroadcastMovementAsync(_player, opcode, _player.Movement, cancellationToken)
+            .ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Corrects a client whose movement was refused.
+    /// </summary>
+    /// <remarks>
+    /// A teleport acknowledgement is how the protocol says "you are actually here". Without it a
+    /// rejected client keeps walking in its own reality and every later packet is rejected too.
+    /// </remarks>
+    private async Task SendKnownPositionAsync(CancellationToken cancellationToken)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.MSG_MOVE_TELEPORT_ACK, 64);
+        packet.Body.WritePackedGuid(_player.Guid);
+        packet.Body.WriteUInt32(0);   // teleport counter
+
+        _player.SyncMovement();
+        _player.Movement.WriteTo(packet.Body);
+
+        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+    }
+
+    // ------------------------------------------------------------------ IPlayerConnection
+
+    /// <summary>Sends another player's create block to this client.</summary>
+    public async Task SendCreateAsync(Player other, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+
+        other.SyncMovement();
+
+        UpdateData update = new();
+        update.AddBlock(UpdateBlockBuilder.BuildCreateBlock(
+            other.Guid, other.TypeId, other.Fields, other.Movement, other.Speeds, isSelf: false));
+
+        byte[] payload = update.BuildPayload();
+        bool compressed = UpdateData.TryCompress(payload, out byte[] body);
+
+        ServerPacket packet = new(
+            compressed ? Opcode.SMSG_COMPRESSED_UPDATE_OBJECT : Opcode.SMSG_UPDATE_OBJECT,
+            body.Length);
+        packet.Body.WriteBytes(body);
+
+        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+
+        Log.ObjectBecameVisible(logger, other.Name, _player?.Name ?? "?");
+    }
+
+    /// <summary>Tells this client to forget an object that has left view.</summary>
+    public async Task SendDestroyAsync(ObjectGuid objectGuid, CancellationToken cancellationToken)
+    {
+        // The out-of-range block is how the client is told to destroy its copy; there is no
+        // separate destroy opcode in 3.3.5a.
+        UpdateData update = new();
+        update.AddOutOfRange(objectGuid);
+
+        byte[] payload = update.BuildPayload();
+
+        ServerPacket packet = new(Opcode.SMSG_UPDATE_OBJECT, payload.Length);
+        packet.Body.WriteBytes(payload);
+
+        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Relays another player's movement to this client.</summary>
+    public async Task SendMovementAsync(
+        Opcode opcode,
+        ObjectGuid mover,
+        MovementInfo movement,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(movement);
+
+        ServerPacket packet = new(opcode, 64);
+        packet.Body.WritePackedGuid(mover);
+        movement.WriteTo(packet.Body);
+
+        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Puts a character into the world.
 
     /// <summary>
     /// Accepts a logout and saves the character.
@@ -581,10 +712,16 @@ public sealed class WorldSession(
 
         if (_player is not null)
         {
+            if (_map is not null)
+            {
+                await _map.RemoveAsync(_player, cancellationToken).ConfigureAwait(false);
+            }
+
             Log.PlayerLeftWorld(logger, _player.Name, connection.RemoteAddress);
         }
 
         _player = null;
+        _map = null;
 
         // Back to character selection: the opcode table stops admitting gameplay opcodes again.
         Status = SessionStatus.Authed;
@@ -621,6 +758,14 @@ public sealed class WorldSession(
             cancellationToken).ConfigureAwait(false);
 
         Log.PlayerSaved(logger, _player.Name, _player.Position.X, _player.Position.Y);
+
+        // A dropped connection never sends a logout, so the map has to be told here too or the
+        // player stays visible to everyone else as a statue.
+        if (_map is not null)
+        {
+            await _map.RemoveAsync(_player, cancellationToken).ConfigureAwait(false);
+            _map = null;
+        }
     }
 
     /// <summary>
@@ -674,6 +819,12 @@ public sealed class WorldSession(
 
         await PlayerLogin.SendSelfCreateAsync(connection, player, cancellationToken).ConfigureAwait(false);
         await PlayerLogin.SendTimeSyncRequestAsync(connection, 0, cancellationToken).ConfigureAwait(false);
+
+        // Added after the self create: the client needs to know about itself before it is told
+        // about anyone standing next to it.
+        player.Connection = this;
+        _map = maps.GetMap(player.MapId);
+        await _map.AddAsync(player, cancellationToken).ConfigureAwait(false);
 
         Log.PlayerEnteredWorld(
             logger, player.Name, player.MapId, player.Position.X, player.Position.Y, connection.RemoteAddress);

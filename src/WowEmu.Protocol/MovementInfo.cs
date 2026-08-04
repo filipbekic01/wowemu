@@ -84,6 +84,30 @@ public sealed class MovementInfo
     public float SplineElevation { get; set; }
 
     /// <summary>
+    /// Copies another block's state over this one.
+    /// </summary>
+    /// <remarks>
+    /// Used to apply a packet only once it has been validated — the claim is parsed into a scratch
+    /// object first, so a rejected packet cannot leave the player half-updated.
+    /// </remarks>
+    public void CopyFrom(MovementInfo other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+
+        Flags = other.Flags;
+        ExtraFlags = other.ExtraFlags;
+        Time = other.Time;
+        Position = other.Position;
+        Pitch = other.Pitch;
+        FallTime = other.FallTime;
+        JumpVerticalSpeed = other.JumpVerticalSpeed;
+        JumpSinAngle = other.JumpSinAngle;
+        JumpCosAngle = other.JumpCosAngle;
+        JumpHorizontalSpeed = other.JumpHorizontalSpeed;
+        SplineElevation = other.SplineElevation;
+    }
+
+    /// <summary>
     /// Reads a movement block sent by the client.
     /// </summary>
     /// <remarks>

@@ -26,6 +26,7 @@
     <ProjectReference Include="..\..\src\WowEmu.Network\WowEmu.Network.csproj" />
     <ProjectReference Include="..\..\src\WowEmu.WorldServer\WowEmu.WorldServer.csproj" />
     <ProjectReference Include="..\..\src\WowEmu.Data.Client\WowEmu.Data.Client.csproj" />
+    <ProjectReference Include="..\..\src\WowEmu.Game\WowEmu.Game.csproj" />
   </ItemGroup>
 
 </Project>

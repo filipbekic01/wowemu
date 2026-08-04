@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WowEmu.Data.Db;
+using WowEmu.Game.Maps;
 using WowEmu.Network;
 
 namespace WowEmu.WorldServer;
@@ -12,9 +13,9 @@ namespace WowEmu.WorldServer;
 /// Accepts world connections and runs one <see cref="WorldSession"/> per client.
 /// </summary>
 /// <remarks>
-/// Phase 3 gives every connection its own task, as the logon server does. The tick loop and map
-/// workers of PLAN.md §4.2 arrive in Phase 5-6; the <c>TickScheduler</c> they will run on already
-/// exists in <c>WowEmu.Core</c>, so sessions can be moved onto it without reshaping this host.
+/// Every connection gets its own task, as the logon server does. The tick loop and map workers of
+/// PLAN.md §4.2 do not exist yet; the <c>TickScheduler</c> they will run on is built and unused, so
+/// sessions can be moved onto it without reshaping this host.
 /// </remarks>
 public sealed class WorldServerHost(
     IOptions<WorldServerOptions> options,
@@ -22,6 +23,7 @@ public sealed class WorldServerHost(
     ICharacterRepository characters,
     PlayerCreateInfoStore createInfo,
     WorldContent world,
+    MapManager maps,
     ILogger<WorldServerHost> logger,
     ILoggerFactory loggerFactory) : BackgroundService
 {
@@ -63,7 +65,7 @@ public sealed class WorldServerHost(
             client.NoDelay = true;
             Log.ClientConnected(logger, client.RemoteEndPoint);
 
-            WorldSession session = new(connection, accounts, characters, createInfo, world, _options, sessionLogger);
+            WorldSession session = new(connection, accounts, characters, createInfo, world, maps, _options, sessionLogger);
 
             try
             {

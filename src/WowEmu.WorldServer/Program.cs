@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using WowEmu.Data.Client;
 using WowEmu.Data.Db;
+using WowEmu.Game.Maps;
 using WowEmu.WorldServer;
 
 // Content root follows the binary, not the working directory — same reason as the logon server.
@@ -40,7 +41,13 @@ builder.Services.AddSingleton(_ => DbcStores.Load(
             : Path.Combine(AppContext.BaseDirectory, startupOptions.DataDirectory),
         "dbc")));
 
+builder.Services.AddSingleton(_ => new TerrainManager(
+    Path.IsPathRooted(startupOptions.DataDirectory)
+        ? startupOptions.DataDirectory
+        : Path.Combine(AppContext.BaseDirectory, startupOptions.DataDirectory)));
+
 builder.Services.AddSingleton<WorldContent>();
+builder.Services.AddSingleton<MapManager>();
 
 builder.Services.AddHostedService<WorldServerHost>();
 

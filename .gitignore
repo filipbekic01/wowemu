@@ -29,10 +29,7 @@ appsettings.Development.json
 .env
 
 # Client data — extracted from a retail 3.3.5a client, never committed (tens of GB)
-data/dbc/
-data/maps/
-data/vmaps/
-data/mmaps/
+/data
 
 # Python bytecode from tools/
 __pycache__/
