@@ -55,6 +55,15 @@ internal static partial class Log
         Message = "No handler for {Opcode} from {Address}")]
     public static partial void UnhandledOpcode(ILogger logger, Opcode opcode, string address);
 
+    [LoggerMessage(EventId = 2108, Level = LogLevel.Warning,
+        Message = "Opcode {Opcode} is not in the opcode table ({Address}); closing")]
+    public static partial void UnknownOpcode(ILogger logger, Opcode opcode, string address);
+
+    [LoggerMessage(EventId = 2109, Level = LogLevel.Debug,
+        Message = "Dropped {Opcode} from {Address}: needs {Required}, session is {Current}")]
+    public static partial void OpcodeNotAllowed(
+        ILogger logger, Opcode opcode, SessionStatus required, SessionStatus current, string address);
+
     [LoggerMessage(EventId = 2107, Level = LogLevel.Debug,
         Message = "Sent {Count} character(s) to {Address}")]
     public static partial void CharacterListSent(ILogger logger, int count, string address);

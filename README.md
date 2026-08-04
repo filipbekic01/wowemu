@@ -30,7 +30,8 @@ client, which is what actually closes the milestone.
 - [x] Addon manifest (zlib) and `SMSG_ADDON_INFO`
 - [x] `CMSG_CHAR_ENUM` returning an empty list, ping/pong, cache version, tutorials, account data
 - [x] Opcode enum — all 1313, generated from upstream's header
-- [ ] Opcode **dispatch table** with session-status and processing classification (PLAN §4.2 rule 4)
+- [x] Opcode table — session-status and processing classification for all 1312, generated from
+      upstream's `Opcodes.cpp` and enforced before any handler runs (PLAN §4.2 rule 4)
 
 **Phase 0** — every exit criterion in [PLAN.md](PLAN.md) §6 is met and covered by tests.
 
@@ -67,7 +68,7 @@ src/WowEmu.AuthServer/     The logon server (port 3724)
 src/WowEmu.WorldServer/    The world server (port 8085)
 tools/WowEmu.AccountCli/   Account and realm maintenance
 tools/harness/             Headless protocol clients that drive the milestone gates
-tools/codegen/             Generates Opcodes.g.cs from upstream's Opcodes.h
+tools/codegen/             Generates the opcode enum and table from upstream's headers
 tools/vectors/             Reference implementations + golden test vectors
 tests/WowEmu.Tests.Unit/   xUnit tests
 azerothcore-wotlk/         The C++ server being ported (reference only, not built)
@@ -174,6 +175,7 @@ connection string. An empty connection string means the Docker Compose default; 
 | `gate: M1` | Log in over the real protocol, headlessly. Needs the auth server running. |
 | `gate: M2` | Reach the character list. Needs both servers running. |
 | `codegen: opcodes` | Regenerate the opcode enum from upstream's `Opcodes.h` |
+| `codegen: opcode table` | Regenerate the status/processing classification from `Opcodes.cpp` |
 | `Run: Auth Server` | Start the logon server on port 3724 |
 | `Run: World Server` | Start the world server on port 8085 |
 

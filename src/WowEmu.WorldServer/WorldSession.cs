@@ -44,6 +44,16 @@ public sealed class WorldSession(
     private AuthAccount? _account;
     private bool _authenticated;
 
+    /// <summary>
+    /// How far through login this session is, which decides what opcodes it may send.
+    /// </summary>
+    /// <remarks>
+    /// Phase 3 never leaves <see cref="SessionStatus.Authed"/> — there is no player yet. Phase 5
+    /// moves it to <see cref="SessionStatus.LoggedIn"/> when one enters the world, and the whole
+    /// table below starts admitting gameplay opcodes without any other change here.
+    /// </remarks>
+    public SessionStatus Status { get; private set; } = SessionStatus.Authed;
+
     /// <summary>Sends the challenge that opens the handshake, then pumps packets.</summary>
     public async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -72,6 +82,22 @@ public sealed class WorldSession(
         {
             Log.PacketBeforeAuth(logger, opcode, connection.RemoteAddress);
             return false;
+        }
+
+        // The generated table decides what is legal before any handler sees the packet. An opcode
+        // upstream never accepts from a client, or one that needs a player in the world when there
+        // isn't one, is dropped — but the session survives, because upstream tolerates it too and a
+        // client that sends one is confused rather than hostile.
+        if (!OpcodeTable.TryGet(opcode, out OpcodeInfo? info))
+        {
+            Log.UnknownOpcode(logger, opcode, connection.RemoteAddress);
+            return false;
+        }
+
+        if (!OpcodeTable.IsAllowedFrom(opcode, Status))
+        {
+            Log.OpcodeNotAllowed(logger, opcode, info.Value.Status, Status, connection.RemoteAddress);
+            return true;
         }
 
         switch (opcode)
