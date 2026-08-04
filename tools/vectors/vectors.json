@@ -1,0 +1,103 @@
+{
+ "rc4": [
+  {
+   "key": "0102030405",
+   "offset": 0,
+   "keystream": "b2396305f03dc027ccc3524a0a1118a8"
+  },
+  {
+   "key": "0102030405060708090a0b0c0d0e0f10",
+   "offset": 0,
+   "keystream": "9ac7cc9a609d1ef7b2932899cde41b97"
+  }
+ ],
+ "rc4_drop1024": {
+  "key": "0102030405060708090a0b0c0d0e0f10",
+  "plaintext": "00000000000000000000000000000000",
+  "ciphertext": "bdf0324e6083dcc6d3cedd3ca8c53c16"
+ },
+ "authcrypt": {
+  "sessionKey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324252627",
+  "serverEncryptKey": "316ecb675e326f11c2f47035f756a79263817b4a",
+  "clientDecryptKey": "719a8bf129dbc2924479b66c84173a29ef9bd343",
+  "plainHeader": "0004ee01",
+  "encryptedHeader": "da439ec5"
+ },
+ "constants": {
+  "N_le": "b79b3e2a87823cab8f5ebfbf8eb10108535006298b5badbd5b53e1895e644b89",
+  "N_int_hex": "894b645e89e1535bbdad5b8b290650530801b18ebfbf5e8fab3c82872a3e9bb7",
+  "g": 7
+ },
+ "srp6": [
+  {
+   "username": "TESTACCOUNT",
+   "password": "TESTPASSWORD",
+   "salt": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+   "verifier": "1fa30d5eb9f629733ac9352d1a3797ef3bf7e4c53c9b5a7248ae7c87a7a82d10",
+   "b": "01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979c",
+   "B": "22a263c5a46610c346a4c6d55a07867dfd44703b06f37067262a0862db344646",
+   "A": "d941a5a49482ba1c8b87c17578f31d34b96da5c96142b4f2d26fc83306b17e1b",
+   "S": "11c62e4cfc0f1e05344b23b79a24999b618da52751c8199857c2037cf5801c5d",
+   "clientM": "f2d3015dda69728dfee704e682467660a60eae43",
+   "sessionKey": "5ccafde7f2ef9e33a91c32692aae45d9ef0596ba39addc3395a69554ce3a46755c868efceeefd6f9",
+   "sHasLeadingZero": false
+  },
+  {
+   "username": "ADMIN",
+   "password": "SECRET123",
+   "salt": "030a11181f262d343b424950575e656c737a81888f969da4abb2b9c0c7ced5dc",
+   "verifier": "dec754116e9480398d767da51b33beedf93c9de4d381f2a76782f9d595a0da42",
+   "b": "01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979c",
+   "B": "a874fab43bbdd76aaf4dde7ed049f96fe4c5926e404b8b4a28539dc347b80155",
+   "A": "d941a5a49482ba1c8b87c17578f31d34b96da5c96142b4f2d26fc83306b17e1b",
+   "S": "d7a2967beaec0702c59e3728158e95ca6b7c317abc728ba43e4759ed8744d03c",
+   "clientM": "86a9c4a5f4bd05bcad88dca97df51b43e36f65ba",
+   "sessionKey": "0e3441a4fb5b8b75284dc2dbb69ff3c3efbe316464ca3aabdbaaf8ed1ba45e3bb08733849e181e43",
+   "sHasLeadingZero": false
+  },
+  {
+   "username": "ZEROCASE",
+   "password": "PASSWORD",
+   "salt": "0b1825323f4c596673808d9aa7b4c1cedbe8f5020f1c293643505d6a7784919e",
+   "verifier": "43b5b19726eab857132610bb9010041d89a3a33902b89cc2bd094f9d2f5da764",
+   "b": "01060b10151a1f24292e33383d42474c51565b60656a6f74797e83888d92979c",
+   "B": "20a1d21dde3b441ab2fdd6ffa030c9f53ea99f444092dcdcce95bc8fb6891c31",
+   "A": "6cd071fbd62604559051e8c1cfb6c45799e134113ef19b5941b5f1274bc97f6c",
+   "S": "00c18317eadb9c9751535d7aef8febf8e777b9e920770953b175b053cbb64816",
+   "clientM": "ebf9db675497045e358a59620852fcaafe565a46",
+   "sessionKey": "186e6d41b698bd6764064df159298d44cdf16b0cdfdd106b4555bfef4b5cac535a5418f6bfee7318",
+   "sHasLeadingZero": true
+  }
+ ],
+ "interleave": [
+  {
+   "S": "3d24a9ad935f051a1af9fb55251b18ada71291b692c5613deb0d081265fb7b01",
+   "K": "146fe2b92795bdfe43a1e0f839df8fee95ef5f74eaba5d48a6b422c0ddda0a51abca0ce6e8c998da",
+   "zeros": 0
+  },
+  {
+   "S": "0066c990197a7a2cf999c4a12af9a4964b7547e52e4fc52e0228e00fc12f0f03",
+   "K": "803fb6aac64c4e402b0f0eae3fdf81080445c25e6bfddc5ed8f1bb5d391ef40af1d5b3288b25a9bc",
+   "zeros": 1
+  },
+  {
+   "S": "0000806d1d4a7e341e979818b2dce648b8df0d5dae705aaa2e188b3fb7118191",
+   "K": "874f80bf0b35a335a0079c5f2538b244f9b5ed78026aee9dc35bc01942559f0c85eff1adfaf56681",
+   "zeros": 2
+  },
+  {
+   "S": "0000000b24802b51add23346fc68d7d050536c819c1a61fb23ecbf8db7217d85",
+   "K": "13e34425e8d967d9d46edf61f79045d71e56b046597980c7b26e98b35ec021389eabe3f586995d1a",
+   "zeros": 3
+  },
+  {
+   "S": "0000000000fb966f5b309cbf9a54754276c8607c283ceb2cd55cb3f6d8ce4833",
+   "K": "da05ce404ec2a56aa122fc24dabe00a475a05d4cd1df58b700aed637264e33b2072ee776765f60ae",
+   "zeros": 5
+  }
+ ],
+ "sessionKeyGenerator": {
+  "seed": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324252627",
+  "output64": "e711c90e3921b9725e3ccc867309995596d79bec6044480918ee080579d8901a849ac16df7e3e4402c97ef7f3d9275b31b5c9ff76ec817c344d98d3413447967"
+ }
+}

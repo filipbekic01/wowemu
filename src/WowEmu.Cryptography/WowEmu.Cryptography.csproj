@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!--
+      This project implements the fixed wire cryptography of the World of Warcraft 3.3.5a protocol
+      (2010). SHA-1, HMAC-SHA-1 and RC4 are mandated by that protocol and by the SRP6 verifiers
+      already stored in existing account databases; they are not a design choice and cannot be
+      upgraded without breaking every client and every account. The analyzer is correct in general
+      and wrong here, so it is suppressed for this project only — never solution-wide.
+
+        CA5350  weak algorithm  (SHA-1, HMAC-SHA-1, RC4)
+        CA5351  broken algorithm (MD5, used by the banned-addon list)
+    -->
+    <NoWarn>$(NoWarn);CA5350;CA5351</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="WowEmu.Tests.Unit" />
+  </ItemGroup>
+
+</Project>

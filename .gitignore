@@ -1,0 +1,45 @@
+# Build output
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+*.user
+*.suo
+
+# IDE
+.vs/
+.idea/
+.vscode/
+*.swp
+
+# Test / coverage
+TestResults/
+coverage*.json
+coverage*.xml
+*.coverage
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Local configuration and secrets
+*.local.json
+appsettings.Development.json
+.env
+
+# Client data — extracted from a retail 3.3.5a client, never committed (tens of GB)
+data/dbc/
+data/maps/
+data/vmaps/
+data/mmaps/
+
+# Python bytecode from tools/
+__pycache__/
+*.pyc
+
+# NOT ignored, deliberately:
+#   tools/vectors/vectors.json  — golden crypto vectors; regenerating them must be a visible diff
+
+azerothcore-wotlk
+database-wotlk

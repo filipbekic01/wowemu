@@ -1,0 +1,7 @@
+root = true
+
+# EF Core writes the files under Migrations/ and reformats them on every scaffold. They are
+# generated code, so the analyzers that warnings-as-errors turns into build failures do not apply —
+# there is nothing to fix there that the next `dotnet ef migrations add` would not undo.
+[**/Migrations/*.cs]
+generated_code = true

@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>WowEmu.AuthServer</RootNamespace>
+    <!--
+      The reconnect handshake hashes with SHA-1 because the 3.3.5a protocol says so.
+      See src/WowEmu.Cryptography/WowEmu.Cryptography.csproj for the full rationale.
+    -->
+    <NoWarn>$(NoWarn);CA5350;CA5351</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WowEmu.Core\WowEmu.Core.csproj" />
+    <ProjectReference Include="..\WowEmu.Protocol\WowEmu.Protocol.csproj" />
+    <ProjectReference Include="..\WowEmu.Cryptography\WowEmu.Cryptography.csproj" />
+    <ProjectReference Include="..\WowEmu.Data.Db\WowEmu.Data.Db.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Options.DataAnnotations" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>

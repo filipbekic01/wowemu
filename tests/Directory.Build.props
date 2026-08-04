@@ -1,0 +1,17 @@
+<Project>
+
+  <!-- Inherit the repository-wide settings, then relax what only makes sense for tests. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove($(MSBuildThisFile), $(MSBuildThisFileDirectory)..))" />
+
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <!--
+      CA1707  Underscores in member names. Test methods deliberately use
+              Method_Scenario_ExpectedResult, which reads far better in failure output.
+      CA5350  Weak algorithms. Tests exercise the same legacy protocol crypto as the code under
+      CA5351  test (SHA-1 / HMAC-SHA-1 / RC4 / MD5); see src/WowEmu.Cryptography for the rationale.
+    -->
+    <NoWarn>$(NoWarn);CA1707;CA5350;CA5351</NoWarn>
+  </PropertyGroup>
+
+</Project>

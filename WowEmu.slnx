@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/WowEmu.AuthServer/WowEmu.AuthServer.csproj" />
+    <Project Path="src/WowEmu.Core/WowEmu.Core.csproj" />
+    <Project Path="src/WowEmu.Data.Db/WowEmu.Data.Db.csproj" />
+    <Project Path="src/WowEmu.Cryptography/WowEmu.Cryptography.csproj" />
+    <Project Path="src/WowEmu.Protocol/WowEmu.Protocol.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/WowEmu.AccountCli/WowEmu.AccountCli.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/WowEmu.Tests.Unit/WowEmu.Tests.Unit.csproj" />
+  </Folder>
+</Solution>

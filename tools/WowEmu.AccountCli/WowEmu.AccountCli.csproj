@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>WowEmu.AccountCli</RootNamespace>
+    <AssemblyName>wowemu-account</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\WowEmu.Data.Db\WowEmu.Data.Db.csproj" />
+  </ItemGroup>
+
+</Project>
