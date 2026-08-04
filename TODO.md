@@ -2,8 +2,9 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** Phase 4 — static game data. DBC loader landed; `.map` terrain and the world-table import
-are next. **Blocking M3:** update fields and `SMSG_UPDATE_OBJECT` (Phase 5).
+**Now:** Phase 5 — the object hierarchy and `CMSG_PLAYER_LOGIN`. Update fields, the mask, the
+movement block and `SMSG_UPDATE_OBJECT` are all done and tested; what remains for M3 is building a
+`Player` from the database row and sending the login burst.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -97,7 +98,7 @@ are next. **Blocking M3:** update fields and `SMSG_UPDATE_OBJECT` (Phase 5).
 
 **World database**
 
-- [ ] `player_levelstats`, `player_classlevelstats` — base stats, or the character has 0 HP
+- [x] `player_levelstats` (4960 rows), `player_classlevelstats` (800 rows) — base stats
 - [ ] `creature_template`, `creature`
 - [ ] `gameobject_template`, `gameobject`
 - [ ] `item_template`
@@ -108,13 +109,17 @@ are next. **Blocking M3:** update fields and `SMSG_UPDATE_OBJECT` (Phase 5).
 
 **Update fields — the critical path**
 
-- [ ] Generated field-index constants (`PLAYER_END` 1326, `UNIT_END` 148, `OBJECT_END` 6, …)
-- [ ] `uint[]` storage with a byte-per-field dirty mask
-- [ ] Typed accessors (uint32, int32, float, byte, uint16, guid, flags)
-- [ ] `UpdateMask` — block-based bitmask serialization
-- [ ] `UpdateData` — create / values / out-of-range blocks
-- [ ] `SMSG_UPDATE_OBJECT`, compressed to `SMSG_COMPRESSED_UPDATE_OBJECT` above 100 bytes
-- [ ] Movement block in the create packet
+- [x] Generated field-index constants — 381 of them, all eight block boundaries match PLAN §5
+- [x] Per-field size, type and visibility flags carried through from upstream's comments
+- [x] `uint[]` storage with a per-field dirty mask, no-op on unchanged writes
+- [x] Typed accessors — uint32, int32, float, packed byte, packed uint16, guid, flags
+- [x] `UpdateMask` — block-based bitmask, 42 blocks for a player
+- [x] `UpdateData` — block accumulation, out-of-range block, payload assembly
+- [x] Compression above 100 bytes, uncompressed size prefixed
+- [x] Movement block (`MovementInfo` + nine speeds) and the create-block builder
+- [ ] Transport branch of the movement block (throws for now; Phase 6)
+- [ ] Per-observer visibility filtering — the mask intersection exists, nothing computes the
+      observer's visible-flag set yet
 
 **Object hierarchy**
 
