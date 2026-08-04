@@ -13,10 +13,24 @@ The C++ reference implementation lives in `azerothcore-wotlk/` and is the behavi
 | 0 | Foundations — crypto, packet primitives, tick scheduler | **done** |
 | 1 | Authserver → client reaches the realm list | **done — M1 reached** |
 | 2 | Database layer + schema | **in progress** — auth schema done |
-| 3+ | See [PLAN.md](PLAN.md) §6 | not started |
+| 3 | Worldserver socket + session | **in progress** — M2 reached headlessly |
+| 4+ | See [PLAN.md](PLAN.md) §6 | not started |
 
 **M1 is verified**: a retail 3.3.5a client logs in and displays the realm, and
 `tools/harness/m1_login.py` drives the same handshake headlessly as a regression gate.
+
+**M2 passes headlessly**: `tools/harness/m2_world.py` completes the world handshake — encrypted
+headers, addon manifest, ping, and an empty character list. Not yet confirmed against a retail
+client, which is what actually closes the milestone.
+
+**Phase 3 progress**
+
+- [x] Pipelines framing — mixed-endian headers, split reads, RC4 header crypt
+- [x] `SMSG_AUTH_CHALLENGE` → `CMSG_AUTH_SESSION` → digest → `SMSG_AUTH_RESPONSE`
+- [x] Addon manifest (zlib) and `SMSG_ADDON_INFO`
+- [x] `CMSG_CHAR_ENUM` returning an empty list, ping/pong, cache version, tutorials, account data
+- [x] Opcode enum — all 1313, generated from upstream's header
+- [ ] Opcode **dispatch table** with session-status and processing classification (PLAN §4.2 rule 4)
 
 **Phase 0** — every exit criterion in [PLAN.md](PLAN.md) §6 is met and covered by tests.
 
@@ -46,15 +60,42 @@ the .NET stack already speaks.
 ```
 src/WowEmu.Core/           ObjectGuid, Position, clocks, tick scheduler, SFMT + distributions
 src/WowEmu.Cryptography/   SRP6, RC4, header encryption, session key expansion
-src/WowEmu.Protocol/       PacketReader / PacketWriter, packed GUID / XYZ / time
+src/WowEmu.Protocol/       PacketReader / PacketWriter, packed encodings, generated opcode enum
+src/WowEmu.Network/        World-protocol framing and header encryption
 src/WowEmu.Data.Db/        EF Core model, repositories and migrations for the auth database
 src/WowEmu.AuthServer/     The logon server (port 3724)
+src/WowEmu.WorldServer/    The world server (port 8085)
 tools/WowEmu.AccountCli/   Account and realm maintenance
 tools/harness/             Headless protocol clients that drive the milestone gates
+tools/codegen/             Generates Opcodes.g.cs from upstream's Opcodes.h
 tools/vectors/             Reference implementations + golden test vectors
 tests/WowEmu.Tests.Unit/   xUnit tests
 azerothcore-wotlk/         The C++ server being ported (reference only, not built)
+database-wotlk/            AzerothCore's world database dump (reference only, not imported)
 ```
+
+Neither reference tree is a git repository — they are raw folders. Updating them means re-cloning
+from `github.com/azerothcore/{azerothcore-wotlk,database-wotlk}`. Both are gitignored.
+
+### Where the reference SQL lives
+
+Phases 2, 4 and 5 need schemas and content for the `characters` and `world` databases. All of it is
+already on disk, in two places that are easy to confuse:
+
+| Path | Files | What it is |
+|---|---|---|
+| `azerothcore-wotlk/data/sql/base/db_auth/` | 22 | Auth schema. We designed ours fresh instead — see [PLAN.md](PLAN.md) §5.2 |
+| `azerothcore-wotlk/data/sql/base/db_characters/` | 108 | **Characters schema.** The starting point for Phase 5's persistence |
+| `azerothcore-wotlk/data/sql/base/db_world/` | 309 | World schema + content, 296M |
+| `database-wotlk/sql/base/` | 155 | World schema + content, 193M — `DROP TABLE`, `CREATE TABLE` and the `INSERT`s together, one file per table |
+| `database-wotlk/sql/updates/` | 5 | Incremental migrations applied on top of the base dump |
+
+Note that `database-wotlk` is **world data only** — it contains no `characters` tables, so Phase 5
+takes its schema from `db_characters/` above.
+
+Per PLAN.md §5.2 the treatment differs by database: `world` stays structurally close to upstream,
+because 309 tables of community-curated content are not worth re-curating, while `characters` is
+ours to design properly and gets imported table by table as each phase needs it.
 
 ## Build and test
 
@@ -80,10 +121,17 @@ The server applies pending migrations itself on startup, so the first run create
 `account create` command prompts for the password rather than taking it on the command line, which
 keeps it out of your shell history.
 
-Verify it without launching a client:
+The world server is a second process, reading the same auth database for session keys:
 
 ```bash
-python3 tools/harness/m1_login.py
+dotnet run --project src/WowEmu.WorldServer
+```
+
+Verify both without launching a client:
+
+```bash
+python3 tools/harness/m1_login.py     # logon, realm list, reconnect
+python3 tools/harness/m2_world.py     # the above, then the world handshake to character select
 ```
 
 Then point a 3.3.5a client at it by setting `SET realmlist "<host>"` in `WTF/Config.wtf` — note that
@@ -123,12 +171,15 @@ connection string. An empty connection string means the Docker Compose default; 
 | `db: up` / `db: down` | Start / stop the MySQL container |
 | `db: migrate` | Apply pending EF Core migrations |
 | `account: create` / `account: list` | Account maintenance |
-| `gate: M1` | Log in over the real protocol, headlessly. Needs the server running. |
+| `gate: M1` | Log in over the real protocol, headlessly. Needs the auth server running. |
+| `gate: M2` | Reach the character list. Needs both servers running. |
+| `codegen: opcodes` | Regenerate the opcode enum from upstream's `Opcodes.h` |
 | `Run: Auth Server` | Start the logon server on port 3724 |
-| `Run: World Server` | **Phase 3** — no server project exists yet |
+| `Run: World Server` | Start the world server on port 8085 |
 
 To debug a single test, use the run/debug icon in the gutter next to the test method, or the
-Testing panel. `.vscode/launch.json` has server configurations pre-wired for Phase 1 and Phase 3.
+Testing panel. `.vscode/launch.json` can launch either server, or both at once via the
+*Debug: Auth + World* compound.
 
 ## On the test vectors
 

@@ -99,6 +99,31 @@ public ref struct PacketReader(ReadOnlySpan<byte> buffer)
         return true;
     }
 
+    /// <summary>
+    /// Reads a NUL-terminated UTF-8 string, consuming the terminator.
+    /// </summary>
+    /// <remarks>
+    /// A string with no terminator in the remaining bytes is a truncated packet, not a string that
+    /// runs to the end — upstream's <c>ByteBuffer</c> would throw here, so this refuses too rather
+    /// than inventing a value.
+    /// </remarks>
+    public bool TryReadCString(out string value)
+    {
+        value = string.Empty;
+
+        ReadOnlySpan<byte> remaining = _buffer[_position..];
+        int terminator = remaining.IndexOf((byte)0);
+
+        if (terminator < 0)
+        {
+            return Fail();
+        }
+
+        value = Encoding.UTF8.GetString(remaining[..terminator]);
+        _position += terminator + 1;
+        return true;
+    }
+
     /// <summary>Reads a fixed-length, non-NUL-terminated UTF-8 string.</summary>
     public bool TryReadFixedString(int count, out string value)
     {

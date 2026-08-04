@@ -343,6 +343,26 @@ Three databases, as before, but ours:
 `WowEmu.Data.Import` reads AzerothCore MySQL directly and writes ours. It is incremental by design —
 Phase 4 imports ~10 tables, Phase 10 imports ~40 more.
 
+**Where the source SQL already is.** Both reference trees are checked out locally and hold every
+schema and every row we will need; nothing has to be downloaded again. They are raw folders with no
+git root, so treat them as read-only snapshots.
+
+| Path | Files | Contents |
+|---|---|---|
+| `azerothcore-wotlk/data/sql/base/db_auth/` | 22 | Auth schema. Ours is designed fresh instead (see above); useful only as a comparison |
+| `azerothcore-wotlk/data/sql/base/db_characters/` | 108 | **Characters schema** — the reference for the schema we design in Phase 5 |
+| `azerothcore-wotlk/data/sql/base/db_world/` | 309 | World schema + content (296M) |
+| `database-wotlk/sql/base/` | 155 | World schema + content (193M): `DROP TABLE`, `CREATE TABLE` and `INSERT`s per table |
+| `database-wotlk/sql/updates/` | 5 | Incremental migrations layered on the base dump |
+
+`database-wotlk` is **world data only** — it has no `characters` tables. Phase 5's persistence work
+takes its reference from `db_characters/`, not from there.
+
+Because these are plain `.sql` dumps rather than a live server, the importer has a choice: load a
+dump into a throwaway MySQL container and read it with the planned `MySqlDataReader` path, or parse
+the `INSERT` statements directly. The container route is preferable — it reuses the access path we
+need anyway and does not require writing a SQL parser for someone else's dialect quirks.
+
 **Access pattern**: EF Core for `auth` and `characters` (write-heavy, relational, ORM earns its
 keep). Dapper or raw `MySqlDataReader` for `world` (read-once bulk load at startup — startup time is
 a real metric; upstream loads 309 tables in tens of seconds).

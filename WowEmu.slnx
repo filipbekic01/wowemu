@@ -3,6 +3,8 @@
     <Project Path="src/WowEmu.AuthServer/WowEmu.AuthServer.csproj" />
     <Project Path="src/WowEmu.Core/WowEmu.Core.csproj" />
     <Project Path="src/WowEmu.Data.Db/WowEmu.Data.Db.csproj" />
+    <Project Path="src/WowEmu.Network/WowEmu.Network.csproj" />
+    <Project Path="src/WowEmu.WorldServer/WowEmu.WorldServer.csproj" />
     <Project Path="src/WowEmu.Cryptography/WowEmu.Cryptography.csproj" />
     <Project Path="src/WowEmu.Protocol/WowEmu.Protocol.csproj" />
   </Folder>
