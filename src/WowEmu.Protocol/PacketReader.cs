@@ -1,5 +1,6 @@
 using System.Buffers.Binary;
 using System.Text;
+using WowEmu.Core;
 
 namespace WowEmu.Protocol;
 
@@ -109,6 +110,109 @@ public ref struct PacketReader(ReadOnlySpan<byte> buffer)
 
         value = Encoding.UTF8.GetString(bytes);
         return true;
+    }
+
+    /// <summary>
+    /// Reads a packed GUID: a mask byte, then one byte per set bit.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>ByteBuffer::readPackGUID</c>. A mask of zero is a valid encoding of the empty
+    /// guid and consumes exactly one byte.
+    /// </remarks>
+    public bool TryReadPackedGuid(out ulong value)
+    {
+        value = 0;
+
+        if (!TryReadUInt8(out byte mask))
+        {
+            return false;
+        }
+
+        for (int i = 0; i < 8; i++)
+        {
+            if ((mask & (1 << i)) == 0)
+            {
+                continue;
+            }
+
+            if (!TryReadUInt8(out byte part))
+            {
+                value = 0;
+                return false;
+            }
+
+            value |= (ulong)part << (i * 8);
+        }
+
+        return true;
+    }
+
+    /// <inheritdoc cref="TryReadPackedGuid(out ulong)"/>
+    public bool TryReadPackedGuid(out ObjectGuid value)
+    {
+        bool ok = TryReadPackedGuid(out ulong raw);
+        value = new ObjectGuid(raw);
+        return ok;
+    }
+
+    /// <summary>
+    /// Reads three coordinates packed into one <see cref="uint"/>.
+    /// </summary>
+    /// <remarks>
+    /// The inverse of <c>appendPackXYZ</c>. The fields are <b>signed</b> — 11 bits for X and Y, 10
+    /// for Z — so each is sign-extended before scaling back up by 0.25. Reading them as unsigned
+    /// turns every negative offset into a large positive one, which shows up as objects flung
+    /// across the map.
+    /// </remarks>
+    public bool TryReadPackedXYZ(out float x, out float y, out float z)
+    {
+        x = y = z = 0f;
+
+        if (!TryReadUInt32(out uint packed))
+        {
+            return false;
+        }
+
+        x = SignExtend((int)(packed & 0x7FF), 11) * 0.25f;
+        y = SignExtend((int)((packed >> 11) & 0x7FF), 11) * 0.25f;
+        z = SignExtend((int)((packed >> 22) & 0x3FF), 10) * 0.25f;
+        return true;
+    }
+
+    /// <summary>
+    /// Reads a packed calendar timestamp. The result has no time zone attached; the client means
+    /// local time.
+    /// </summary>
+    public bool TryReadPackedTime(out DateTime value)
+    {
+        value = default;
+
+        if (!TryReadUInt32(out uint packed))
+        {
+            return false;
+        }
+
+        int minute = (int)(packed & 0x3F);
+        int hour = (int)((packed >> 6) & 0x1F);
+        int day = (int)((packed >> 14) & 0x3F) + 1;
+        int month = (int)((packed >> 20) & 0xF) + 1;
+        int year = (int)((packed >> 24) & 0x1F) + 2000;
+
+        // The weekday field at bits 11-13 is redundant with the date and upstream ignores it too.
+        if (month is < 1 or > 12 || day < 1 || day > DateTime.DaysInMonth(year, month) ||
+            hour > 23 || minute > 59)
+        {
+            return Fail();
+        }
+
+        value = new DateTime(year, month, day, hour, minute, 0, DateTimeKind.Unspecified);
+        return true;
+    }
+
+    private static int SignExtend(int value, int bits)
+    {
+        int signBit = 1 << (bits - 1);
+        return (value ^ signBit) - signBit;
     }
 
     public void Skip(int count)

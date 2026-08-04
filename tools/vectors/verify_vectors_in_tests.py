@@ -15,6 +15,8 @@ import sys
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 VECTORS = os.path.join(ROOT, "tools", "vectors", "vectors.json")
+SFMT_VECTORS = os.path.join(ROOT, "tools", "vectors", "sfmt_vectors.json")
+RANDOM_VECTORS = os.path.join(ROOT, "tools", "vectors", "random_vectors.json")
 TEST_GLOB = os.path.join(ROOT, "tests", "WowEmu.Tests.Unit", "*.cs")
 
 
@@ -45,6 +47,28 @@ def collect(vectors):
     return checks
 
 
+def collect_numeric(path, label_prefix):
+    """Flatten a numeric vector file into (label, decimal-string) pairs.
+
+    The SFMT and distribution vectors are lists of integers rather than hex blobs, so each element
+    is checked individually -- a single changed draw is drift just as much as a changed digest.
+    """
+    if not os.path.exists(path):
+        return []
+
+    with open(path) as handle:
+        vectors = json.load(handle)
+
+    checks = []
+    for key, value in vectors.items():
+        if key.startswith("_") or not isinstance(value, list):
+            continue
+        for index, element in enumerate(value):
+            checks.append((f"{label_prefix}.{key}[{index}]", str(element)))
+
+    return checks
+
+
 def main():
     if not os.path.exists(VECTORS):
         print(f"error: {VECTORS} not found -- run generate_crypto_vectors.py first")
@@ -61,6 +85,9 @@ def main():
     haystack = "".join(open(path).read().lower() for path in sources)
 
     checks = collect(vectors)
+    checks += collect_numeric(SFMT_VECTORS, "sfmt")
+    checks += collect_numeric(RANDOM_VECTORS, "random")
+
     missing = [(label, value) for label, value in checks if value.lower() not in haystack]
 
     print(f"checked {len(checks)} generated values against {len(sources)} test files")

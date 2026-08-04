@@ -206,21 +206,44 @@ public struct Position(float x = 0f, float y = 0f, float z = 0f, float orientati
         $"X: {X:F3} Y: {Y:F3} Z: {Z:F3} O: {Orientation:F3}");
 }
 
-/// <summary>A <see cref="Position"/> that also knows which map it is on.</summary>
-public struct WorldLocation(uint mapId = WorldLocation.InvalidMapId, float x = 0f, float y = 0f, float z = 0f, float orientation = 0f)
-    : IEquatable<WorldLocation>
+/// <summary>
+/// A <see cref="Position"/> that also knows which map it is on.
+/// </summary>
+/// <remarks>
+/// A class, not a struct, and deliberately so: <see cref="InvalidMapId"/> has to be the default.
+/// A struct's <c>default</c> is all zeroes, and map 0 is Eastern Kingdoms — a real, populated map —
+/// so a default-constructed struct would silently mean "somewhere in Azeroth" instead of "nowhere".
+/// <see cref="Position"/> stays a struct because it is the one that gets copied per tick; world
+/// locations are teleport targets and spawn points, not hot-path data.
+/// </remarks>
+public sealed class WorldLocation : IEquatable<WorldLocation>
 {
     /// <summary>"No map", as upstream spells it.</summary>
     public const uint InvalidMapId = 0xFFFFFFFF;
 
-    public uint MapId { get; set; } = mapId;
-
-    public Position Position { get; set; } = new Position(x, y, z, orientation);
+    public WorldLocation(
+        uint mapId = InvalidMapId,
+        float x = 0f,
+        float y = 0f,
+        float z = 0f,
+        float orientation = 0f)
+    {
+        MapId = mapId;
+        Position = new Position(x, y, z, orientation);
+    }
 
     public WorldLocation(uint mapId, Position position)
-        : this(mapId, position.X, position.Y, position.Z, position.Orientation)
     {
+        MapId = mapId;
+        Position = position;
     }
+
+    public uint MapId { get; set; }
+
+    public Position Position { get; set; }
+
+    /// <summary>Whether this location points at an actual map.</summary>
+    public bool IsValid => MapId != InvalidMapId;
 
     public void WorldRelocate(uint newMapId, Position position)
     {
@@ -228,16 +251,18 @@ public struct WorldLocation(uint mapId = WorldLocation.InvalidMapId, float x = 0
         Position = position;
     }
 
-    public readonly bool Equals(WorldLocation other) => MapId == other.MapId && Position.Equals(other.Position);
+    public bool Equals(WorldLocation? other) =>
+        other is not null && MapId == other.MapId && Position.Equals(other.Position);
 
-    public override readonly bool Equals(object? obj) => obj is WorldLocation other && Equals(other);
+    public override bool Equals(object? obj) => Equals(obj as WorldLocation);
 
-    public override readonly int GetHashCode() => HashCode.Combine(MapId, Position);
+    public override int GetHashCode() => HashCode.Combine(MapId, Position);
 
-    public static bool operator ==(WorldLocation left, WorldLocation right) => left.Equals(right);
+    public static bool operator ==(WorldLocation? left, WorldLocation? right) =>
+        left is null ? right is null : left.Equals(right);
 
-    public static bool operator !=(WorldLocation left, WorldLocation right) => !left.Equals(right);
+    public static bool operator !=(WorldLocation? left, WorldLocation? right) => !(left == right);
 
-    public override readonly string ToString() =>
+    public override string ToString() =>
         string.Create(CultureInfo.InvariantCulture, $"Map: {MapId} {Position}");
 }
