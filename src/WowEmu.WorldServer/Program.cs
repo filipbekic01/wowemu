@@ -20,11 +20,19 @@ builder.Services
 WorldServerOptions startupOptions =
     builder.Configuration.GetSection(WorldServerOptions.SectionName).Get<WorldServerOptions>() ?? new WorldServerOptions();
 
-// The world server reads the auth database but never migrates it: the logon server owns that
-// schema. Two processes racing to apply migrations is a problem worth not having.
+// Three databases, three roles. The world server reads auth (session keys) but never migrates it —
+// the logon server owns that schema, and two processes racing to migrate is a problem worth not
+// having. It owns characters, and reads world as static content.
 builder.Services.AddAuthDatabase(AuthDatabase.ResolveConnectionString(startupOptions.ConnectionString));
+builder.Services.AddCharacterDatabase(
+    CharacterDatabase.ResolveConnectionString(startupOptions.CharactersConnectionString));
+
+builder.Services.AddSingleton<PlayerCreateInfoStore>();
 
 builder.Services.AddHostedService<WorldServerHost>();
 
 IHost host = builder.Build();
+
+await WorldStartup.PrepareAsync(host.Services, startupOptions, CancellationToken.None);
+
 await host.RunAsync();

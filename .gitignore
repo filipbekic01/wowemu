@@ -43,3 +43,17 @@ __pycache__/
 
 azerothcore-wotlk
 database-wotlk
+data/Cameras/FlyByBloodElf.m2
+data/Cameras/FlyByDeathKnight.m2
+data/Cameras/FlybyDraenei.m2
+data/Cameras/FlyByDwarf.m2
+data/Cameras/FlyByGnome.m2
+data/Cameras/FlyByHuman.m2
+data/Cameras/FlybyNightElf.m2
+data/Cameras/FlybyOrc.m2
+data/Cameras/FlyBySunwell5Man.m2
+data/Cameras/FlyByTauren.m2
+data/Cameras/FlyByTroll.m2
+data/Cameras/FlybyUndead.m2
+data/Cameras/PalantirOfAzora.m2
+data/Cameras/Scry_cam.m2

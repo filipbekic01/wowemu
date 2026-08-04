@@ -21,6 +21,8 @@ services:
       - "127.0.0.1:3306:3306"
     volumes:
       - wowemu-mysql:/var/lib/mysql
+      # Only runs on a fresh volume. See the file for how to apply it to an existing one.
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pwowemu"]
       interval: 5s

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging;
+using WowEmu.Core;
 using WowEmu.Data.Db;
 using WowEmu.Network;
 using WowEmu.Protocol;
@@ -15,15 +16,16 @@ namespace WowEmu.WorldServer;
 /// Port of the session half of <c>WorldSocket</c> plus the handful of handlers the client needs
 /// before it will show the character-selection screen.
 /// <para>
-/// Phase 3 has no opcode dispatch table yet: the handful of opcodes below are switched on directly,
-/// and everything else is logged and ignored. The generated <see cref="Opcode"/> enum already
-/// covers all 1313 opcodes, so the table and its session-status / processing classification can be
-/// layered on without touching this flow.
+/// Dispatch is gated by the generated opcode table: an opcode's required session status and its
+/// processing class are checked before any handler runs, so an opcode upstream never accepts from a
+/// client cannot reach one here either.
 /// </para>
 /// </remarks>
 public sealed class WorldSession(
     WorldConnection connection,
     IAccountRepository accounts,
+    ICharacterRepository characters,
+    PlayerCreateInfoStore createInfo,
     WorldServerOptions options,
     ILogger logger)
 {
@@ -38,6 +40,19 @@ public sealed class WorldSession(
 
     /// <summary>Tutorial flag words the client expects, whether or not any are set.</summary>
     private const int TutorialValueCount = 8;
+
+    /// <summary>Character create/delete results from <c>SharedDefines.h</c>.</summary>
+    private const byte CharCreateSuccess = 0x2F;
+    private const byte CharCreateError = 0x30;
+    private const byte CharCreateFailed = 0x31;
+    private const byte CharCreateNameInUse = 0x32;
+    private const byte CharCreateAccountLimit = 0x36;
+    private const byte CharNameInvalidCharacter = 0x5C;
+    private const byte CharDeleteSuccess = 0x47;
+    private const byte CharDeleteFailed = 0x48;
+
+    /// <summary>Retail's per-realm cap, and the client's own assumption.</summary>
+    private const int MaxCharactersPerAccount = 10;
 
     private readonly byte[] _authSeed = RandomNumberGenerator.GetBytes(4);
 
@@ -108,6 +123,14 @@ public sealed class WorldSession(
 
             case Opcode.CMSG_CHAR_ENUM:
                 await SendCharacterListAsync(cancellationToken).ConfigureAwait(false);
+                return true;
+
+            case Opcode.CMSG_CHAR_CREATE:
+                await HandleCharacterCreateAsync(payload, cancellationToken).ConfigureAwait(false);
+                return true;
+
+            case Opcode.CMSG_CHAR_DELETE:
+                await HandleCharacterDeleteAsync(payload, cancellationToken).ConfigureAwait(false);
                 return true;
 
             case Opcode.CMSG_REALM_SPLIT:
@@ -310,20 +333,172 @@ public sealed class WorldSession(
     }
 
     /// <summary>
-    /// Answers <c>CMSG_CHAR_ENUM</c> with an empty list.
+    /// Answers <c>CMSG_CHAR_ENUM</c> from the characters database.
     /// </summary>
     /// <remarks>
-    /// An empty list is the Phase 3 milestone: the client stops loading and shows the character
-    /// screen. Phase 5 fills this in from the characters database.
+    /// Reaching this point at all — even with zero characters — is the Phase 3 milestone: the
+    /// client stops loading and draws the character screen. Character <i>creation</i> is not
+    /// implemented yet, so in practice the list is empty; the packet is built from real rows so
+    /// that it stops being empty the moment Phase 5 can write one.
     /// </remarks>
     private async Task SendCharacterListAsync(CancellationToken cancellationToken)
     {
-        ServerPacket packet = new(Opcode.SMSG_CHAR_ENUM, 1);
-        packet.Body.WriteUInt8(0);
+        IReadOnlyList<CharacterSummary> roster = _account is null
+            ? []
+            : await characters.ListForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(false);
+
+        ServerPacket packet = new(Opcode.SMSG_CHAR_ENUM, 1 + (roster.Count * CharacterList.MaxBytesPerCharacter));
+        CharacterList.Write(packet.Body, roster);
 
         await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
 
-        Log.CharacterListSent(logger, 0, connection.RemoteAddress);
+        Log.CharacterListSent(logger, roster.Count, connection.RemoteAddress);
+    }
+
+    /// <summary>
+    /// Creates a character.
+    /// </summary>
+    /// <remarks>
+    /// Every check the client already performs is repeated here, because the client is not the
+    /// authority: it is a program on someone else's machine that can be told to send anything.
+    /// <para>
+    /// Race/class validity comes from <c>playercreateinfo</c> rather than a hard-coded table —
+    /// a pair with no starting position is a pair that cannot exist, so one lookup answers both
+    /// questions.
+    /// </para>
+    /// </remarks>
+    private async Task HandleCharacterCreateAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
+    {
+        if (_account is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadCString(out string rawName) ||
+            !reader.TryReadUInt8(out byte race) ||
+            !reader.TryReadUInt8(out byte characterClass) ||
+            !reader.TryReadUInt8(out byte gender) ||
+            !reader.TryReadUInt8(out byte skin) ||
+            !reader.TryReadUInt8(out byte face) ||
+            !reader.TryReadUInt8(out byte hairStyle) ||
+            !reader.TryReadUInt8(out byte hairColor) ||
+            !reader.TryReadUInt8(out byte facialHair))
+        {
+            await SendCharacterCreateResultAsync(CharCreateError, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (!CharacterName.TryNormalize(rawName, out string name))
+        {
+            await SendCharacterCreateResultAsync(CharNameInvalidCharacter, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (gender > 1 || !createInfo.TryGet(race, characterClass, out PlayerCreateInfo start))
+        {
+            Log.InvalidCharacterCreate(logger, race, characterClass, gender, connection.RemoteAddress);
+            await SendCharacterCreateResultAsync(CharCreateFailed, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (await characters.CountForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(false)
+            >= MaxCharactersPerAccount)
+        {
+            await SendCharacterCreateResultAsync(CharCreateAccountLimit, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        if (await characters.NameExistsAsync(name, cancellationToken).ConfigureAwait(false))
+        {
+            await SendCharacterCreateResultAsync(CharCreateNameInUse, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        CharacterEntity character = new()
+        {
+            AccountId = _account.Id,
+            Name = name,
+            Race = race,
+            Class = characterClass,
+            Gender = gender,
+            Skin = skin,
+            Face = face,
+            HairStyle = hairStyle,
+            HairColor = hairColor,
+            FacialStyle = facialHair,
+            Level = 1,
+            Map = start.Map,
+            Zone = start.Zone,
+            PositionX = start.PositionX,
+            PositionY = start.PositionY,
+            PositionZ = start.PositionZ,
+            Orientation = start.Orientation,
+            AtLoginFlags = CharacterList.AtLoginFirst,
+            CreatedAt = DateTime.UtcNow,
+        };
+
+        uint? id = await characters.CreateAsync(character, cancellationToken).ConfigureAwait(false);
+
+        if (id is null)
+        {
+            // Lost the race on the unique index — someone else took the name in between.
+            await SendCharacterCreateResultAsync(CharCreateNameInUse, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        Log.CharacterCreated(logger, name, id.Value, _account.Username, connection.RemoteAddress);
+        await SendCharacterCreateResultAsync(CharCreateSuccess, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>Deletes a character the account owns.</summary>
+    private async Task HandleCharacterDeleteAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
+    {
+        if (_account is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid))
+        {
+            await SendCharacterDeleteResultAsync(CharDeleteFailed, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        ObjectGuid guid = new(rawGuid);
+
+        // Ownership is verified in the delete itself, so a client asking to delete someone else's
+        // character simply finds nothing to delete.
+        bool deleted = await characters
+            .DeleteAsync(_account.Id, guid.Counter, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (deleted)
+        {
+            Log.CharacterDeleted(logger, guid.Counter, _account.Username, connection.RemoteAddress);
+        }
+
+        await SendCharacterDeleteResultAsync(deleted ? CharDeleteSuccess : CharDeleteFailed, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task SendCharacterCreateResultAsync(byte result, CancellationToken cancellationToken)
+    {
+        ServerPacket packet = new(Opcode.SMSG_CHAR_CREATE, 1);
+        packet.Body.WriteUInt8(result);
+
+        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task SendCharacterDeleteResultAsync(byte result, CancellationToken cancellationToken)
+    {
+        ServerPacket packet = new(Opcode.SMSG_CHAR_DELETE, 1);
+        packet.Body.WriteUInt8(result);
+
+        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task HandleRealmSplitAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)

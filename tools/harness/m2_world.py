@@ -31,7 +31,11 @@ SERVER_DECRYPT_SEED = bytes.fromhex("c2b3723cc6aed9b5343c53ee2f4367ce")
 SMSG_AUTH_CHALLENGE = 0x1EC
 CMSG_AUTH_SESSION = 0x1ED
 SMSG_AUTH_RESPONSE = 0x1EE
+CMSG_CHAR_CREATE = 0x036
 CMSG_CHAR_ENUM = 0x037
+CMSG_CHAR_DELETE = 0x038
+SMSG_CHAR_CREATE = 0x03A
+SMSG_CHAR_DELETE = 0x03C
 SMSG_CHAR_ENUM = 0x03B
 CMSG_PING = 0x1DC
 SMSG_PONG = 0x1DD
@@ -40,6 +44,9 @@ SMSG_CLIENTCACHE_VERSION = 0x4AB
 SMSG_TUTORIAL_FLAGS = 0x0FD
 
 AUTH_OK = 0x0C
+CHAR_CREATE_SUCCESS = 0x2F
+CHAR_CREATE_NAME_IN_USE = 0x32
+CHAR_DELETE_SUCCESS = 0x47
 
 
 def le(b):
@@ -267,9 +274,65 @@ def world_session(host, port, user, session_key):
 
     client.send(CMSG_CHAR_ENUM)
     characters = client.expect(SMSG_CHAR_ENUM, "SMSG_CHAR_ENUM")
-    if characters[0] != 0:
-        fail(f"expected an empty character list, got {characters[0]} characters")
-    print("  character list ok (0 characters — the client shows the character screen here)")
+    starting_count = characters[0]
+    print(f"  character list ok ({starting_count} characters — the client shows the character screen here)")
+
+    # ---- create a character, then prove it comes back in the list
+    name = "Harnessbot"
+
+    body = name.encode() + b"\x00"
+    body += bytes([1, 1, 0])          # human warrior, male
+    body += bytes([0, 0, 0, 0, 0])    # skin, face, hair style, hair colour, facial hair
+    body += bytes([0])                # outfit id
+    client.send(CMSG_CHAR_CREATE, body)
+
+    result = client.expect(SMSG_CHAR_CREATE, "SMSG_CHAR_CREATE")[0]
+
+    if result == CHAR_CREATE_NAME_IN_USE:
+        print(f"  '{name}' already exists — reusing it")
+    elif result != CHAR_CREATE_SUCCESS:
+        fail(f"character creation rejected with code 0x{result:02X}")
+    else:
+        print(f"  created '{name}' (human warrior)")
+
+    client.send(CMSG_CHAR_ENUM)
+    characters = client.expect(SMSG_CHAR_ENUM, "SMSG_CHAR_ENUM")
+
+    count = characters[0]
+    if count < 1:
+        fail("the created character did not come back in the character list")
+
+    # guid(8) then a NUL-terminated name.
+    guid = struct.unpack("<Q", characters[1:9])[0]
+    end = characters.index(b"\x00", 9)
+    listed = characters[9:end].decode()
+
+    cursor = end + 1
+    race, char_class, gender = characters[cursor], characters[cursor + 1], characters[cursor + 2]
+    cursor += 3 + 5 + 1                                   # appearance, level
+    zone, char_map = struct.unpack("<II", characters[cursor:cursor + 8])
+    cursor += 8
+    x, y, z = struct.unpack("<fff", characters[cursor:cursor + 12])
+
+    print(f"  list now has {count}: '{listed}' guid 0x{guid:016X} race {race} class {char_class} gender {gender}")
+    print(f"    starts on map {char_map} at ({x:.1f}, {y:.1f}, {z:.1f}) — from playercreateinfo")
+
+    if listed.lower() != name.lower():
+        fail(f"expected '{name}' in the list, got '{listed}'")
+    if (x, y, z) == (0.0, 0.0, 0.0):
+        fail("start position is the origin — playercreateinfo was not applied")
+
+    # ---- delete it again so the gate is repeatable
+    client.send(CMSG_CHAR_DELETE, struct.pack("<Q", guid))
+    deleted = client.expect(SMSG_CHAR_DELETE, "SMSG_CHAR_DELETE")[0]
+    if deleted != CHAR_DELETE_SUCCESS:
+        fail(f"character deletion rejected with code 0x{deleted:02X}")
+
+    client.send(CMSG_CHAR_ENUM)
+    characters = client.expect(SMSG_CHAR_ENUM, "SMSG_CHAR_ENUM")
+    if characters[0] != starting_count:
+        fail(f"after deleting, expected {starting_count} characters, got {characters[0]}")
+    print("  delete ok (list back to where it started)")
 
     client.sock.close()
 

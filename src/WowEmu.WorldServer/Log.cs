@@ -13,6 +13,10 @@ internal static partial class Log
         Message = "World server listening on {Address}:{Port} as realm {RealmId}")]
     public static partial void Listening(ILogger logger, IPAddress address, int port, byte realmId);
 
+    [LoggerMessage(EventId = 2004, Level = LogLevel.Information,
+        Message = "Applied {Count} pending characters-database migration(s)")]
+    public static partial void MigrationsApplied(ILogger logger, int count);
+
     [LoggerMessage(EventId = 2001, Level = LogLevel.Information,
         Message = "World server shutting down")]
     public static partial void ShuttingDown(ILogger logger);
@@ -67,6 +71,26 @@ internal static partial class Log
     [LoggerMessage(EventId = 2107, Level = LogLevel.Debug,
         Message = "Sent {Count} character(s) to {Address}")]
     public static partial void CharacterListSent(ILogger logger, int count, string address);
+
+    // ------------------------------------------------------------------ characters
+
+    [LoggerMessage(EventId = 2300, Level = LogLevel.Information,
+        Message = "Created character '{Name}' (guid {CharacterId}) for '{Account}' from {Address}")]
+    public static partial void CharacterCreated(
+        ILogger logger, string name, uint characterId, string account, string address);
+
+    [LoggerMessage(EventId = 2301, Level = LogLevel.Information,
+        Message = "Deleted character {CharacterId} for '{Account}' from {Address}")]
+    public static partial void CharacterDeleted(ILogger logger, uint characterId, string account, string address);
+
+    [LoggerMessage(EventId = 2302, Level = LogLevel.Warning,
+        Message = "Rejected character creation: race {Race}, class {Class}, gender {Gender} is not a valid combination ({Address})")]
+    public static partial void InvalidCharacterCreate(
+        ILogger logger, byte race, byte @class, byte gender, string address);
+
+    [LoggerMessage(EventId = 2303, Level = LogLevel.Information,
+        Message = "Loaded {Count} race/class start positions from the world database")]
+    public static partial void CreateInfoLoaded(ILogger logger, int count);
 
     // ------------------------------------------------------------------ addons
 

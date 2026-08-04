@@ -31,6 +31,15 @@ public sealed class WorldServerOptions
     /// </summary>
     public uint ClientCacheVersion { get; set; }
 
+    /// <summary>Connection string for this realm's <c>characters</c> database.</summary>
+    public string CharactersConnectionString { get; set; } = string.Empty;
+
+    /// <summary>Connection string for the read-only <c>world</c> content database.</summary>
+    public string WorldConnectionString { get; set; } = string.Empty;
+
+    /// <summary>Apply pending <c>characters</c> migrations at startup. The world server owns that schema.</summary>
+    public bool ApplyMigrationsOnStartup { get; set; } = true;
+
     /// <summary>Expansion level offered to clients: 0 vanilla, 1 TBC, 2 WotLK.</summary>
     [Range(0, 2)]
     public byte Expansion { get; set; } = 2;

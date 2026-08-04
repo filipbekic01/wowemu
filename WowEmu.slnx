@@ -2,6 +2,7 @@
   <Folder Name="/src/">
     <Project Path="src/WowEmu.AuthServer/WowEmu.AuthServer.csproj" />
     <Project Path="src/WowEmu.Core/WowEmu.Core.csproj" />
+    <Project Path="src/WowEmu.Data.Client/WowEmu.Data.Client.csproj" />
     <Project Path="src/WowEmu.Data.Db/WowEmu.Data.Db.csproj" />
     <Project Path="src/WowEmu.Network/WowEmu.Network.csproj" />
     <Project Path="src/WowEmu.WorldServer/WowEmu.WorldServer.csproj" />

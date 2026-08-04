@@ -19,6 +19,8 @@ namespace WowEmu.WorldServer;
 public sealed class WorldServerHost(
     IOptions<WorldServerOptions> options,
     IAccountRepository accounts,
+    ICharacterRepository characters,
+    PlayerCreateInfoStore createInfo,
     ILogger<WorldServerHost> logger,
     ILoggerFactory loggerFactory) : BackgroundService
 {
@@ -33,6 +35,7 @@ public sealed class WorldServerHost(
         listener.Listen(128);
 
         Log.Listening(logger, address, _options.Port, _options.RealmId);
+        Log.CreateInfoLoaded(logger, createInfo.Count);
 
         ILogger sessionLogger = loggerFactory.CreateLogger<WorldSession>();
 
@@ -59,7 +62,7 @@ public sealed class WorldServerHost(
             client.NoDelay = true;
             Log.ClientConnected(logger, client.RemoteEndPoint);
 
-            WorldSession session = new(connection, accounts, _options, sessionLogger);
+            WorldSession session = new(connection, accounts, characters, createInfo, _options, sessionLogger);
             await session.RunAsync(cancellationToken).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SocketException or IOException or ObjectDisposedException or InvalidDataException)
