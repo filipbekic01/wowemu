@@ -1,0 +1,32 @@
+# Development database for WowEmu.
+#
+#   docker compose up -d      start MySQL
+#   docker compose down       stop it (data survives in the named volume)
+#   docker compose down -v    stop it and throw the data away
+#
+# Bound to 127.0.0.1 on purpose: only the server processes on this machine talk to it. A WoW client
+# in a VM connects to the auth server on 3724, never to MySQL.
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: wowemu-mysql
+    restart: unless-stopped
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_bin
+    environment:
+      MYSQL_ROOT_PASSWORD: wowemu
+      MYSQL_DATABASE: wowemu_auth
+      MYSQL_USER: wowemu
+      MYSQL_PASSWORD: wowemu
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - wowemu-mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-pwowemu"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+volumes:
+  wowemu-mysql:
