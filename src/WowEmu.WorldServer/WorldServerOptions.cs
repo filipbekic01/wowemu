@@ -40,6 +40,12 @@ public sealed class WorldServerOptions
     /// <summary>Apply pending <c>characters</c> migrations at startup. The world server owns that schema.</summary>
     public bool ApplyMigrationsOnStartup { get; set; } = true;
 
+    /// <summary>Where the extracted client data lives. Relative paths resolve from the binary.</summary>
+    public string DataDirectory { get; set; } = "data";
+
+    /// <summary>Message of the day. Newlines become separate lines in the client.</summary>
+    public string Motd { get; set; } = "Welcome to WowEmu.";
+
     /// <summary>Expansion level offered to clients: 0 vanilla, 1 TBC, 2 WotLK.</summary>
     [Range(0, 2)]
     public byte Expansion { get; set; } = 2;

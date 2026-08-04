@@ -40,11 +40,10 @@ internal static class WorldStartup
             }
         }
 
-        PlayerCreateInfoStore createInfo = services.GetRequiredService<PlayerCreateInfoStore>();
+        string worldConnection = PlayerCreateInfoStore.ResolveConnectionString(options.WorldConnectionString);
 
-        await createInfo
-            .LoadAsync(PlayerCreateInfoStore.ResolveConnectionString(options.WorldConnectionString), cancellationToken)
-            .ConfigureAwait(false);
+        PlayerCreateInfoStore createInfo = services.GetRequiredService<PlayerCreateInfoStore>();
+        await createInfo.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
         if (createInfo.Count == 0)
         {
@@ -53,5 +52,24 @@ internal static class WorldStartup
                 "docker exec -i wowemu-mysql mysql -uroot -pwowemu wowemu_world " +
                 "< database-wotlk/sql/base/playercreateinfo.sql");
         }
+
+        PlayerStatsStore stats = services.GetRequiredService<PlayerStatsStore>();
+        await stats.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        if (stats.LevelStatCount == 0 || stats.ClassStatCount == 0)
+        {
+            throw new InvalidOperationException(
+                "player_levelstats or player_classlevelstats is empty — characters would enter the world " +
+                "with no health. Import both from database-wotlk/sql/base/.");
+        }
+
+        WorldContent content = services.GetRequiredService<WorldContent>();
+
+        Log.ContentLoaded(
+            logger,
+            content.Stores.Races.Count,
+            content.Stores.Classes.Count,
+            content.Stores.Maps.Count,
+            stats.LevelStatCount);
     }
 }

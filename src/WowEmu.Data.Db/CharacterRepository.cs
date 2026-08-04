@@ -45,6 +45,19 @@ public interface ICharacterRepository
     Task<uint?> CreateAsync(CharacterEntity character, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Saves where a character is, so logging back in resumes there.
+    /// </summary>
+    Task SavePositionAsync(
+        uint characterId,
+        uint mapId,
+        uint zoneId,
+        float x,
+        float y,
+        float z,
+        float orientation,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Deletes a character, but only if it belongs to <paramref name="accountId"/>. Returns false
     /// if it does not exist or belongs to someone else — the client sends a guid it chose, so
     /// ownership is checked here rather than trusted.
@@ -131,6 +144,43 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
         }
 
         return character.Id;
+    }
+
+    public async Task SavePositionAsync(
+        uint characterId,
+        uint mapId,
+        uint zoneId,
+        float x,
+        float y,
+        float z,
+        float orientation,
+        CancellationToken cancellationToken = default)
+    {
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        CharacterEntity? character = await context.Characters
+            .SingleOrDefaultAsync(entity => entity.Id == characterId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (character is null)
+        {
+            return;
+        }
+
+        character.Map = mapId;
+        character.Zone = zoneId;
+        character.PositionX = x;
+        character.PositionY = y;
+        character.PositionZ = z;
+        character.Orientation = orientation;
+        character.LastLoginAt = DateTime.UtcNow;
+
+        // The character has now been in the world, so it is no longer a first login — the client
+        // shows its zone in the character list from here on.
+        character.AtLoginFlags = 0;
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<bool> DeleteAsync(uint accountId, uint characterId, CancellationToken cancellationToken = default)

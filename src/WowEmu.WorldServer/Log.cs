@@ -92,6 +92,27 @@ internal static partial class Log
         Message = "Loaded {Count} race/class start positions from the world database")]
     public static partial void CreateInfoLoaded(ILogger logger, int count);
 
+    [LoggerMessage(EventId = 2304, Level = LogLevel.Information,
+        Message = "'{Name}' entered the world on map {MapId} at ({X:F1}, {Y:F1}) from {Address}")]
+    public static partial void PlayerEnteredWorld(
+        ILogger logger, string name, uint mapId, float x, float y, string address);
+
+    [LoggerMessage(EventId = 2305, Level = LogLevel.Warning,
+        Message = "Refused login for character {CharacterId}: {Reason} ({Address})")]
+    public static partial void LoginRejected(ILogger logger, uint characterId, string reason, string address);
+
+    [LoggerMessage(EventId = 2306, Level = LogLevel.Information,
+        Message = "Loaded {Races} races, {Classes} classes, {Maps} maps, {LevelStats} level stat rows")]
+    public static partial void ContentLoaded(ILogger logger, int races, int classes, int maps, int levelStats);
+
+    [LoggerMessage(EventId = 2307, Level = LogLevel.Information,
+        Message = "'{Name}' left the world ({Address})")]
+    public static partial void PlayerLeftWorld(ILogger logger, string name, string address);
+
+    [LoggerMessage(EventId = 2308, Level = LogLevel.Debug,
+        Message = "Saved '{Name}' at ({X:F1}, {Y:F1})")]
+    public static partial void PlayerSaved(ILogger logger, string name, float x, float y);
+
     // ------------------------------------------------------------------ addons
 
     [LoggerMessage(EventId = 2200, Level = LogLevel.Warning,

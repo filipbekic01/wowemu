@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.WorldServer;
 
@@ -28,6 +29,18 @@ builder.Services.AddCharacterDatabase(
     CharacterDatabase.ResolveConnectionString(startupOptions.CharactersConnectionString));
 
 builder.Services.AddSingleton<PlayerCreateInfoStore>();
+builder.Services.AddSingleton<PlayerStatsStore>();
+
+// The DBC stores are read from disk once and never change, so they are built during registration
+// rather than in the startup pass — a missing data directory should fail before anything else runs.
+builder.Services.AddSingleton(_ => DbcStores.Load(
+    Path.Combine(
+        Path.IsPathRooted(startupOptions.DataDirectory)
+            ? startupOptions.DataDirectory
+            : Path.Combine(AppContext.BaseDirectory, startupOptions.DataDirectory),
+        "dbc")));
+
+builder.Services.AddSingleton<WorldContent>();
 
 builder.Services.AddHostedService<WorldServerHost>();
 

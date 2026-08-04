@@ -21,6 +21,7 @@ public sealed class WorldServerHost(
     IAccountRepository accounts,
     ICharacterRepository characters,
     PlayerCreateInfoStore createInfo,
+    WorldContent world,
     ILogger<WorldServerHost> logger,
     ILoggerFactory loggerFactory) : BackgroundService
 {
@@ -62,8 +63,19 @@ public sealed class WorldServerHost(
             client.NoDelay = true;
             Log.ClientConnected(logger, client.RemoteEndPoint);
 
-            WorldSession session = new(connection, accounts, characters, createInfo, _options, sessionLogger);
-            await session.RunAsync(cancellationToken).ConfigureAwait(false);
+            WorldSession session = new(connection, accounts, characters, createInfo, world, _options, sessionLogger);
+
+            try
+            {
+                await session.RunAsync(cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                // A client that vanishes — alt-F4, a dropped connection — never sends a logout, so
+                // the save has to happen here too. CancellationToken.None on purpose: shutdown is
+                // exactly when losing a player's position would be worst.
+                await session.SavePlayerAsync(CancellationToken.None).ConfigureAwait(false);
+            }
         }
         catch (Exception ex) when (ex is SocketException or IOException or ObjectDisposedException or InvalidDataException)
         {

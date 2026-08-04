@@ -1,0 +1,156 @@
+using WowEmu.Core;
+using WowEmu.Data.Client;
+using WowEmu.Data.Db;
+using WowEmu.Protocol;
+
+namespace WowEmu.Game;
+
+/// <summary>
+/// A player character in the world.
+/// </summary>
+/// <remarks>
+/// Port of the parts of <c>Player</c> that M3 needs: enough update fields for the client to render
+/// a character standing in the world with the right model, name, level and stats.
+/// <para>
+/// Everything the client sees lives in <see cref="GameObjectBase.Fields"/>. The properties here are
+/// conveniences over those indices, not a second copy — writing <see cref="Level"/> writes the
+/// field, because a value that lives anywhere else would not reach the client.
+/// </para>
+/// </remarks>
+public sealed class Player : WorldObject
+{
+    /// <summary>Power types, from <c>ChrClasses.dbc</c>.</summary>
+    public const byte PowerMana = 0;
+    public const byte PowerRage = 1;
+    public const byte PowerEnergy = 3;
+    public const byte PowerRunicPower = 6;
+
+    private Player(ObjectGuid guid)
+        : base(guid, TypeId.Player, UpdateFields.PLAYER_END, TypeMask.PlayerObject)
+    {
+    }
+
+    public string Name { get; private set; } = string.Empty;
+
+    public byte Race => Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_0, 0);
+
+    public byte Class => Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_0, 1);
+
+    public byte Gender => Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_0, 2);
+
+    public byte Level
+    {
+        get => (byte)Fields.GetUInt32(UpdateFields.UNIT_FIELD_LEVEL);
+        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_LEVEL, value);
+    }
+
+    public uint Health
+    {
+        get => Fields.GetUInt32(UpdateFields.UNIT_FIELD_HEALTH);
+        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_HEALTH, value);
+    }
+
+    public uint MaxHealth
+    {
+        get => Fields.GetUInt32(UpdateFields.UNIT_FIELD_MAXHEALTH);
+        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_MAXHEALTH, value);
+    }
+
+    /// <summary>
+    /// Builds a player from everything that describes it: the saved row, the race's client data,
+    /// and the level's base stats.
+    /// </summary>
+    /// <remarks>
+    /// The display id comes from <paramref name="race"/> and is the single field that decides
+    /// whether the character renders at all — a zero there produces an invisible character with no
+    /// error anywhere.
+    /// </remarks>
+    public static Player Create(
+        CharacterSummary character,
+        ChrRacesEntry race,
+        ChrClassesEntry characterClass,
+        PlayerBaseStats stats)
+    {
+        ArgumentNullException.ThrowIfNull(character);
+        ArgumentNullException.ThrowIfNull(race);
+        ArgumentNullException.ThrowIfNull(characterClass);
+
+        Player player = new(ObjectGuid.Create(HighGuid.Player, character.Id))
+        {
+            Name = character.Name,
+            MapId = character.Map,
+            ZoneId = character.Zone,
+            Position = new Position(character.PositionX, character.PositionY, character.PositionZ, 0f),
+        };
+
+        UpdateFieldStorage fields = player.Fields;
+
+        // UNIT_FIELD_BYTES_0 packs four values into one slot: race, class, gender, power type.
+        fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_0, 0, character.Race);
+        fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_0, 1, character.Class);
+        fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_0, 2, character.Gender);
+        fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_0, 3, (byte)characterClass.PowerType);
+
+        // Appearance, echoed straight back to the client that chose it.
+        fields.SetByte(UpdateFields.PLAYER_BYTES, 0, character.Skin);
+        fields.SetByte(UpdateFields.PLAYER_BYTES, 1, character.Face);
+        fields.SetByte(UpdateFields.PLAYER_BYTES, 2, character.HairStyle);
+        fields.SetByte(UpdateFields.PLAYER_BYTES, 3, character.HairColor);
+        fields.SetByte(UpdateFields.PLAYER_BYTES_2, 0, character.FacialStyle);
+
+        // Rest state 0x01 in the top byte — "normal", not resting.
+        fields.SetByte(UpdateFields.PLAYER_BYTES_2, 3, 0x01);
+
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_LEVEL, character.Level);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_FACTIONTEMPLATE, race.FactionId);
+
+        uint displayId = character.Gender == 0 ? race.MaleDisplayId : race.FemaleDisplayId;
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_DISPLAYID, displayId);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_NATIVEDISPLAYID, displayId);
+
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_HEALTH, stats.MaxHealth);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_MAXHEALTH, stats.MaxHealth);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_BASE_HEALTH, stats.MaxHealth);
+
+        // Power slot 0 is mana whatever the class's actual resource is; the client reads the one
+        // named by the power type in UNIT_FIELD_BYTES_0.
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_POWER1, stats.MaxMana);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_MAXPOWER1, stats.MaxMana);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_BASE_MANA, stats.MaxMana);
+
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_STAT0, stats.Strength);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_STAT1, stats.Agility);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_STAT2, stats.Stamina);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_STAT3, stats.Intellect);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_STAT4, stats.Spirit);
+
+        // Without a bounding radius and combat reach the client cannot work out where the character
+        // physically is, and collision and targeting misbehave.
+        fields.SetFloat(UpdateFields.UNIT_FIELD_BOUNDINGRADIUS, 0.389f);
+        fields.SetFloat(UpdateFields.UNIT_FIELD_COMBATREACH, 1.5f);
+
+        fields.SetFloat(UpdateFields.OBJECT_FIELD_SCALE_X, 1.0f);
+
+        // Watched faction -1 means "none"; the client renders a reputation bar without it.
+        fields.SetInt32(UpdateFields.PLAYER_FIELD_WATCHED_FACTION_INDEX, -1);
+
+        player.SyncMovement();
+        return player;
+    }
+}
+
+/// <summary>
+/// A character's base stats at its level, assembled from the two world tables that hold them.
+/// </summary>
+/// <remarks>
+/// <c>player_levelstats</c> is per race, class and level; <c>player_classlevelstats</c> is per class
+/// and level. Neither alone is enough, which is why they are combined before they reach the player.
+/// </remarks>
+public readonly record struct PlayerBaseStats(
+    uint MaxHealth,
+    uint MaxMana,
+    uint Strength,
+    uint Agility,
+    uint Stamina,
+    uint Intellect,
+    uint Spirit);

@@ -4,6 +4,7 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using WowEmu.Core;
 using WowEmu.Data.Db;
+using WowEmu.Game;
 using WowEmu.Network;
 using WowEmu.Protocol;
 
@@ -26,6 +27,7 @@ public sealed class WorldSession(
     IAccountRepository accounts,
     ICharacterRepository characters,
     PlayerCreateInfoStore createInfo,
+    WorldContent world,
     WorldServerOptions options,
     ILogger logger)
 {
@@ -57,6 +59,7 @@ public sealed class WorldSession(
     private readonly byte[] _authSeed = RandomNumberGenerator.GetBytes(4);
 
     private AuthAccount? _account;
+    private Player? _player;
     private bool _authenticated;
 
     /// <summary>
@@ -133,11 +136,31 @@ public sealed class WorldSession(
                 await HandleCharacterDeleteAsync(payload, cancellationToken).ConfigureAwait(false);
                 return true;
 
+            case Opcode.CMSG_PLAYER_LOGIN:
+                await HandlePlayerLoginAsync(payload, cancellationToken).ConfigureAwait(false);
+                return true;
+
             case Opcode.CMSG_REALM_SPLIT:
                 await HandleRealmSplitAsync(payload, cancellationToken).ConfigureAwait(false);
                 return true;
 
+            case Opcode.CMSG_LOGOUT_REQUEST:
+                await HandleLogoutRequestAsync(cancellationToken).ConfigureAwait(false);
+                return true;
+
+            case Opcode.CMSG_LOGOUT_CANCEL:
+                await HandleLogoutCancelAsync(cancellationToken).ConfigureAwait(false);
+                return true;
+
             default:
+                // Every movement opcode routes to one handler, exactly as upstream does — the
+                // opcode says what the client thinks it is doing, but the payload is identical.
+                if (info.Value.UpstreamHandler == "HandleMovementOpcodes")
+                {
+                    HandleMovement(payload);
+                    return true;
+                }
+
                 Log.UnhandledOpcode(logger, opcode, connection.RemoteAddress);
                 return true;
         }
@@ -499,6 +522,161 @@ public sealed class WorldSession(
         packet.Body.WriteUInt8(result);
 
         await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Records where the client says it is.
+    /// </summary>
+    /// <remarks>
+    /// All 27 movement opcodes carry a packed guid and the same <see cref="MovementInfo"/> block.
+    /// <para>
+    /// The position is taken on trust for now: with one player and no map, there is nothing to
+    /// cheat against. Phase 7 adds the plausibility checks — speed, distance per tick, terrain —
+    /// and Phase 6 adds the broadcast to everyone nearby. What this does buy today is that logging
+    /// out saves where you actually walked to.
+    /// </para>
+    /// </remarks>
+    private void HandleMovement(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadPackedGuid(out ObjectGuid mover) || mover != _player.Guid)
+        {
+            // A client may only move its own character.
+            return;
+        }
+
+        if (!_player.Movement.TryReadFrom(ref reader))
+        {
+            return;
+        }
+
+        _player.Position = _player.Movement.Position;
+    }
+
+    /// <summary>
+    /// Accepts a logout and saves the character.
+    /// </summary>
+    /// <remarks>
+    /// Upstream makes the player sit for twenty seconds unless they are resting or a GM. That
+    /// timer needs a tick loop to expire on, so logout is instant here — the save is the part that
+    /// matters, and delaying it would only risk losing it.
+    /// </remarks>
+    private async Task HandleLogoutRequestAsync(CancellationToken cancellationToken)
+    {
+        ServerPacket response = new(Opcode.SMSG_LOGOUT_RESPONSE, 5);
+        response.Body.WriteUInt32(0);   // 0 = allowed
+        response.Body.WriteUInt8(1);    // instant
+        await connection.SendAsync(response, cancellationToken).ConfigureAwait(false);
+
+        await SavePlayerAsync(cancellationToken).ConfigureAwait(false);
+
+        ServerPacket complete = new(Opcode.SMSG_LOGOUT_COMPLETE, 0);
+        await connection.SendAsync(complete, cancellationToken).ConfigureAwait(false);
+
+        if (_player is not null)
+        {
+            Log.PlayerLeftWorld(logger, _player.Name, connection.RemoteAddress);
+        }
+
+        _player = null;
+
+        // Back to character selection: the opcode table stops admitting gameplay opcodes again.
+        Status = SessionStatus.Authed;
+    }
+
+    private async Task HandleLogoutCancelAsync(CancellationToken cancellationToken)
+    {
+        ServerPacket packet = new(Opcode.SMSG_LOGOUT_CANCEL_ACK, 0);
+        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes the player's position back to the database.
+    /// </summary>
+    /// <remarks>
+    /// Called on logout and on disconnect. A client that vanishes mid-session — alt-F4, a dropped
+    /// connection — must not lose its progress, and there is no tick loop yet to save periodically.
+    /// </remarks>
+    public async Task SavePlayerAsync(CancellationToken cancellationToken)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        await characters.SavePositionAsync(
+            _player.Guid.Counter,
+            _player.MapId,
+            _player.ZoneId,
+            _player.Position.X,
+            _player.Position.Y,
+            _player.Position.Z,
+            _player.Position.Orientation,
+            cancellationToken).ConfigureAwait(false);
+
+        Log.PlayerSaved(logger, _player.Name, _player.Position.X, _player.Position.Y);
+    }
+
+    /// <summary>
+    /// Puts a character into the world.
+    /// </summary>
+    /// <remarks>
+    /// The session leaves <see cref="SessionStatus.Authed"/> here, which is what starts admitting
+    /// the gameplay opcodes the table gates on <see cref="SessionStatus.LoggedIn"/>.
+    /// </remarks>
+    private async Task HandlePlayerLoginAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
+    {
+        if (_account is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid))
+        {
+            return;
+        }
+
+        ObjectGuid guid = new(rawGuid);
+
+        IReadOnlyList<CharacterSummary> roster =
+            await characters.ListForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(false);
+
+        CharacterSummary? character = roster.FirstOrDefault(entry => entry.Id == guid.Counter);
+
+        // Ownership is checked by looking only at this account's characters, so a forged guid finds
+        // nothing rather than someone else's character.
+        if (character is null)
+        {
+            Log.LoginRejected(logger, guid.Counter, "not owned by this account", connection.RemoteAddress);
+            return;
+        }
+
+        if (!world.TryBuildPlayer(character, out Player? player, out string? reason))
+        {
+            Log.LoginRejected(logger, character.Id, reason, connection.RemoteAddress);
+            return;
+        }
+
+        _player = player;
+        Status = SessionStatus.LoggedIn;
+
+        await PlayerLogin
+            .SendLoginSequenceAsync(connection, player, options.Motd, SendAccountDataTimesAsync, cancellationToken)
+            .ConfigureAwait(false);
+
+        await PlayerLogin.SendSelfCreateAsync(connection, player, cancellationToken).ConfigureAwait(false);
+        await PlayerLogin.SendTimeSyncRequestAsync(connection, 0, cancellationToken).ConfigureAwait(false);
+
+        Log.PlayerEnteredWorld(
+            logger, player.Name, player.MapId, player.Position.X, player.Position.Y, connection.RemoteAddress);
     }
 
     private async Task HandleRealmSplitAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)

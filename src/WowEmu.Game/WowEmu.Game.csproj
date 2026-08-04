@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>WowEmu.Game</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\WowEmu.Core\WowEmu.Core.csproj" />
+    <ProjectReference Include="..\WowEmu.Protocol\WowEmu.Protocol.csproj" />
+    <ProjectReference Include="..\WowEmu.Data.Client\WowEmu.Data.Client.csproj" />
+    <ProjectReference Include="..\WowEmu.Data.Db\WowEmu.Data.Db.csproj" />
+  </ItemGroup>
+
+</Project>

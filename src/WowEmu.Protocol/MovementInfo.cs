@@ -84,6 +84,89 @@ public sealed class MovementInfo
     public float SplineElevation { get; set; }
 
     /// <summary>
+    /// Reads a movement block sent by the client.
+    /// </summary>
+    /// <remarks>
+    /// The mirror of <see cref="WriteTo"/>, and it has to stay one: the client sends this same
+    /// layout in all 27 movement opcodes. A field read in the wrong order does not fail — it
+    /// silently reinterprets the rest of the packet, so a position ends up as a fall time.
+    /// <para>
+    /// Everything here is attacker-controlled. Nothing is trusted beyond being well-formed; the
+    /// plausibility checks (speed, teleport distance) belong in the handler, not the parser.
+    /// </para>
+    /// </remarks>
+    public bool TryReadFrom(ref PacketReader reader)
+    {
+        if (!reader.TryReadUInt32(out uint flags) ||
+            !reader.TryReadUInt16(out ushort extraFlags) ||
+            !reader.TryReadUInt32(out uint time) ||
+            !reader.TryReadSingle(out float x) ||
+            !reader.TryReadSingle(out float y) ||
+            !reader.TryReadSingle(out float z) ||
+            !reader.TryReadSingle(out float orientation))
+        {
+            return false;
+        }
+
+        Flags = (MovementFlag)flags;
+        ExtraFlags = extraFlags;
+        Time = time;
+        Position = new Position(x, y, z, orientation);
+
+        if (Flags.HasFlag(MovementFlag.OnTransport))
+        {
+            // Transports are not implemented, and guessing at the block's length would
+            // desynchronise everything after it.
+            return false;
+        }
+
+        if (Flags.HasFlag(MovementFlag.Swimming) || Flags.HasFlag(MovementFlag.Flying))
+        {
+            if (!reader.TryReadSingle(out float pitch))
+            {
+                return false;
+            }
+
+            Pitch = pitch;
+        }
+
+        if (!reader.TryReadUInt32(out uint fallTime))
+        {
+            return false;
+        }
+
+        FallTime = fallTime;
+
+        if (Flags.HasFlag(MovementFlag.Falling))
+        {
+            if (!reader.TryReadSingle(out float zSpeed) ||
+                !reader.TryReadSingle(out float sinAngle) ||
+                !reader.TryReadSingle(out float cosAngle) ||
+                !reader.TryReadSingle(out float xySpeed))
+            {
+                return false;
+            }
+
+            JumpVerticalSpeed = zSpeed;
+            JumpSinAngle = sinAngle;
+            JumpCosAngle = cosAngle;
+            JumpHorizontalSpeed = xySpeed;
+        }
+
+        if (Flags.HasFlag(MovementFlag.SplineElevation))
+        {
+            if (!reader.TryReadSingle(out float elevation))
+            {
+                return false;
+            }
+
+            SplineElevation = elevation;
+        }
+
+        return reader.Ok;
+    }
+
+    /// <summary>
     /// Writes the movement block.
     /// </summary>
     /// <remarks>

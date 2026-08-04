@@ -2,15 +2,15 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** Phase 5 — the object hierarchy and `CMSG_PLAYER_LOGIN`. Update fields, the mask, the
-movement block and `SMSG_UPDATE_OBJECT` are all done and tested; what remains for M3 is building a
-`Player` from the database row and sending the login burst.
+**Now:** M3 is done and confirmed in-game. Movement is tracked and position persists across
+logout. Next: a real `Map` object and terrain, so the server knows where the ground is — everything
+after that (visibility, other players, creatures) needs it.
 
 | Milestone | Meaning | State |
 |---|---|---|
 | M1 | Client logs in and sees the realm list | ✅ done, verified with a retail client |
 | M2 | Client reaches character selection | ✅ done — create, list and delete all work |
-| M3 | Character enters the world and renders | ⬜ Phase 4 + 5 |
+| M3 | Character enters the world and renders | ✅ done — confirmed with a retail client |
 | M4 | Movement | ⬜ Phase 7 |
 
 ---
@@ -80,6 +80,7 @@ movement block and `SMSG_UPDATE_OBJECT` are all done and tested; what remains fo
 - [x] `ChrClasses` — power type, name
 - [x] `Map` — type, flags, directory, expansion
 - [x] Tests against real extracted files, skipped when data is absent
+- [x] `player_levelstats` / `player_classlevelstats` loaded into `PlayerStatsStore`
 - [ ] `CharStartOutfit` — starting gear per race/class
 - [ ] `AreaTable` — zone lookup for the character list and login
 - [ ] `SpellItemEnchantment` — needed for equipment in the character list
@@ -123,27 +124,35 @@ movement block and `SMSG_UPDATE_OBJECT` are all done and tested; what remains fo
 
 **Object hierarchy**
 
-- [ ] `Object` → `WorldObject` → `Unit` → `Player`
+- [x] `GameObjectBase` → `WorldObject` → `Player`, with the cumulative type mask
+- [x] `Player.Create` from the characters row + `ChrRaces` + `ChrClasses` + base stats
+- [ ] `Unit` as its own layer (Player currently sits directly on `WorldObject`)
 - [ ] `Creature`, `GameObject`
 - [ ] `Item` / `Bag` — an `Object` but **not** a `WorldObject`
 
 **Login**
 
-- [ ] `CMSG_PLAYER_LOGIN` → build the player from the `characters` row + DBC + level stats
-- [ ] `SMSG_LOGIN_VERIFY_WORLD`
-- [ ] `SMSG_FEATURE_SYSTEM_STATUS`, `SMSG_MOTD`, `SMSG_LEARNED_DANCE_MOVES`
-- [ ] Initial packets before add-to-map
-- [ ] Add to map
-- [ ] Initial packets after add-to-map — the player's own update block
-- [ ] `SMSG_TIME_SYNC_REQ`
-- [ ] Minimal map to stand on (full grids are Phase 6)
+- [x] `CMSG_PLAYER_LOGIN` → build the player from the `characters` row + DBC + level stats
+- [x] `SMSG_LOGIN_VERIFY_WORLD`
+- [x] `SMSG_FEATURE_SYSTEM_STATUS`, `SMSG_MOTD`, `SMSG_LEARNED_DANCE_MOVES`
+- [x] Before add-to-map: `SMSG_BINDPOINTUPDATE`, `SMSG_INSTANCE_DIFFICULTY`, `SMSG_LOGIN_SETTIMESPEED`
+- [x] The player's own create block, compressed
+- [x] `SMSG_TIME_SYNC_REQ`
+- [x] Session moves to `SessionStatus.LoggedIn`, admitting gameplay opcodes
+- [x] M3 gate in `tools/harness/m2_world.py`
+- [x] Confirmed with a retail client — logs in and roams
+- [ ] A real `Map` object (the player currently has a map id but nothing owns it)
 
 **Persistence**
 
-- [ ] Player save — position, level, stats
+- [x] Player save — position, zone, map, orientation
+- [x] Saved on clean logout *and* on disconnect (alt-F4 must not lose progress)
+- [x] `CMSG_LOGOUT_REQUEST` / `CMSG_LOGOUT_CANCEL`, session returns to `Authed`
+- [x] Log out and back in preserves position — covered by the M3 gate
+- [x] M3 gate in `tools/harness/m2_world.py`
+- [ ] Periodic save (needs a tick loop)
 - [ ] `character_homebind`, `character_spell`, `character_action`
-- [ ] Log out and back in preserves everything
-- [ ] M3 gate script
+- [ ] Level, stats and health saved (only position is written today)
 
 ## Phase 6 — Maps, grids, visibility ⬜
 
@@ -155,12 +164,14 @@ movement block and `SMSG_UPDATE_OBJECT` are all done and tested; what remains fo
 - [ ] `MapUpdater` worker pool, `MapMgr` 4-phase round-robin
 - [ ] Move sessions onto the `TickScheduler` (it already exists, unused)
 
-## Phase 7 — Movement ⬜ → **M4**
+## Phase 7 — Movement 🔵 → **M4**
 
-- [ ] 27 movement opcodes → one handler, all `STATUS_LOGGEDIN` + `PROCESS_THREADSAFE`
-- [ ] `MovementInfo` read/write
-- [ ] Broadcast to nearby players
-- [ ] Speed and anti-cheat plausibility checks
+- [x] 27 movement opcodes → one handler, routed by the generated opcode table
+- [x] `MovementInfo` read/write, round-trip tested
+- [x] Server tracks the player's position (accepted on trust)
+- [ ] Broadcast to nearby players (needs Phase 6 visibility)
+- [ ] Speed and anti-cheat plausibility checks — position is currently believed unconditionally
+- [ ] Transport movement (both directions refuse rather than guess)
 
 ## Phase 8+ ⬜
 

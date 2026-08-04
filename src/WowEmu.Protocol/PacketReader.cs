@@ -67,6 +67,19 @@ public ref struct PacketReader(ReadOnlySpan<byte> buffer)
         return true;
     }
 
+    public bool TryReadSingle(out float value)
+    {
+        if (Remaining < sizeof(float))
+        {
+            value = 0f;
+            return Fail();
+        }
+
+        value = BinaryPrimitives.ReadSingleLittleEndian(_buffer[_position..]);
+        _position += sizeof(float);
+        return true;
+    }
+
     public bool TryReadUInt64(out ulong value)
     {
         if (Remaining < sizeof(ulong))

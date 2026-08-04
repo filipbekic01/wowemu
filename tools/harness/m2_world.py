@@ -17,6 +17,7 @@ import os
 import socket
 import struct
 import sys
+import zlib
 
 AUTH_PORT = 3724
 BUILD = 12340
@@ -37,6 +38,22 @@ CMSG_CHAR_DELETE = 0x038
 SMSG_CHAR_CREATE = 0x03A
 SMSG_CHAR_DELETE = 0x03C
 SMSG_CHAR_ENUM = 0x03B
+CMSG_PLAYER_LOGIN = 0x03D
+SMSG_LOGIN_VERIFY_WORLD = 0x236
+SMSG_ACCOUNT_DATA_TIMES = 0x209
+SMSG_FEATURE_SYSTEM_STATUS = 0x3C9
+SMSG_MOTD = 0x33D
+SMSG_LEARNED_DANCE_MOVES = 0x455
+SMSG_BINDPOINTUPDATE = 0x155
+SMSG_INSTANCE_DIFFICULTY = 0x33B
+SMSG_LOGIN_SETTIMESPEED = 0x042
+SMSG_UPDATE_OBJECT = 0x0A9
+SMSG_COMPRESSED_UPDATE_OBJECT = 0x1F6
+SMSG_TIME_SYNC_REQ = 0x390
+CMSG_LOGOUT_REQUEST = 0x04B
+SMSG_LOGOUT_RESPONSE = 0x04C
+SMSG_LOGOUT_COMPLETE = 0x04D
+MSG_MOVE_HEARTBEAT = 0x0EE
 CMSG_PING = 0x1DC
 SMSG_PONG = 0x1DD
 SMSG_ADDON_INFO = 0x2EF
@@ -288,6 +305,8 @@ def world_session(host, port, user, session_key):
 
     result = client.expect(SMSG_CHAR_CREATE, "SMSG_CHAR_CREATE")[0]
 
+    created = result == CHAR_CREATE_SUCCESS
+
     if result == CHAR_CREATE_NAME_IN_USE:
         print(f"  '{name}' already exists — reusing it")
     elif result != CHAR_CREATE_SUCCESS:
@@ -298,29 +317,27 @@ def world_session(host, port, user, session_key):
     client.send(CMSG_CHAR_ENUM)
     characters = client.expect(SMSG_CHAR_ENUM, "SMSG_CHAR_ENUM")
 
-    count = characters[0]
-    if count < 1:
+    roster = parse_char_enum(characters)
+    if not roster:
         fail("the created character did not come back in the character list")
 
-    # guid(8) then a NUL-terminated name.
-    guid = struct.unpack("<Q", characters[1:9])[0]
-    end = characters.index(b"\x00", 9)
-    listed = characters[9:end].decode()
+    mine = next((entry for entry in roster if entry["name"].lower() == name.lower()), None)
+    if mine is None:
+        listed = ", ".join(entry["name"] for entry in roster)
+        fail(f"'{name}' is not in the character list (got: {listed})")
 
-    cursor = end + 1
-    race, char_class, gender = characters[cursor], characters[cursor + 1], characters[cursor + 2]
-    cursor += 3 + 5 + 1                                   # appearance, level
-    zone, char_map = struct.unpack("<II", characters[cursor:cursor + 8])
-    cursor += 8
-    x, y, z = struct.unpack("<fff", characters[cursor:cursor + 12])
+    guid, x, y, z = mine["guid"], mine["x"], mine["y"], mine["z"]
 
-    print(f"  list now has {count}: '{listed}' guid 0x{guid:016X} race {race} class {char_class} gender {gender}")
-    print(f"    starts on map {char_map} at ({x:.1f}, {y:.1f}, {z:.1f}) — from playercreateinfo")
+    print(f"  list now has {len(roster)}: {', '.join(entry['name'] for entry in roster)}")
+    print(f"    '{mine['name']}' guid 0x{guid:016X} race {mine['race']} class {mine['class']} "
+          f"level {mine['level']}")
+    print(f"    starts on map {mine['map']} at ({x:.1f}, {y:.1f}, {z:.1f}) — from playercreateinfo")
 
-    if listed.lower() != name.lower():
-        fail(f"expected '{name}' in the list, got '{listed}'")
     if (x, y, z) == (0.0, 0.0, 0.0):
         fail("start position is the origin — playercreateinfo was not applied")
+
+    # ---- enter the world (M3)
+    enter_world(client, guid, mine["name"], x, y, z)
 
     # ---- delete it again so the gate is repeatable
     client.send(CMSG_CHAR_DELETE, struct.pack("<Q", guid))
@@ -330,11 +347,168 @@ def world_session(host, port, user, session_key):
 
     client.send(CMSG_CHAR_ENUM)
     characters = client.expect(SMSG_CHAR_ENUM, "SMSG_CHAR_ENUM")
-    if characters[0] != starting_count:
-        fail(f"after deleting, expected {starting_count} characters, got {characters[0]}")
+    # If the character already existed it was part of the starting count, so deleting it leaves
+    # one fewer than we began with.
+    expected = starting_count if created else starting_count - 1
+
+    if characters[0] != expected:
+        fail(f"after deleting, expected {expected} characters, got {characters[0]}")
     print("  delete ok (list back to where it started)")
 
     client.sock.close()
+
+
+def pack_guid(value):
+    """Packs a guid the way the client does: a mask byte then only the non-zero bytes."""
+    mask = 0
+    parts = b""
+
+    for i in range(8):
+        byte = (value >> (i * 8)) & 0xFF
+        if byte:
+            mask |= 1 << i
+            parts += bytes([byte])
+
+    return bytes([mask]) + parts
+
+
+def parse_char_enum(payload):
+    """Decodes SMSG_CHAR_ENUM into a list of characters.
+
+    Every record is a fixed shape with one variable-length field (the name), so the whole list has
+    to be walked in order -- there are no offsets to jump by.
+    """
+    count = payload[0]
+    cursor = 1
+    roster = []
+
+    for _ in range(count):
+        guid = struct.unpack("<Q", payload[cursor:cursor + 8])[0]
+        cursor += 8
+
+        end = payload.index(b"\x00", cursor)
+        name = payload[cursor:end].decode()
+        cursor = end + 1
+
+        race, char_class, gender = payload[cursor], payload[cursor + 1], payload[cursor + 2]
+        cursor += 3 + 5                                   # race/class/gender, then appearance
+
+        level = payload[cursor]
+        cursor += 1
+
+        zone, char_map = struct.unpack("<II", payload[cursor:cursor + 8])
+        cursor += 8
+
+        x, y, z = struct.unpack("<fff", payload[cursor:cursor + 12])
+        cursor += 12
+
+        cursor += 4 + 4 + 4 + 1                           # guild, char flags, customize flags, first login
+        cursor += 12                                      # pet display, level, family
+        cursor += 23 * (4 + 1 + 4)                        # equipment slots
+
+        roster.append({"guid": guid, "name": name, "race": race, "class": char_class,
+                       "gender": gender, "level": level, "zone": zone, "map": char_map,
+                       "x": x, "y": y, "z": z})
+
+    return roster
+
+
+def enter_world(client, guid, name, expected_x, expected_y, expected_z):
+    """Sends CMSG_PLAYER_LOGIN and walks the burst the client waits on."""
+    client.send(CMSG_PLAYER_LOGIN, struct.pack("<Q", guid))
+
+    payload = client.expect(SMSG_LOGIN_VERIFY_WORLD, "SMSG_LOGIN_VERIFY_WORLD")
+    world_map, wx, wy, wz, wo = struct.unpack("<Iffff", payload)
+    print(f"  login verify ok: map {world_map} at ({wx:.1f}, {wy:.1f}, {wz:.1f})")
+
+    if abs(wx - expected_x) > 0.1 or abs(wy - expected_y) > 0.1 or abs(wz - expected_z) > 0.1:
+        fail("login position does not match the character list position")
+
+    # Order matters -- the client drives its loading screen off this exact sequence.
+    for opcode, label in [
+        (SMSG_ACCOUNT_DATA_TIMES, "SMSG_ACCOUNT_DATA_TIMES"),
+        (SMSG_FEATURE_SYSTEM_STATUS, "SMSG_FEATURE_SYSTEM_STATUS"),
+        (SMSG_MOTD, "SMSG_MOTD"),
+        (SMSG_LEARNED_DANCE_MOVES, "SMSG_LEARNED_DANCE_MOVES"),
+        (SMSG_BINDPOINTUPDATE, "SMSG_BINDPOINTUPDATE"),
+        (SMSG_INSTANCE_DIFFICULTY, "SMSG_INSTANCE_DIFFICULTY"),
+        (SMSG_LOGIN_SETTIMESPEED, "SMSG_LOGIN_SETTIMESPEED"),
+    ]:
+        client.expect(opcode, label)
+
+    print("  login burst ok (7 packets in order)")
+
+    opcode, payload = client.recv()
+
+    if opcode == SMSG_COMPRESSED_UPDATE_OBJECT:
+        uncompressed = struct.unpack("<I", payload[:4])[0]
+        payload = zlib.decompress(payload[4:])
+        if len(payload) != uncompressed:
+            fail(f"compressed update claimed {uncompressed} bytes, inflated to {len(payload)}")
+        print(f"  self create ok (compressed {uncompressed} -> wire, inflated cleanly)")
+    elif opcode == SMSG_UPDATE_OBJECT:
+        print(f"  self create ok (uncompressed, {len(payload)} bytes)")
+    else:
+        fail(f"expected an object update, got opcode 0x{opcode:03X}")
+
+    blocks = struct.unpack("<I", payload[:4])[0]
+    if blocks != 1:
+        fail(f"expected exactly one update block, got {blocks}")
+
+    update_type = payload[4]
+    if update_type != 3:
+        fail(f"a player must be created with CREATE_OBJECT2 (3), got {update_type}")
+
+    # Packed guid: a mask byte then one byte per set bit.
+    mask = payload[5]
+    guid_bytes = bin(mask).count("1")
+    cursor = 6 + guid_bytes
+
+    type_id = payload[cursor]
+    if type_id != 4:
+        fail(f"expected TYPEID_PLAYER (4), got {type_id}")
+    cursor += 1
+
+    update_flags = struct.unpack("<H", payload[cursor:cursor + 2])[0]
+    if not update_flags & 0x0001:
+        fail("the player's own create block must carry UPDATEFLAG_SELF")
+    if not update_flags & 0x0020:
+        fail("a player create block must carry UPDATEFLAG_LIVING")
+
+    print(f"  create block ok: CREATE_OBJECT2, TYPEID_PLAYER, flags 0x{update_flags:04X}")
+
+    client.expect(SMSG_TIME_SYNC_REQ, "SMSG_TIME_SYNC_REQ")
+    print(f"  time sync requested — '{name}' is in the world")
+
+    # ---- walk somewhere, then log out, and prove the position survived
+    moved_x, moved_y, moved_z = expected_x + 25.0, expected_y - 15.0, expected_z
+
+    body = pack_guid(guid)
+    body += struct.pack("<IHI", 0, 0, 1000)              # flags, extra flags, time
+    body += struct.pack("<ffff", moved_x, moved_y, moved_z, 1.5)
+    body += struct.pack("<I", 0)                          # fall time
+    client.send(MSG_MOVE_HEARTBEAT, body)
+
+    client.send(CMSG_LOGOUT_REQUEST)
+    response = client.expect(SMSG_LOGOUT_RESPONSE, "SMSG_LOGOUT_RESPONSE")
+    if response[0] != 0:
+        fail(f"logout refused with reason {response[0]}")
+    client.expect(SMSG_LOGOUT_COMPLETE, "SMSG_LOGOUT_COMPLETE")
+    print(f"  logged out at ({moved_x:.1f}, {moved_y:.1f})")
+
+    # Back at character selection, so the list should show the new position.
+    client.send(CMSG_CHAR_ENUM)
+    roster = parse_char_enum(client.expect(SMSG_CHAR_ENUM, "SMSG_CHAR_ENUM"))
+    saved = next((entry for entry in roster if entry["guid"] == guid), None)
+
+    if saved is None:
+        fail("the character vanished from the list after logout")
+
+    if abs(saved["x"] - moved_x) > 0.5 or abs(saved["y"] - moved_y) > 0.5:
+        fail(f"position was not saved: expected ({moved_x:.1f}, {moved_y:.1f}), "
+             f"list says ({saved['x']:.1f}, {saved['y']:.1f})")
+
+    print(f"  position persisted: list now shows ({saved['x']:.1f}, {saved['y']:.1f})")
 
 
 def main():
