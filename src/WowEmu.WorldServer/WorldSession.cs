@@ -31,6 +31,8 @@ public sealed class WorldSession(
     IAccountRepository accounts,
     ICharacterRepository characters,
     PlayerCreateInfoStore createInfo,
+    IInventoryRepository inventory,
+    ItemGuidGenerator itemGuids,
     WorldContent world,
     MapManager maps,
     WorldServerOptions options,
@@ -311,6 +313,30 @@ public sealed class WorldSession(
                 HandleItemQuerySingle(payload);
                 return;
 
+            case Opcode.CMSG_SWAP_INV_ITEM:
+                HandleSwapInventoryItem(payload);
+                return;
+
+            case Opcode.CMSG_SWAP_ITEM:
+                HandleSwapItem(payload);
+                return;
+
+            case Opcode.CMSG_AUTOEQUIP_ITEM:
+                HandleAutoEquipItem(payload);
+                return;
+
+            case Opcode.CMSG_AUTOSTORE_BAG_ITEM:
+                HandleAutoStoreBagItem(payload);
+                return;
+
+            case Opcode.CMSG_SPLIT_ITEM:
+                HandleSplitItem(payload);
+                return;
+
+            case Opcode.CMSG_DESTROYITEM:
+                HandleDestroyItem(payload);
+                return;
+
             default:
                 // Every movement opcode routes to one handler, exactly as upstream does — the
                 // opcode says what the client thinks it is doing, but the payload is identical.
@@ -552,8 +578,9 @@ public sealed class WorldSession(
     /// Answers <c>CMSG_CHAR_ENUM</c> from the characters database.
     /// </summary>
     /// <remarks>
-    /// Built from real rows in the characters database. Equipment is not included — every slot is
-    /// written as empty, because no phase has items yet.
+    /// Built from real rows in the characters database, equipment included — the selection screen
+    /// draws each character wearing what it owns, and a naked one there looks like data loss even
+    /// when the items are safely in the database.
     /// </remarks>
     private async Task SendCharacterListAsync(CancellationToken cancellationToken)
     {
@@ -561,8 +588,16 @@ public sealed class WorldSession(
             ? []
             : await characters.ListForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(true);
 
+        Dictionary<uint, CharacterList.VisibleItem[]> worn = [];
+
+        foreach (CharacterSummary character in roster)
+        {
+            worn[character.Id] = await VisibleEquipmentAsync(character.Id, cancellationToken)
+                .ConfigureAwait(true);
+        }
+
         ServerPacket packet = new(Opcode.SMSG_CHAR_ENUM, 1 + (roster.Count * CharacterList.MaxBytesPerCharacter));
-        CharacterList.Write(packet.Body, roster);
+        CharacterList.Write(packet.Body, roster, worn);
 
         connection.Send(packet);
 
@@ -662,6 +697,9 @@ public sealed class WorldSession(
             return;
         }
 
+        character.Id = id.Value;
+        await GiveStartingGearAsync(character, cancellationToken).ConfigureAwait(true);
+
         Log.CharacterCreated(logger, name, id.Value, _account.Username, connection.RemoteAddress);
         await SendCharacterCreateResultAsync(CharCreateSuccess, cancellationToken).ConfigureAwait(true);
     }
@@ -692,6 +730,10 @@ public sealed class WorldSession(
 
         if (deleted)
         {
+            // After the character, not before: a failed delete must not strip an inventory the
+            // character still has.
+            await inventory.DeleteForCharacterAsync(guid.Counter, cancellationToken).ConfigureAwait(true);
+
             Log.CharacterDeleted(logger, guid.Counter, _account.Username, connection.RemoteAddress);
         }
 
@@ -955,6 +997,268 @@ public sealed class WorldSession(
         connection.Send(packet);
     }
 
+    /// <summary>
+    /// Moves something between two slots on the player itself. <c>CMSG_SWAP_INV_ITEM</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>The destination is read first.</b> Three of the six inventory opcodes put the destination
+    /// ahead of the source, and reading them the intuitive way round swaps the drag — the item the
+    /// player picked up stays put and the one under the cursor moves.
+    /// </remarks>
+    private void HandleSwapInventoryItem(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt8(out byte destinationSlot) || !reader.TryReadUInt8(out byte sourceSlot))
+        {
+            return;
+        }
+
+        Move(
+            new ItemPosition(InventorySlots.Backpack, sourceSlot),
+            new ItemPosition(InventorySlots.Backpack, destinationSlot));
+    }
+
+    /// <summary>Moves something between any two positions, bags included. <c>CMSG_SWAP_ITEM</c>.</summary>
+    /// <inheritdoc cref="HandleSwapInventoryItem" path="/remarks"/>
+    private void HandleSwapItem(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt8(out byte destinationBag) || !reader.TryReadUInt8(out byte destinationSlot)
+            || !reader.TryReadUInt8(out byte sourceBag) || !reader.TryReadUInt8(out byte sourceSlot))
+        {
+            return;
+        }
+
+        Move(new ItemPosition(sourceBag, sourceSlot), new ItemPosition(destinationBag, destinationSlot));
+    }
+
+    /// <summary>
+    /// Wears whatever the player double-clicked. <c>CMSG_AUTOEQUIP_ITEM</c>.
+    /// </summary>
+    /// <remarks>
+    /// The slot is chosen here rather than by the client, which sends only where the item came
+    /// from. Swapping is allowed for anything but a bag: a second ring replaces one that is already
+    /// worn, but a bag with things in it must be emptied first.
+    /// </remarks>
+    private void HandleAutoEquipItem(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt8(out byte sourceBag) || !reader.TryReadUInt8(out byte sourceSlot))
+        {
+            return;
+        }
+
+        ItemPosition from = new(sourceBag, sourceSlot);
+
+        if (_player.Inventory.Get(from) is not { } item)
+        {
+            SendEquipError(InventoryResult.ItemNotFound);
+            return;
+        }
+
+        byte slot = _player.Inventory.FindEquipSlot(item.Template, swap: item is not Bag);
+
+        if (slot == InventorySlots.None)
+        {
+            SendEquipError(InventoryResult.ItemCantBeEquipped, item.Guid);
+            return;
+        }
+
+        InventoryResult result = _player.Inventory.Equip(from, slot);
+
+        if (result != InventoryResult.Ok)
+        {
+            SendEquipError(result, item.Guid, item.Template.RequiredLevel);
+        }
+    }
+
+    /// <summary>Takes something off and puts it in the first free slot. <c>CMSG_AUTOSTORE_BAG_ITEM</c>.</summary>
+    private void HandleAutoStoreBagItem(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt8(out byte sourceBag) || !reader.TryReadUInt8(out byte sourceSlot)
+            || !reader.TryReadUInt8(out byte destinationBag))
+        {
+            return;
+        }
+
+        ItemPosition from = new(sourceBag, sourceSlot);
+
+        if (_player.Inventory.Get(from) is not { } item)
+        {
+            SendEquipError(InventoryResult.ItemNotFound);
+            return;
+        }
+
+        if (FirstFreeSlotIn(destinationBag) is not { } to)
+        {
+            SendEquipError(InventoryResult.BagFull, item.Guid);
+            return;
+        }
+
+        Move(from, to);
+    }
+
+    /// <summary>Splits a stack in two. <c>CMSG_SPLIT_ITEM</c>.</summary>
+    private void HandleSplitItem(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt8(out byte sourceBag) || !reader.TryReadUInt8(out byte sourceSlot)
+            || !reader.TryReadUInt8(out byte destinationBag) || !reader.TryReadUInt8(out byte destinationSlot)
+            || !reader.TryReadUInt32(out uint count))
+        {
+            return;
+        }
+
+        ItemPosition from = new(sourceBag, sourceSlot);
+        ItemPosition to = new(destinationBag, destinationSlot);
+
+        if (from == to || count == 0)
+        {
+            return;
+        }
+
+        InventoryResult result = _player.Inventory.Split(from, to, count, itemGuids.Next);
+
+        if (result != InventoryResult.Ok)
+        {
+            SendEquipError(result, _player.Inventory.Get(from)?.Guid ?? default);
+        }
+    }
+
+    /// <summary>Throws something away. <c>CMSG_DESTROYITEM</c>.</summary>
+    /// <remarks>
+    /// The item is gone for good — there is no buyback and nothing drops on the ground. The client
+    /// has already asked the player to confirm.
+    /// </remarks>
+    private void HandleDestroyItem(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt8(out byte bag) || !reader.TryReadUInt8(out byte slot)
+            || !reader.TryReadUInt8(out byte count))
+        {
+            return;
+        }
+
+        ItemPosition position = new(bag, slot);
+        ObjectGuid destroyed = _player.Inventory.Get(position)?.Guid ?? default;
+
+        InventoryResult result = _player.Inventory.Destroy(position, count, out Item? removed);
+
+        if (result != InventoryResult.Ok)
+        {
+            SendEquipError(result, destroyed);
+            return;
+        }
+
+        if (removed is not null)
+        {
+            // The client is told to forget the object as well as the slot: the slot guid going to
+            // zero empties the square, but the item object would linger in its cache.
+            _knownItems.Remove(removed.Guid);
+            _pendingUpdates.AddOutOfRange(removed.Guid);
+        }
+    }
+
+    /// <summary>Runs one move and reports whatever went wrong.</summary>
+    private void Move(ItemPosition from, ItemPosition to)
+    {
+        if (_player is null || from == to)
+        {
+            return;
+        }
+
+        Item? moving = _player.Inventory.Get(from);
+        InventoryResult result = _player.Inventory.Swap(from, to);
+
+        if (result != InventoryResult.Ok)
+        {
+            SendEquipError(result, moving?.Guid ?? default, moving?.Template.RequiredLevel ?? 0);
+        }
+    }
+
+    /// <summary>The first empty slot in a container, or null when it is full.</summary>
+    private ItemPosition? FirstFreeSlotIn(byte bag)
+    {
+        if (_player is null)
+        {
+            return null;
+        }
+
+        if (bag == InventorySlots.Backpack)
+        {
+            for (byte slot = InventorySlots.ItemStart; slot < InventorySlots.ItemEnd; slot++)
+            {
+                if (_player.Inventory.Get(bag, slot) is null)
+                {
+                    return new ItemPosition(bag, slot);
+                }
+            }
+
+            return null;
+        }
+
+        if (_player.Inventory.Get(InventorySlots.Backpack, bag) is not Bag container)
+        {
+            return null;
+        }
+
+        for (byte slot = 0; slot < container.SlotCount; slot++)
+        {
+            if (_player.Inventory.Get(bag, slot) is null)
+            {
+                return new ItemPosition(bag, slot);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Tells this client why an inventory operation was refused.</summary>
+    private void SendEquipError(InventoryResult result, ObjectGuid item = default, uint requiredLevel = 0)
+    {
+        ServerPacket packet = new(Opcode.SMSG_INVENTORY_CHANGE_FAILURE, 24);
+        InventoryChangeFailure.Write(packet.Body, (byte)result, item, requiredLevel: requiredLevel);
+
+        connection.Send(packet);
+    }
+
     /// <summary>The cooldown figures an item's spell slot falls back on. See <see cref="SpellCooldownLookup"/>.</summary>
     private bool TryGetSpellCooldown(
         int spellId, out uint recoveryMs, out uint category, out uint categoryRecoveryMs)
@@ -1098,6 +1402,54 @@ public sealed class WorldSession(
         Log.ObjectBecameVisible(logger, other.Name, _player?.Name ?? "?");
     }
 
+    /// <summary>
+    /// Adds this player's own changed fields, and its items', to the batch.
+    /// </summary>
+    /// <remarks>
+    /// A values block, not a create: the client already has the object and is being told what
+    /// moved. Without this an item can change hands entirely server-side — the slot guid is
+    /// written, the stack count is updated — and the client's bag never changes.
+    /// <para>
+    /// <b>To this client only.</b> Half of a player's fields are marked private upstream, and the
+    /// dirty mask does not know the difference — so sending the same block to onlookers would hand
+    /// them a stranger's bags. Other players therefore do not yet see each other's health, level or
+    /// equipment change; that needs the per-viewer mask filtering that
+    /// <c>UpdateFieldFlags</c> exists for, and is recorded as a gap.
+    /// </para>
+    /// </remarks>
+    private void QueueOwnChanges()
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        if (_player.Fields.IsDirty)
+        {
+            _pendingUpdates.AddBlock(UpdateBlockBuilder.BuildValuesBlock(_player.Guid, _player.Fields));
+            _player.Fields.ClearDirty();
+        }
+
+        foreach (Item item in _player.Inventory.All)
+        {
+            if (!item.Fields.IsDirty)
+            {
+                continue;
+            }
+
+            // An item the client has never been told about needs a create, not a values block —
+            // a split makes one mid-session, and a values block for an unknown guid is dropped.
+            _pendingUpdates.AddBlock(_knownItems.Add(item.Guid)
+                ? UpdateBlockBuilder.BuildItemCreateBlock(item.Guid, item.TypeId, item.Fields)
+                : UpdateBlockBuilder.BuildValuesBlock(item.Guid, item.Fields));
+
+            item.Fields.ClearDirty();
+        }
+    }
+
+    /// <summary>Item guids this client has been sent a create block for.</summary>
+    private readonly HashSet<ObjectGuid> _knownItems = [];
+
     /// <summary>Adds an object's destroy to this tick's batch.</summary>
     /// <remarks>
     /// The out-of-range block is how the client is told to destroy its copy; there is no separate
@@ -1115,6 +1467,8 @@ public sealed class WorldSession(
     /// </remarks>
     public void FlushUpdates()
     {
+        QueueOwnChanges();
+
         if (_pendingUpdates.BlockCount > 0)
         {
             byte[] payload = _pendingUpdates.BuildPayload();
@@ -1577,6 +1931,10 @@ public sealed class WorldSession(
             player.Position.Orientation,
             cancellationToken).ConfigureAwait(true);
 
+        await inventory
+            .SaveAsync(player.Guid.Counter, Snapshot(player), cancellationToken)
+            .ConfigureAwait(true);
+
         Log.PlayerSaved(logger, player.Name, player.Position.X, player.Position.Y);
 
         // A dropped connection never sends a logout, so the map has to be told here too or the
@@ -1630,11 +1988,21 @@ public sealed class WorldSession(
             return;
         }
 
+        // Before the create block, and it has to be: the block carries the slot guids, and the item
+        // objects have to exist for the client to be told about them in the same packet.
+        await LoadInventoryAsync(player, cancellationToken).ConfigureAwait(true);
+
         _player = player;
         Status = SessionStatus.LoggedIn;
 
         PlayerLogin.SendLoginSequence(connection, player, options.Motd, SendAccountDataTimes);
-        PlayerLogin.SendSelfCreate(connection, player);
+        _knownItems.Clear();
+
+        foreach (ObjectGuid itemGuid in PlayerLogin.SendSelfCreate(connection, player))
+        {
+            _knownItems.Add(itemGuid);
+        }
+
         PlayerLogin.SendTimeSyncRequest(connection, 0);
 
         // Added after the self create: the client needs to know about itself before it is told
@@ -1645,6 +2013,194 @@ public sealed class WorldSession(
 
         Log.PlayerEnteredWorld(
             logger, player.Name, player.MapId, player.Position.X, player.Position.Y, connection.RemoteAddress);
+    }
+
+    /// <summary>
+    /// What one character is wearing, for the selection screen.
+    /// </summary>
+    /// <remarks>
+    /// Read straight from the database rather than through an <see cref="Inventory"/>: the
+    /// character is not logged in, there is no <see cref="Player"/>, and building one per row of
+    /// the list to read three fields off it would be the expensive way round.
+    /// <para>
+    /// Only rows in the player's own array and only equipment slots count — something in the
+    /// backpack is not worn, and a bag guid on the wrong row would place a chestpiece on the head.
+    /// </para>
+    /// </remarks>
+    private async Task<CharacterList.VisibleItem[]> VisibleEquipmentAsync(
+        uint characterId, CancellationToken cancellationToken)
+    {
+        CharacterList.VisibleItem[] worn = new CharacterList.VisibleItem[CharacterList.EquipmentSlots];
+
+        IReadOnlyList<StoredItem> stored = await inventory
+            .LoadAsync(characterId, cancellationToken)
+            .ConfigureAwait(true);
+
+        foreach (StoredItem row in stored)
+        {
+            if (row.BagId != 0 || row.Slot >= InventorySlots.EquipmentEnd)
+            {
+                continue;
+            }
+
+            if (world.Items.TryGet(row.Entry, out ItemTemplate? template) && template is not null)
+            {
+                worn[row.Slot] = new CharacterList.VisibleItem(template.DisplayId, template.InventoryType);
+            }
+        }
+
+        return worn;
+    }
+
+    /// <summary>
+    /// Dresses a character that has just been created and writes its things to the database.
+    /// </summary>
+    /// <remarks>
+    /// A real <see cref="Player"/> is built for this rather than the gear being computed from the
+    /// race and class alone, because <c>StoreInBestSlots</c> asks the player questions — its level,
+    /// whether it can dual wield, which slots are taken. Building one is also what upstream does:
+    /// <c>Player::Create</c> dresses the object and then saves it.
+    /// </remarks>
+    private async Task GiveStartingGearAsync(CharacterEntity created, CancellationToken cancellationToken)
+    {
+        CharacterSummary summary = new(
+            created.Id, created.Name, created.Race, created.Class, created.Gender,
+            created.Skin, created.Face, created.HairStyle, created.HairColor, created.FacialStyle,
+            created.Level, created.Zone, created.Map,
+            created.PositionX, created.PositionY, created.PositionZ,
+            created.GuildId, created.PlayerFlags, created.AtLoginFlags);
+
+        if (!world.TryBuildPlayer(summary, out Player? player, out string? reason))
+        {
+            // Not fatal: the character exists and can be played, just empty-handed. Logging it is
+            // the only way anyone would ever find out.
+            Log.StartingGearSkipped(logger, created.Name, reason ?? "unknown");
+
+            return;
+        }
+
+        int placed = world.ApplyStartingGear(player, itemGuids.Next);
+
+        if (placed == 0)
+        {
+            Log.StartingGearSkipped(logger, created.Name, "no outfit for this race, class and gender");
+
+            return;
+        }
+
+        await inventory
+            .SaveAsync(created.Id, Snapshot(player), cancellationToken)
+            .ConfigureAwait(true);
+
+        Log.StartingGearGiven(logger, created.Name, placed);
+    }
+
+    /// <summary>
+    /// Rebuilds a character's inventory from the database.
+    /// </summary>
+    /// <remarks>
+    /// Rows arrive bags-first, and are placed with <c>Restore</c> rather than through the equip
+    /// rules: what was legal when the item was put there is what it stays. Re-checking on load
+    /// would quietly rearrange a player's bags whenever a rule changed.
+    /// <para>
+    /// A row whose template has since vanished is dropped. It cannot be built, and leaving the
+    /// slot's guid pointing at nothing gives the client an item it can never draw.
+    /// </para>
+    /// </remarks>
+    private async Task LoadInventoryAsync(Player player, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<StoredItem> stored = await inventory
+            .LoadAsync(player.Guid.Counter, cancellationToken)
+            .ConfigureAwait(true);
+
+        int missing = 0;
+
+        foreach (StoredItem row in stored)
+        {
+            if (!world.Items.TryGet(row.Entry, out ItemTemplate? template) || template is null)
+            {
+                missing++;
+                continue;
+            }
+
+            Item item = Item.Create(row.ItemId, template, player.Guid);
+
+            item.Count = row.Count;
+            item.Durability = row.Durability;
+            item.DurationSeconds = row.DurationSeconds;
+            item.ItemFlags = row.Flags;
+
+            for (int i = 0; i < row.SpellCharges.Length && i < ItemConstants.MaxSpells; i++)
+            {
+                item.SetSpellCharges(i, row.SpellCharges[i]);
+            }
+
+            // The stored bag is an item guid; the inventory addresses bags by the slot they are
+            // worn in, so it is translated here rather than storing something that moves.
+            player.Inventory.Restore(PositionFor(player, row), item);
+        }
+
+        if (missing > 0)
+        {
+            Log.InventoryRowsDropped(logger, player.Name, missing);
+        }
+    }
+
+    /// <summary>Turns a stored row's bag guid back into the bag slot the inventory addresses.</summary>
+    private static ItemPosition PositionFor(Player player, in StoredItem row)
+    {
+        if (row.BagId == 0)
+        {
+            return new ItemPosition(InventorySlots.Backpack, row.Slot);
+        }
+
+        for (byte bagSlot = InventorySlots.BagStart; bagSlot < InventorySlots.BagEnd; bagSlot++)
+        {
+            if (player.Inventory.Get(InventorySlots.Backpack, bagSlot) is Bag bag
+                && bag.Guid.Counter == row.BagId)
+            {
+                return new ItemPosition(bagSlot, row.Slot);
+            }
+        }
+
+        // The bag is gone. Falling back to the player's own array would overwrite whatever is in
+        // that slot, so the item goes nowhere — a slot of 255 is out of range and is ignored.
+        return new ItemPosition(InventorySlots.Backpack, InventorySlots.None);
+    }
+
+    /// <summary>What a character is carrying, in the shape the database stores.</summary>
+    private static List<StoredItem> Snapshot(Player player)
+    {
+        List<StoredItem> rows = [];
+
+        foreach ((ItemPosition position, Item item) in player.Inventory.AllWithPositions)
+        {
+            int[] charges = new int[ItemConstants.MaxSpells];
+
+            for (int i = 0; i < charges.Length; i++)
+            {
+                charges[i] = item.GetSpellCharges(i);
+            }
+
+            // The bag is written as its own guid rather than the slot it is worn in: moving a bag
+            // between bag slots would otherwise mean rewriting every row inside it.
+            uint bagId = position.IsOnThePlayer
+                ? 0
+                : player.Inventory.Equipped(position.Bag)?.Guid.Counter ?? 0;
+
+            rows.Add(new StoredItem(
+                ItemId: item.Guid.Counter,
+                Entry: item.Entry,
+                Count: item.Count,
+                Durability: item.Durability,
+                DurationSeconds: item.DurationSeconds,
+                SpellCharges: charges,
+                Flags: item.ItemFlags,
+                BagId: bagId,
+                Slot: position.Slot));
+        }
+
+        return rows;
     }
 
     private void HandleRealmSplit(ReadOnlyMemory<byte> payload)

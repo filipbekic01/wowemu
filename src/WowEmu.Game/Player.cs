@@ -24,10 +24,24 @@ public sealed class Player : Unit
     private Player(ObjectGuid guid)
         : base(guid, TypeId.Player, UpdateFields.PLAYER_END, TypeMask.PlayerObject)
     {
+        Inventory = new Inventory(this);
     }
 
     /// <summary>How to reach this player's client. Null for a player with no session.</summary>
     public IPlayerConnection? Connection { get; set; }
+
+    /// <summary>Everything this character is carrying and wearing.</summary>
+    public Inventory Inventory { get; }
+
+    /// <summary>
+    /// The five attributes before anything is worn.
+    /// </summary>
+    /// <remarks>
+    /// Kept separately because <c>UNIT_FIELD_STAT0</c> holds the <i>total</i>, and equipment is
+    /// added to it. Without a base to rebuild from, taking off a +3 strength belt would have to
+    /// subtract 3 — and any drift, from a level-up or a reload, would compound silently.
+    /// </remarks>
+    public PlayerBaseStats BaseStats { get; set; }
 
     /// <summary>
     /// Guids this player's client has been told about and has not been told to forget.
@@ -199,6 +213,7 @@ public sealed class Player : Unit
             ZoneId = character.Zone,
             Position = new Position(character.PositionX, character.PositionY, character.PositionZ, 0f),
             IsAlliance = race.IsAlliance,
+            BaseStats = stats,
         };
 
         UpdateFieldStorage fields = player.Fields;

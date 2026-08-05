@@ -100,6 +100,17 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
     public void SetMaxPower(byte powerType, uint value) =>
         Fields.SetUInt32(UpdateFields.UNIT_FIELD_MAXPOWER1 + powerType, value);
 
+    /// <summary>
+    /// Whether the unit may hold a weapon in each hand.
+    /// </summary>
+    /// <remarks>
+    /// A player learns this from spell 674 and starts without it, which is why the default is false
+    /// rather than true-for-rogues: it is a known spell, not a class trait, and there is no
+    /// spellbook yet. Until there is, <b>nobody can dual wield</b> — a rogue's off-hand slot is
+    /// refused, which is correct for level 1 and wrong from level 10.
+    /// </remarks>
+    public bool CanDualWield { get; set; }
+
     /// <summary>Decides who this unit is hostile to, and what colour its nameplate is.</summary>
     public uint FactionTemplate
     {

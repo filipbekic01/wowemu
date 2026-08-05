@@ -51,6 +51,11 @@ SMSG_UPDATE_OBJECT = 0x0A9
 SMSG_COMPRESSED_UPDATE_OBJECT = 0x1F6
 SMSG_MONSTER_MOVE = 0x0DD
 SMSG_TIME_SYNC_REQ = 0x390
+CMSG_ITEM_QUERY_SINGLE = 0x056
+SMSG_ITEM_QUERY_SINGLE_RESPONSE = 0x058
+
+# Every starting outfit in the game carries one, so it is the safest item to ask about.
+HEARTHSTONE = 6948
 CMSG_LOGOUT_REQUEST = 0x04B
 SMSG_LOGOUT_RESPONSE = 0x04C
 SMSG_LOGOUT_COMPLETE = 0x04D
@@ -428,11 +433,19 @@ def parse_char_enum(payload):
 
         cursor += 4 + 4 + 4 + 1                           # guild, char flags, customize flags, first login
         cursor += 12                                      # pet display, level, family
-        cursor += 23 * (4 + 1 + 4)                        # equipment slots
+
+        # 23 slots of display id, inventory type and enchant. The last four are the bag slots,
+        # which the selection screen reads and does not draw.
+        equipment = []
+
+        for _ in range(23):
+            display_id, inventory_type = struct.unpack("<IB", payload[cursor:cursor + 5])
+            cursor += 4 + 1 + 4
+            equipment.append((display_id, inventory_type))
 
         roster.append({"guid": guid, "name": name, "race": race, "class": char_class,
                        "gender": gender, "level": level, "zone": zone, "map": char_map,
-                       "x": x, "y": y, "z": z})
+                       "x": x, "y": y, "z": z, "equipment": equipment})
 
     return roster
 
@@ -475,9 +488,15 @@ def enter_world(client, guid, name, expected_x, expected_y, expected_z):
     else:
         fail(f"expected an object update, got opcode 0x{opcode:03X}")
 
+    # The player, then one create block per item it owns -- a new character is dressed, so this is
+    # never just one. The items have to be in the same packet: their guids are already in the
+    # player's slot fields, and a slot pointing at an object the client has never heard of draws an
+    # empty square.
     blocks = struct.unpack("<I", payload[:4])[0]
-    if blocks != 1:
-        fail(f"expected exactly one update block, got {blocks}")
+    if blocks < 1:
+        fail(f"expected at least one update block, got {blocks}")
+
+    print(f"  update carries {blocks} block(s): the player and {blocks - 1} item(s)")
 
     update_type = payload[4]
     if update_type != 3:
@@ -503,6 +522,21 @@ def enter_world(client, guid, name, expected_x, expected_y, expected_z):
 
     client.expect(SMSG_TIME_SYNC_REQ, "SMSG_TIME_SYNC_REQ")
     print(f"  time sync requested — '{name}' is in the world")
+
+    # Ask about one of the items the character is holding. The client does this for anything it has
+    # no cached tooltip for, and blocks the tooltip on the answer.
+    client.send(CMSG_ITEM_QUERY_SINGLE, struct.pack("<I", HEARTHSTONE))
+    response = client.expect(SMSG_ITEM_QUERY_SINGLE_RESPONSE, "SMSG_ITEM_QUERY_SINGLE_RESPONSE")
+
+    entry = struct.unpack("<I", response[:4])[0]
+
+    if entry & 0x80000000:
+        fail(f"the server does not know item {HEARTHSTONE} — is item_template imported?")
+
+    end = response.index(b"\x00", 16)
+    item_name = response[16:end].decode()
+
+    print(f"  item query ok: {HEARTHSTONE} is '{item_name}' ({len(response)} bytes)")
 
     # ---- walk somewhere, then log out, and prove the position survived
     moved_x, moved_y, moved_z = expected_x + 25.0, expected_y - 15.0, expected_z
@@ -533,6 +567,16 @@ def enter_world(client, guid, name, expected_x, expected_y, expected_z):
              f"list says ({saved['x']:.1f}, {saved['y']:.1f})")
 
     print(f"  position persisted: list now shows ({saved['x']:.1f}, {saved['y']:.1f})")
+
+    # The selection screen draws each character wearing what it owns, so the equipment block is
+    # what proves the inventory survived the logout.
+    worn = [(slot, display) for slot, (display, _) in enumerate(saved["equipment"]) if display != 0]
+
+    if not worn:
+        fail("the character is naked in the list — starting gear was not saved")
+
+    print(f"  equipment persisted: {len(worn)} visible slot(s) — "
+          + ", ".join(f"slot {slot} display {display}" for slot, display in worn))
 
 
 def main():

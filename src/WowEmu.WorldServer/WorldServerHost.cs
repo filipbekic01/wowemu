@@ -22,6 +22,8 @@ public sealed class WorldServerHost(
     IAccountRepository accounts,
     ICharacterRepository characters,
     PlayerCreateInfoStore createInfo,
+    IInventoryRepository inventory,
+    ItemGuidGenerator itemGuids,
     WorldContent world,
     MapManager maps,
     SessionRegistry sessions,
@@ -67,7 +69,9 @@ public sealed class WorldServerHost(
             client.NoDelay = true;
             Log.ClientConnected(logger, client.RemoteEndPoint);
 
-            WorldSession session = new(connection, accounts, characters, createInfo, world, maps, _options, sessionLogger);
+            WorldSession session = new(
+                connection, accounts, characters, createInfo, inventory, itemGuids, world, maps,
+                _options, sessionLogger);
 
             // Bound to the world tick before it is registered, so the first packet it queues already
             // has somewhere to resume.

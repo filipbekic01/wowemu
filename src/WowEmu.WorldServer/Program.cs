@@ -41,6 +41,7 @@ builder.Services.AddSingleton<ItemTemplateStore>();
 builder.Services.AddSingleton<GameObjectSpawnStore>();
 builder.Services.AddSingleton<PlayerXpStore>();
 builder.Services.AddSingleton<GraveyardStore>();
+builder.Services.AddInventoryDatabase();
 
 // The DBC stores are read from disk once and never change, so they are built during registration
 // rather than in the startup pass — a missing data directory should fail before anything else runs.
@@ -54,6 +55,14 @@ builder.Services.AddSingleton(_ => DbcStores.Load(
 // Separate from DbcStores: Spell.dbc alone is 49,839 rows across 234 columns, and the four tables
 // it indexes into are useless apart from it. Loading them together keeps a spell's cast time, range
 // and duration resolvable in one place instead of at every call site.
+// Keyed by race, class and gender rather than by id, which is the only way it is ever asked.
+builder.Services.AddSingleton(_ => CharStartOutfitStore.Load(
+    Path.Combine(
+        Path.IsPathRooted(startupOptions.DataDirectory)
+            ? startupOptions.DataDirectory
+            : Path.Combine(AppContext.BaseDirectory, startupOptions.DataDirectory),
+        "dbc")));
+
 builder.Services.AddSingleton(_ => SpellStores.Load(
     Path.Combine(
         Path.IsPathRooted(startupOptions.DataDirectory)

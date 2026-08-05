@@ -112,11 +112,16 @@ public static class Experience
 
         player.Level = level;
 
-        player.SetStat(0, levelStats.Strength);
-        player.SetStat(1, levelStats.Agility);
-        player.SetStat(2, levelStats.Stamina);
-        player.SetStat(3, levelStats.Intellect);
-        player.SetStat(4, levelStats.Spirit);
+        // The base, not the total: PlayerCombatStats.Apply below writes the fields, adding whatever
+        // is worn. Writing them here as well would be overwritten a moment later anyway.
+        player.BaseStats = player.BaseStats with
+        {
+            Strength = levelStats.Strength,
+            Agility = levelStats.Agility,
+            Stamina = levelStats.Stamina,
+            Intellect = levelStats.Intellect,
+            Spirit = levelStats.Spirit,
+        };
 
         player.MaxHealth = classStats.BaseHealth;
         player.Health = classStats.BaseHealth;
@@ -125,8 +130,8 @@ public static class Experience
         player.SetMaxPower(Unit.PowerMana, classStats.BaseMana);
         player.SetPower(Unit.PowerMana, classStats.BaseMana);
 
-        // Attack power moves with both level and strength, so it has to be recomputed here as well
-        // as at login — otherwise a character hits for its level 1 damage forever.
+        // Attack power moves with both level and strength, and this is also what writes the five
+        // stat fields. Without it a character hits for its level 1 damage forever.
         PlayerCombatStats.Apply(player);
 
         return new LevelUp(level, healthDelta, manaDelta, statDeltas);

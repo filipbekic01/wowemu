@@ -90,6 +90,10 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
 {
     public DbSet<CharacterEntity> Characters => Set<CharacterEntity>();
 
+    public DbSet<ItemInstanceEntity> Items => Set<ItemInstanceEntity>();
+
+    public DbSet<CharacterInventoryEntity> Inventory => Set<CharacterInventoryEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -133,6 +137,37 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
             // client is not the authority.
             entity.HasIndex(character => character.Name).IsUnique().HasDatabaseName("ux_characters_name");
             entity.HasIndex(character => character.AccountId).HasDatabaseName("ix_characters_account");
+        });
+
+        modelBuilder.Entity<ItemInstanceEntity>(entity =>
+        {
+            entity.ToTable("item_instance");
+            entity.HasKey(item => item.Id);
+
+            // Never generated: the guid is handed to the client before this row exists.
+            entity.Property(item => item.Id).HasColumnName("guid").ValueGeneratedNever();
+            entity.Property(item => item.Entry).HasColumnName("item_entry");
+            entity.Property(item => item.OwnerId).HasColumnName("owner_guid");
+            entity.Property(item => item.Count).HasColumnName("count");
+            entity.Property(item => item.Durability).HasColumnName("durability");
+            entity.Property(item => item.DurationSeconds).HasColumnName("duration");
+            entity.Property(item => item.SpellCharges).HasColumnName("charges").HasMaxLength(64);
+            entity.Property(item => item.Flags).HasColumnName("flags");
+
+            entity.HasIndex(item => item.OwnerId).HasDatabaseName("ix_item_instance_owner");
+        });
+
+        modelBuilder.Entity<CharacterInventoryEntity>(entity =>
+        {
+            entity.ToTable("character_inventory");
+            entity.HasKey(row => row.ItemId);
+
+            entity.Property(row => row.ItemId).HasColumnName("item").ValueGeneratedNever();
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.BagId).HasColumnName("bag");
+            entity.Property(row => row.Slot).HasColumnName("slot");
+
+            entity.HasIndex(row => row.CharacterId).HasDatabaseName("ix_character_inventory_owner");
         });
     }
 }

@@ -42,6 +42,15 @@ internal static class WorldStartup
             }
         }
 
+        // After the migrations, before anything can create an item. Reissuing a guid the database
+        // already holds makes two items share an identity, and one overwrites the other on the
+        // next save — silently, and only for whoever logged out second.
+        ItemGuidGenerator itemGuids = services.GetRequiredService<ItemGuidGenerator>();
+        IInventoryRepository inventory = services.GetRequiredService<IInventoryRepository>();
+
+        itemGuids.SeedFrom(await inventory.HighestItemIdAsync(cancellationToken).ConfigureAwait(false));
+        Log.ItemGuidsSeeded(logger, itemGuids.Last);
+
         string worldConnection = PlayerCreateInfoStore.ResolveConnectionString(options.WorldConnectionString);
 
         PlayerCreateInfoStore createInfo = services.GetRequiredService<PlayerCreateInfoStore>();

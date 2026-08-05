@@ -29,7 +29,22 @@ public static class CharacterList
     /// <summary>At-login flag meaning the character has never entered the world.</summary>
     public const ushort AtLoginFirst = 0x20;
 
-    public static void Write(PacketWriter writer, IReadOnlyList<CharacterSummary> characters)
+    /// <summary>What one character is wearing, as the selection screen draws it.</summary>
+    /// <param name="DisplayId">The item's <c>displayid</c>, which is what picks the model.</param>
+    /// <param name="InventoryType">Which slot it is in, so the client knows where to hang it.</param>
+    public readonly record struct VisibleItem(uint DisplayId, byte InventoryType);
+
+    /// <summary>
+    /// Writes the character list.
+    /// </summary>
+    /// <param name="equipment">
+    /// What each character is wearing, by guid counter, in equipment-slot order. A character with
+    /// no entry is drawn naked, which is what happens when the lookup is skipped entirely.
+    /// </param>
+    public static void Write(
+        PacketWriter writer,
+        IReadOnlyList<CharacterSummary> characters,
+        IReadOnlyDictionary<uint, VisibleItem[]>? equipment = null)
     {
         ArgumentNullException.ThrowIfNull(writer);
         ArgumentNullException.ThrowIfNull(characters);
@@ -38,11 +53,14 @@ public static class CharacterList
 
         foreach (CharacterSummary character in characters)
         {
-            Write(writer, character);
+            VisibleItem[]? worn = null;
+            equipment?.TryGetValue(character.Id, out worn);
+
+            Write(writer, character, worn);
         }
     }
 
-    private static void Write(PacketWriter writer, CharacterSummary character)
+    private static void Write(PacketWriter writer, CharacterSummary character, VisibleItem[]? equipment)
     {
         // A player guid: no entry, so the counter occupies the full low 32 bits.
         writer.WriteUInt64(ObjectGuid.Create(HighGuid.Player, character.Id).Value);
@@ -87,10 +105,16 @@ public static class CharacterList
         writer.WriteUInt32(0);
         writer.WriteUInt32(0);
 
+        // All 23 are written whatever the character owns — the count is part of the format, and
+        // the last four are the bag slots, which the selection screen ignores but still reads.
         for (int slot = 0; slot < EquipmentSlots; slot++)
         {
-            writer.WriteUInt32(0);   // item display id
-            writer.WriteUInt8(0);    // inventory type
+            VisibleItem worn = equipment is not null && slot < equipment.Length
+                ? equipment[slot]
+                : default;
+
+            writer.WriteUInt32(worn.DisplayId);
+            writer.WriteUInt8(worn.InventoryType);
             writer.WriteUInt32(0);   // enchantment aura id
         }
     }

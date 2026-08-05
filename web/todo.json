@@ -1306,7 +1306,7 @@
       "title": "Progression systems",
       "state": "progress",
       "milestone": "M6",
-      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands. Death and the item model are done; the bags that hold the items are next.",
+      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands. Death, items and the bags that hold them are done; loot is next.",
       "groups": [
         {
           "title": "Death and release",
@@ -1439,12 +1439,121 @@
           ]
         },
         {
-          "title": "Still to come",
+          "title": "Inventory and equipment",
           "items": [
             {
-              "done": false,
-              "text": "Inventory, equipment and bags — the slots the items go in"
+              "done": true,
+              "text": "150 slots in ONE FLAT GUID ARRAY, whatever the five field names suggest",
+              "note": "INV_SLOT_HEAD, PACK_SLOT_1, BANK_SLOT_1 and the rest are consecutive names for consecutive stretches of the same run. Adding a range's own base to a range-relative slot puts the backpack 46 words too far along."
             },
+            {
+              "done": true,
+              "text": "THE BACKPACK IS CONTAINER 255, NOT 0",
+              "note": "Bag 0 is a real bag in the first bag slot. Reading a bag byte of zero as the backpack sends every query to whatever is worn there — and finds nothing, because it is usually empty."
+            },
+            {
+              "done": true,
+              "text": "A packed position puts the BAG IN THE HIGH BYTE, and three of the six opcodes read the DESTINATION FIRST",
+              "note": "Reading them the intuitive way round swaps the drag: the item the player picked up stays put and the one under the cursor moves."
+            },
+            {
+              "done": true,
+              "text": "FindEquipSlot — inventory type to slot, with two candidates for rings, trinkets and one-handers"
+            },
+            {
+              "done": true,
+              "text": "AN EMPTY OFF HAND IS NOT A FREE ONE when a two-hander is worn",
+              "note": "Checking only whether the slot holds something says it is free, and the player ends up with a greatsword and a shield. Equipping a two-hander displaces the off-hand item, and is refused outright if there is nowhere for it to go."
+            },
+            {
+              "done": true,
+              "text": "Nobody can dual wield, because it is SPELL 674 and there is no spellbook",
+              "note": "Correct at level 1 and wrong from level 10. A class trait would be the easy wrong answer."
+            },
+            {
+              "done": true,
+              "text": "Storing fills partial stacks before taking a free slot, and places NOTHING if it cannot fit everything",
+              "note": "Half a loot drop landing and the rest vanishing is worse than none of it landing — the player has no way to know what they lost."
+            },
+            {
+              "done": true,
+              "text": "Split, swap, destroy — and a NON-EMPTY BAG can be neither destroyed nor swapped out",
+              "note": "Its contents have their own guids. Destroying the bag strands them: still owned, in no slot, written back out as rows pointing at a bag that no longer exists."
+            },
+            {
+              "done": true,
+              "text": "CharStartOutfit.dbc is where starting gear lives — NOT playercreateinfo_item",
+              "note": "The vendored world table has a single row in the whole database. Reading only it produces a naked character with no error anywhere. Race, class and gender are single BYTES in the DBC; reading them as words makes every row an outfit for race 0."
+            },
+            {
+              "done": true,
+              "text": "item_instance and character_inventory, saved whole rather than diffed",
+              "note": "An item can move, stack, split and vanish within one tick. Reconciling that would duplicate the inventory's own bookkeeping, and a stale row is the failure that duplicates items."
+            },
+            {
+              "done": true,
+              "text": "Item guids are allocated IN MEMORY and seeded from MAX(guid) at startup",
+              "note": "The client is told an item's guid before any row exists, so the column cannot be auto-increment. Reissuing one makes two items share an identity and one overwrites the other on the next save."
+            },
+            {
+              "done": true,
+              "text": "A bag is stored by its OWN GUID, not the slot it is worn in",
+              "note": "Moving a bag between bag slots would otherwise mean rewriting every row inside it."
+            },
+            {
+              "done": true,
+              "text": "Items ride in the player's own create packet at login, and get values blocks after",
+              "note": "A slot guid pointing at an object the client has never been told about draws an empty square. Nothing pushed changed fields to the client at all before this — health, experience and level were all silently server-side."
+            },
+            {
+              "done": true,
+              "text": "SMSG_INVENTORY_CHANGE_FAILURE — a code of zero is the WHOLE PACKET, and the two guids are FULL not packed"
+            },
+            {
+              "done": true,
+              "text": "The character list draws what each character owns"
+            },
+            {
+              "done": true,
+              "text": "EQUIPPING A WEAPON CHANGES THE SWING — damage, speed, armour and the five attributes",
+              "note": "Without it the sword is drawn, the tooltip is right, and the damage never changes. Attack power is scaled by the weapon's OWN speed; a fixed 2000 ms makes a slow weapon and a fast one hit the same. Verified through the M5 gate: the starting sword took the kill from 8 swings to 5."
+            },
+            {
+              "done": true,
+              "text": "Stats are recomputed from the level's base each time, never adjusted by a delta",
+              "note": "A delta is one missed call away from a character who gains strength every time they take a belt off, and nothing would ever notice."
+            },
+            {
+              "done": true,
+              "text": "A BROKEN item gives nothing — no damage, no stats, no armour"
+            },
+            {
+              "done": false,
+              "text": "The bank, the keyring, buyback and bag families"
+            },
+            {
+              "done": false,
+              "text": "Soulbinding, unique constraints, item limit categories and weapon proficiency",
+              "note": "All currently PASS, so a level-1 warrior can wear a staff."
+            },
+            {
+              "done": false,
+              "text": "Item ratings and resistances — only the five attributes are applied"
+            },
+            {
+              "done": false,
+              "text": "Agility's contribution to armour, which needs the gt* DBCs"
+            },
+            {
+              "done": false,
+              "text": "Other players do not see equipment, health or level change",
+              "note": "Values blocks go to the owner alone: half a player's fields are private upstream and the dirty mask does not know the difference, so broadcasting one would hand onlookers a stranger's bags."
+            }
+          ]
+        },
+        {
+          "title": "Still to come",
+          "items": [
             {
               "done": false,
               "text": "Loot (*_loot_template)"
@@ -1802,6 +1911,18 @@
         "Item duration is copied from the template and never counts down.",
         "locales_item is not read, so every tooltip is English whatever the client asked for.",
         "BuyPrice is a bigint in the table and an int32 on the wire. Following the C++ struct rather than the column; no real row is anywhere near the boundary."
+      ]
+    },
+    {
+      "category": "Inventory",
+      "items": [
+        "No bank, no keyring, no buyback and no bag families. The slots exist in the array and nothing moves anything into them.",
+        "SOULBINDING, UNIQUE CONSTRAINTS, ITEM LIMIT CATEGORIES AND WEAPON PROFICIENCY ALL PASS. A level-1 warrior can wear a staff, and nothing is ever bound.",
+        "Only the five attributes are applied from an item. Ratings, resistances and spell power are read and ignored.",
+        "Armour is the sum of the equipped items' columns and nothing else — agility's contribution needs the gt* DBCs.",
+        "The inventory is saved on logout and on a dropped connection, never periodically. A server crash loses everything since login, exactly as it does for position.",
+        "SMSG_ITEM_PUSH_RESULT is written and tested but nothing sends it yet — the \"you received\" toast arrives with loot.",
+        "Values blocks go only to the owner. Other players see neither equipment nor health change, because the dirty mask does not know which fields are private."
       ]
     }
   ],

@@ -1,3 +1,4 @@
+using WowEmu.Core;
 using WowEmu.Game;
 using WowEmu.Network;
 using WowEmu.Protocol;
@@ -154,7 +155,8 @@ public static class PlayerLogin
     /// field and there are a lot of them. The opcode changes with the compression, so the two are
     /// decided together.
     /// </remarks>
-    public static void SendSelfCreate(WorldConnection connection, Player player)
+    /// <returns>The item guids the client has now been told about.</returns>
+    public static IReadOnlyCollection<ObjectGuid> SendSelfCreate(WorldConnection connection, Player player)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(player);
@@ -170,6 +172,18 @@ public static class PlayerLogin
             player.Speeds,
             isSelf: true));
 
+        // The items go in the same packet, after the player. Their guids are already in the
+        // player's slot fields, and a client holding a guid it has no object for draws an empty
+        // bag slot — the item is there and invisible.
+        List<ObjectGuid> sent = [];
+
+        foreach (Item item in player.Inventory.All)
+        {
+            update.AddBlock(UpdateBlockBuilder.BuildItemCreateBlock(item.Guid, item.TypeId, item.Fields));
+            item.Fields.ClearDirty();
+            sent.Add(item.Guid);
+        }
+
         byte[] payload = update.BuildPayload();
         bool compressed = UpdateData.TryCompress(payload, out byte[] body);
 
@@ -183,6 +197,8 @@ public static class PlayerLogin
 
         // The client now has everything it was sent; anything further is a change from here.
         player.Fields.ClearDirty();
+
+        return sent;
     }
 
     /// <summary>Asks the client to report its clock, which it does periodically from then on.</summary>

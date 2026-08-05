@@ -75,6 +75,38 @@ public static class UpdateBlockBuilder
     }
 
     /// <summary>
+    /// Builds a create block for an item or a bag.
+    /// </summary>
+    /// <remarks>
+    /// The simplest block in the protocol: <c>LOWGUID</c> and nothing else. An item has no position
+    /// and no movement, so none of the sections a creature's block carries appear — writing a
+    /// movement block here shifts the field mask by 60-odd bytes and the client reads the whole
+    /// item as noise.
+    /// <para>
+    /// <c>CreateObject</c>, not <c>CreateObject2</c>. Upstream promotes only players, corpses and
+    /// dynamic objects.
+    /// </para>
+    /// </remarks>
+    public static byte[] BuildItemCreateBlock(ObjectGuid objectGuid, TypeId typeId, UpdateFieldStorage fields)
+    {
+        ArgumentNullException.ThrowIfNull(fields);
+
+        const UpdateFlag flags = UpdateFlag.LowGuid;
+
+        PacketWriter writer = new(256);
+
+        writer.WriteUInt8((byte)UpdateType.CreateObject);
+        writer.WritePackedGuid(objectGuid);
+        writer.WriteUInt8((byte)typeId);
+        writer.WriteUInt16((ushort)flags);
+
+        WriteLowGuid(writer, flags, objectGuid, typeId, isSelf: false);
+        WriteValues(writer, fields, fields.BuildCreateMask());
+
+        return writer.ToArray();
+    }
+
+    /// <summary>
     /// Builds a create block for a gameobject — something that stands still and has an orientation
     /// in three dimensions.
     /// </summary>

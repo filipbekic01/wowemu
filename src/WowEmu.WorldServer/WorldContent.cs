@@ -19,7 +19,9 @@ public sealed class WorldContent(
     PlayerStatsStore stats,
     TerrainManager terrain,
     SpellStores spells,
-    ItemTemplateStore items)
+    ItemTemplateStore items,
+    CharStartOutfitStore outfits,
+    PlayerCreateInfoStore createInfo)
 {
     public TerrainManager Terrain { get; } = terrain;
 
@@ -28,6 +30,9 @@ public sealed class WorldContent(
 
     /// <summary>Every item the client can be told about.</summary>
     public ItemTemplateStore Items { get; } = items;
+
+    /// <summary>What each race, class and gender begins with.</summary>
+    public CharStartOutfitStore Outfits { get; } = outfits;
 
     public DbcStores Stores { get; } = stores;
 
@@ -92,4 +97,71 @@ public sealed class WorldContent(
         reason = null;
         return true;
     }
+
+    /// <summary>
+    /// Dresses a brand-new character.
+    /// </summary>
+    /// <remarks>
+    /// Port of the outfit half of <c>Player::Create</c>. Two sources, in upstream's order:
+    /// <c>CharStartOutfit.dbc</c> first, then whatever <c>playercreateinfo_item</c> adds on top.
+    /// The DBC is the one that matters — the vendored world table has a single row in the whole
+    /// database, so reading only it produces a naked character.
+    /// <para>
+    /// Food and drink get a special count. Everything else takes the template's <c>BuyCount</c>,
+    /// which is 1 for almost everything and is the column that makes a starting stack of arrows 200
+    /// rather than one.
+    /// </para>
+    /// </remarks>
+    /// <returns>How many distinct items were placed.</returns>
+    public int ApplyStartingGear(Player player, Func<uint> nextItemGuid)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+        ArgumentNullException.ThrowIfNull(nextItemGuid);
+
+        int placed = 0;
+
+        foreach (uint entry in Outfits.ItemsFor(player.Race, player.Class, player.Gender))
+        {
+            placed += Give(player, entry, count: 0, nextItemGuid) ? 1 : 0;
+        }
+
+        foreach (PlayerCreateItem extra in createInfo.ItemsFor(player.Race, player.Class))
+        {
+            placed += Give(player, extra.ItemId, extra.Amount, nextItemGuid) ? 1 : 0;
+        }
+
+        return placed;
+    }
+
+    /// <summary>How many of a starting item to hand over. Zero means "ask the template".</summary>
+    private bool Give(Player player, uint entry, uint count, Func<uint> nextItemGuid)
+    {
+        if (!Items.TryGet(entry, out ItemTemplate? template) || template is null)
+        {
+            return false;
+        }
+
+        uint amount = count > 0 ? count : template.BuyCount;
+
+        // Food and drink are the one exception: a new character gets a meal's worth rather than a
+        // single bite. The category is on the item's first spell, not on the item.
+        if (template.Class == ItemClass.Consumable && template.SubClass == FoodSubClass)
+        {
+            amount = template.Spells[0].Category switch
+            {
+                FoodCategory => 4,
+                DrinkCategory => 2,
+                _ => amount,
+            };
+
+            amount = Math.Min(amount, template.MaxStackSize);
+        }
+
+        return player.Inventory.StoreInBestSlots(template, amount, nextItemGuid, out _);
+    }
+
+    /// <summary><c>ITEM_SUBCLASS_FOOD</c>, and the two spell categories that separate food from drink.</summary>
+    private const byte FoodSubClass = 0;
+    private const ushort FoodCategory = 11;
+    private const ushort DrinkCategory = 59;
 }

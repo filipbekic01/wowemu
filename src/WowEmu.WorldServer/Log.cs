@@ -158,6 +158,22 @@ internal static partial class Log
         Message = "'{Name}' started attacking '{Target}' — {Address}")]
     public static partial void AttackStarted(ILogger logger, string name, string target, string address);
 
+    [LoggerMessage(EventId = 2330, Level = LogLevel.Information,
+        Message = "Item guids continue from {Highest}")]
+    public static partial void ItemGuidsSeeded(ILogger logger, uint highest);
+
+    [LoggerMessage(EventId = 2327, Level = LogLevel.Debug,
+        Message = "'{Name}' starts with {Items} item(s)")]
+    public static partial void StartingGearGiven(ILogger logger, string name, int items);
+
+    [LoggerMessage(EventId = 2328, Level = LogLevel.Warning,
+        Message = "'{Name}' was created with no starting gear: {Reason}")]
+    public static partial void StartingGearSkipped(ILogger logger, string name, string reason);
+
+    [LoggerMessage(EventId = 2329, Level = LogLevel.Warning,
+        Message = "Dropped {Rows} inventory row(s) for '{Name}' — no such item_template")]
+    public static partial void InventoryRowsDropped(ILogger logger, string name, int rows);
+
     [LoggerMessage(EventId = 2326, Level = LogLevel.Information,
         Message = "Loaded {Templates} item templates")]
     public static partial void ItemTemplatesLoaded(ILogger logger, int templates);
