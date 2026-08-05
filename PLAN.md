@@ -235,13 +235,24 @@ character-creation callback chain (`CharacterHandler.cpp:393-621`) collapses to 
 right in Phase 0; retrofitting it is a rewrite. Enforce it with an analyzer banning bare `Task.Run` in
 gameplay code.
 
-**One deliberate improvement over upstream.** The C++ pushes all inbound packets into a single
-per-session `LockedQueue` that is drained twice per tick from two different threads with complementary
-filters — and `LockedQueue::next()` puts a rejected item *back at the front*, so one `THREADUNSAFE`
-packet head-of-line-blocks that session on the map thread. Instead, **classify at enqueue time in the
-socket layer and push into two queues** (`_worldThreadQueue`, `_mapThreadQueue`), with `INPLACE` going
-to the map queue and falling back to the world queue when there's no player in world. Identical
-semantics, no head-of-line blocking, no moved-from-element idiom to emulate.
+**One attempted improvement over upstream — withdrawn.** The C++ pushes all inbound packets into a
+single per-session `LockedQueue` that is drained twice per tick from two different threads with
+complementary filters — and `LockedQueue::next()` puts a rejected item *back at the front*, so one
+`THREADUNSAFE` packet head-of-line-blocks that session on the map thread. The plan was to **classify
+at enqueue time and push into two queues** (`_worldThreadQueue`, `_mapThreadQueue`), on the grounds
+that this had identical semantics without the blocking.
+
+**It does not have identical semantics: two queues lose arrival order.** The world loop drains before
+the map workers, so a `THREADUNSAFE` packet that arrived *after* a `THREADSAFE` one is handled
+*before* it. A client sending movement and then a logout has its logout processed first, and the
+character is saved at the position it held before it moved. This was built, and the M3 gate caught it
+writing the stale position to the database.
+
+What is implemented instead: **one queue, and each loop takes from the front for as long as the
+packets belong to it, stopping at the first that does not** (`InboundPackets`). That is upstream's
+ordering guarantee with no requeue idiom to emulate, and the head-of-line wait is bounded by a single
+tick because the world loop drains before the map workers on every tick. The head-of-line blocking
+upstream was criticised for is the mechanism that makes it correct.
 
 ### 4.3 Non-obvious mappings
 

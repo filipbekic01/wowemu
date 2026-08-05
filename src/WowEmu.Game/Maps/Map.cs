@@ -13,14 +13,27 @@ namespace WowEmu.Game.Maps;
 /// </remarks>
 public interface IPlayerConnection
 {
-    /// <summary>Tells this player about an object that has come into view.</summary>
-    Task SendCreateAsync(WorldObject other, CancellationToken cancellationToken);
+    /// <summary>Notes that an object has come into view, to go out at the next flush.</summary>
+    void QueueCreate(WorldObject other);
 
-    /// <summary>Tells this player an object has left view, so the client destroys its copy.</summary>
-    Task SendDestroyAsync(ObjectGuid objectGuid, CancellationToken cancellationToken);
+    /// <summary>Notes that an object has left view, so the client destroys its copy.</summary>
+    void QueueDestroy(ObjectGuid objectGuid);
 
-    /// <summary>Relays another player's movement.</summary>
-    Task SendMovementAsync(Opcode opcode, ObjectGuid mover, MovementInfo movement, CancellationToken cancellationToken);
+    /// <summary>
+    /// Emits everything queued since the last flush as one packet.
+    /// </summary>
+    /// <remarks>
+    /// Called once per map update per player. Batching is not an optimisation here so much as a
+    /// correction: 131 creatures stand within sight of the human starting point, and sending a
+    /// packet each meant 131 packets and 131 headers where upstream sends one.
+    /// </remarks>
+    void FlushUpdates();
+
+    /// <summary>Relays another player's movement. Immediate — movement is not batched.</summary>
+    void SendMovement(Opcode opcode, ObjectGuid mover, MovementInfo movement);
+
+    /// <summary>Runs the packets this session queued for its map's worker.</summary>
+    void DrainMapPackets(uint diff);
 }
 
 /// <summary>
@@ -45,12 +58,16 @@ public interface IGridObjectLoader
 /// Port of the parts of <c>Map</c> that M4 needs. Objects live in cells so that a visibility query
 /// visits a 5×5 block rather than every object on the continent.
 /// <para>
-/// <b>Threading is interim.</b> PLAN.md §4.2 gives each map a worker task and forbids touching a
-/// <c>WorldObject</c> from anywhere else — that is what makes upstream's mutex-free entity code
-/// safe. There is no tick loop yet, so sessions call in from their own tasks and a single lock
-/// stands in for that guarantee. The <c>TickScheduler</c> the real design needs already exists and
-/// is unused; this lock is what it replaces.
-/// </para>
+/// <b>There is no lock here, and there must not be one.</b> PLAN.md §4.2 rule 1 is that a
+/// <c>WorldObject</c> is only ever touched on its map's worker, and that is what makes upstream's
+/// mutex-free entity code safe. What enforces it is the <i>ordering of a tick</i>, not a mutex:
+/// <list type="number">
+/// <item>the world loop drains its own sessions — that is when a player is added or removed;</item>
+/// <item>then, and only then, the map workers run.</item>
+/// </list>
+/// The two never overlap, so a login touching a map from the world thread is safe for the same
+/// reason it is safe upstream. Adding a lock here would not make anything safer; it would hide the
+/// day that ordering breaks.
 /// </remarks>
 public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridObjects = null)
 {
@@ -58,9 +75,17 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
     private readonly Dictionary<ObjectGuid, WorldObject> _objects = [];
     private readonly Dictionary<ObjectGuid, Player> _players = [];
     private readonly HashSet<GridCoord> _loadedGrids = [];
-    private readonly Lock _lock = new();
 
     public uint MapId { get; } = mapId;
+
+    /// <summary>Which phase of the round-robin updates this map. See <see cref="MapManager"/>.</summary>
+    public MapKind Kind { get; init; } = MapKind.Continent;
+
+    /// <summary>How many times <see cref="Update"/> has run with a non-zero gameplay diff.</summary>
+    public long FullUpdates { get; private set; }
+
+    /// <summary>How many times <see cref="Update"/> has run at all.</summary>
+    public long TotalUpdates { get; private set; }
 
     /// <summary>The terrain under this map.</summary>
     public TerrainMap Terrain { get; } = terrain;
@@ -69,120 +94,103 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
     public float VisibilityDistance { get; init; } = MapCoordinates.DefaultVisibilityDistance;
 
     /// <summary>How many players are on this map.</summary>
-    public int PlayerCount
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return _players.Count;
-            }
-        }
-    }
+    public int PlayerCount => _players.Count;
 
     /// <summary>How many objects of every kind are on this map.</summary>
-    public int ObjectCount
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return _objects.Count;
-            }
-        }
-    }
+    public int ObjectCount => _objects.Count;
 
     /// <summary>How many grids have had their spawns loaded.</summary>
-    public int LoadedGridCount
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return _loadedGrids.Count;
-            }
-        }
-    }
+    public int LoadedGridCount => _loadedGrids.Count;
 
     /// <summary>Every player currently on the map.</summary>
-    public IReadOnlyList<Player> Players
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return [.. _players.Values];
-            }
-        }
-    }
+    public IReadOnlyList<Player> Players => [.. _players.Values];
 
     /// <summary>Finds an object by guid.</summary>
-    public WorldObject? Find(ObjectGuid objectGuid)
-    {
-        lock (_lock)
-        {
-            return _objects.GetValueOrDefault(objectGuid);
-        }
-    }
+    public WorldObject? Find(ObjectGuid objectGuid) => _objects.GetValueOrDefault(objectGuid);
 
     /// <summary>Finds a player by guid.</summary>
-    public Player? FindPlayer(ObjectGuid objectGuid)
+    public Player? FindPlayer(ObjectGuid objectGuid) => _players.GetValueOrDefault(objectGuid);
+
+    /// <summary>
+    /// Advances the map by one tick.
+    /// </summary>
+    /// <param name="gameplayDiff">
+    /// Milliseconds of gameplay time. <b>Zero when this map is out of phase</b>, which happens three
+    /// ticks in four and is not a skipped tick — see <see cref="MapManager.PhaseCount"/>.
+    /// </param>
+    /// <param name="sessionDiff">
+    /// Milliseconds of real time. Always the true elapsed time, because sessions are serviced on
+    /// every tick whatever the phase — a player must not wait up to four ticks to be heard.
+    /// </param>
+    /// <remarks>
+    /// Port of <c>Map::Update</c>. Sessions first, so a player's own packets are applied before
+    /// anything is decided about them, and the flush last, so everything a tick produced for a given
+    /// client leaves as one packet.
+    /// </remarks>
+    public void Update(uint gameplayDiff, uint sessionDiff)
     {
-        lock (_lock)
+        TotalUpdates++;
+
+        if (gameplayDiff > 0)
         {
-            return _players.GetValueOrDefault(objectGuid);
+            FullUpdates++;
+        }
+
+        // Materialised: a session's packets can add or remove players, and iterating the dictionary
+        // while that happens would throw.
+        foreach (Player player in Players)
+        {
+            player.Connection?.DrainMapPackets(sessionDiff);
+        }
+
+        // Last, and unconditional. A player whose map is out of phase still had things happen to it
+        // during the session pass, and holding those until the next full update would show as a
+        // visible stutter every fourth tick.
+        foreach (Player player in Players)
+        {
+            player.Connection?.FlushUpdates();
         }
     }
 
     /// <summary>
     /// Puts a player on the map and exchanges create blocks with everything already in range.
     /// </summary>
-    public async Task AddAsync(Player player, CancellationToken cancellationToken)
+    public void Add(Player player)
     {
         ArgumentNullException.ThrowIfNull(player);
 
-        List<WorldObject> nearby;
+        // Spawns first. A player added before the grids around it are loaded sees an empty
+        // world until it happens to walk into a cell it has already been told about.
+        EnsureGridsLoaded(player.Position);
 
-        lock (_lock)
-        {
-            // Spawns first. A player added before the grids around it are loaded sees an empty
-            // world until it happens to walk into a cell it has already been told about.
-            EnsureGridsLoadedLocked(player.Position);
-
-            FileLocked(player);
-            _players[player.Guid] = player;
-
-            nearby = FindInRangeLocked(player.Position, VisibilityDistance, player);
-        }
+        File(player);
+        _players[player.Guid] = player;
 
         // Both directions: the arriving player has to learn about everything, and every player
         // already here about it.
-        foreach (WorldObject other in nearby)
+        foreach (WorldObject other in FindInRangeCore(player.Position, VisibilityDistance, player))
         {
-            await MakeVisibleAsync(player, other, cancellationToken).ConfigureAwait(false);
+            MakeVisible(player, other);
 
             if (other is Player observer)
             {
-                await MakeVisibleAsync(observer, player, cancellationToken).ConfigureAwait(false);
+                MakeVisible(observer, player);
             }
         }
     }
 
     /// <summary>Takes a player off the map and tells everyone who could see it.</summary>
-    public async Task RemoveAsync(Player player, CancellationToken cancellationToken)
+    public void Remove(Player player)
     {
         ArgumentNullException.ThrowIfNull(player);
 
-        lock (_lock)
-        {
-            _players.Remove(player.Guid);
-            UnfileLocked(player);
-        }
+        _players.Remove(player.Guid);
+        Unfile(player);
 
-        foreach (Player other in PlayersWhoSee(player.Guid))
+        foreach (Player other in PlayersWhoSeeCore(player.Guid))
         {
             other.VisibleObjects.Remove(player.Guid);
-            await SendDestroyAsync(other, player.Guid, cancellationToken).ConfigureAwait(false);
+            SendDestroy(other, player.Guid);
         }
 
         player.VisibleObjects.Clear();
@@ -196,40 +204,34 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
     /// than to the map's population. Objects that were visible and no longer are get a destroy;
     /// objects newly in range get a create. Everything else is left alone.
     /// </remarks>
-    public async Task RelocateAsync(Player player, Position position, CancellationToken cancellationToken)
+    public void Relocate(Player player, Position position)
     {
         ArgumentNullException.ThrowIfNull(player);
 
-        List<WorldObject> nearby;
+        EnsureGridsLoaded(position);
 
-        lock (_lock)
+        CellCoord cell = MapCoordinates.CellFor(position.X, position.Y);
+
+        if (cell != player.Cell)
         {
-            EnsureGridsLoadedLocked(position);
-
-            CellCoord cell = MapCoordinates.CellFor(position.X, position.Y);
-
-            if (cell != player.Cell)
-            {
-                CellFor(player).Remove(player);
-                player.Cell = cell;
-                CellAt(cell).Add(player);
-            }
-
-            player.Position = position;
-            nearby = FindInRangeLocked(position, VisibilityDistance, player);
+            CellFor(player).Remove(player);
+            player.Cell = cell;
+            CellAt(cell).Add(player);
         }
+
+        player.Position = position;
 
         HashSet<ObjectGuid> stillVisible = [];
 
-        foreach (WorldObject other in nearby)
+        foreach (WorldObject other in FindInRangeCore(position, VisibilityDistance, player))
         {
             stillVisible.Add(other.Guid);
 
-            await MakeVisibleAsync(player, other, cancellationToken).ConfigureAwait(false);
+            MakeVisible(player, other);
 
             if (other is Player observer)
             {
-                await MakeVisibleAsync(observer, player, cancellationToken).ConfigureAwait(false);
+                MakeVisible(observer, player);
             }
         }
 
@@ -237,16 +239,16 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
         foreach (ObjectGuid gone in player.VisibleObjects.Where(guid => !stillVisible.Contains(guid)).ToList())
         {
             player.VisibleObjects.Remove(gone);
-            await SendDestroyAsync(player, gone, cancellationToken).ConfigureAwait(false);
+            SendDestroy(player, gone);
         }
 
         // And the mirror: players who could see this one but have been left behind.
-        foreach (Player other in PlayersWhoSee(player.Guid))
+        foreach (Player other in PlayersWhoSeeCore(player.Guid))
         {
             if (!stillVisible.Contains(other.Guid))
             {
                 other.VisibleObjects.Remove(player.Guid);
-                await SendDestroyAsync(other, player.Guid, cancellationToken).ConfigureAwait(false);
+                SendDestroy(other, player.Guid);
             }
         }
     }
@@ -258,33 +260,19 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
     /// The client that sent the movement has already applied it locally; echoing it back makes the
     /// character stutter.
     /// </remarks>
-    public async Task BroadcastMovementAsync(
-        Player mover,
-        Opcode opcode,
-        MovementInfo movement,
-        CancellationToken cancellationToken)
+    public void BroadcastMovement(Player mover, Opcode opcode, MovementInfo movement)
     {
         ArgumentNullException.ThrowIfNull(mover);
 
-        foreach (Player other in PlayersWhoSee(mover.Guid))
+        foreach (Player other in PlayersWhoSeeCore(mover.Guid))
         {
-            if (other.Connection is not null)
-            {
-                await other.Connection
-                    .SendMovementAsync(opcode, mover.Guid, movement, cancellationToken)
-                    .ConfigureAwait(false);
-            }
+            other.Connection?.SendMovement(opcode, mover.Guid, movement);
         }
     }
 
     /// <summary>Objects within <paramref name="radius"/> of a point, excluding <paramref name="exclude"/>.</summary>
-    public IReadOnlyList<WorldObject> FindInRange(Position position, float radius, WorldObject? exclude = null)
-    {
-        lock (_lock)
-        {
-            return FindInRangeLocked(position, radius, exclude);
-        }
-    }
+    public IReadOnlyList<WorldObject> FindInRange(Position position, float radius, WorldObject? exclude = null) =>
+        FindInRangeCore(position, radius, exclude);
 
     /// <summary>
     /// Loads the spawns of every grid a player at <paramref name="position"/> could see into.
@@ -298,7 +286,7 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
     /// PLAN.md §4.2 describes, where this would be ordinary in-line work.
     /// </para>
     /// </remarks>
-    private void EnsureGridsLoadedLocked(Position position)
+    private void EnsureGridsLoaded(Position position)
     {
         if (gridObjects is null)
         {
@@ -316,7 +304,7 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
 
             foreach (WorldObject spawned in gridObjects.Load(MapId, grid))
             {
-                FileLocked(spawned);
+                File(spawned);
             }
         }
     }
@@ -327,7 +315,7 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
     /// whatever cell the field happened to hold — cell (0, 0) for a fresh object — and range queries
     /// would never find it again, with nothing to show for it but an invisible creature.
     /// </remarks>
-    private void FileLocked(WorldObject worldObject)
+    private void File(WorldObject worldObject)
     {
         worldObject.Cell = MapCoordinates.CellFor(worldObject.Position.X, worldObject.Position.Y);
 
@@ -335,13 +323,13 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
         CellAt(worldObject.Cell).Add(worldObject);
     }
 
-    private void UnfileLocked(WorldObject worldObject)
+    private void Unfile(WorldObject worldObject)
     {
         _objects.Remove(worldObject.Guid);
         CellFor(worldObject).Remove(worldObject);
     }
 
-    private List<WorldObject> FindInRangeLocked(Position position, float radius, WorldObject? exclude)
+    private List<WorldObject> FindInRangeCore(Position position, float radius, WorldObject? exclude)
     {
         List<WorldObject> found = [];
         float radiusSquared = radius * radius;
@@ -371,15 +359,17 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
         return found;
     }
 
-    private List<Player> PlayersWhoSee(ObjectGuid objectGuid)
-    {
-        lock (_lock)
-        {
-            return [.. _players.Values.Where(player => player.VisibleObjects.Contains(objectGuid))];
-        }
-    }
+    /// <summary>
+    /// Players whose client has been told about <paramref name="objectGuid"/>.
+    /// </summary>
+    /// <remarks>
+    /// Materialised rather than lazy: callers remove from the visible sets while iterating, and a
+    /// deferred LINQ query over <c>_players</c> would be enumerating the collection it is mutating.
+    /// </remarks>
+    private List<Player> PlayersWhoSeeCore(ObjectGuid objectGuid) =>
+        [.. _players.Values.Where(player => player.VisibleObjects.Contains(objectGuid))];
 
-    private static async Task MakeVisibleAsync(Player viewer, WorldObject target, CancellationToken cancellationToken)
+    private static void MakeVisible(Player viewer, WorldObject target)
     {
         // Already visible: nothing to send. Without this check every movement packet would re-send
         // a full create block for everything in range.
@@ -388,19 +378,11 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
             return;
         }
 
-        if (viewer.Connection is not null)
-        {
-            await viewer.Connection.SendCreateAsync(target, cancellationToken).ConfigureAwait(false);
-        }
+        viewer.Connection?.QueueCreate(target);
     }
 
-    private static async Task SendDestroyAsync(Player viewer, ObjectGuid objectGuid, CancellationToken cancellationToken)
-    {
-        if (viewer.Connection is not null)
-        {
-            await viewer.Connection.SendDestroyAsync(objectGuid, cancellationToken).ConfigureAwait(false);
-        }
-    }
+    private static void SendDestroy(Player viewer, ObjectGuid objectGuid) =>
+        viewer.Connection?.QueueDestroy(objectGuid);
 
     private List<WorldObject> CellFor(WorldObject worldObject) => CellAt(worldObject.Cell);
 
@@ -416,35 +398,3 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
     }
 }
 
-/// <summary>Maps, created on first use.</summary>
-public sealed class MapManager(TerrainManager terrain, IGridObjectLoader? gridObjects = null)
-{
-    private readonly Dictionary<uint, Map> _maps = [];
-    private readonly Lock _lock = new();
-
-    public Map GetMap(uint mapId)
-    {
-        lock (_lock)
-        {
-            if (!_maps.TryGetValue(mapId, out Map? map))
-            {
-                map = new Map(mapId, terrain.GetMap(mapId), gridObjects);
-                _maps[mapId] = map;
-            }
-
-            return map;
-        }
-    }
-
-    /// <summary>Every map that has been touched, for diagnostics.</summary>
-    public IReadOnlyList<Map> ActiveMaps
-    {
-        get
-        {
-            lock (_lock)
-            {
-                return [.. _maps.Values];
-            }
-        }
-    }
-}

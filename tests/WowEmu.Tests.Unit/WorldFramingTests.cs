@@ -233,7 +233,7 @@ public sealed class WorldConnectionTests
     }
 
     [Fact]
-    public async Task SendAsync_WritesHeaderThenBody()
+    public async Task Send_WritesHeaderThenBody()
     {
         using SocketPair pair = SocketPair.Create();
         using WorldConnection connection = new(pair.Server);
@@ -243,7 +243,9 @@ public sealed class WorldConnectionTests
         ServerPacket packet = new(Opcode.SMSG_AUTH_CHALLENGE);
         packet.Body.WriteUInt32(1);
 
-        await connection.SendAsync(packet, cancellation.Token);
+        // Send only queues; the send loop is what reaches the socket.
+        connection.Send(packet);
+        Task sending = connection.RunSendLoopAsync(cancellation.Token);
 
         byte[] buffer = new byte[8];
         int read = await pair.Client.ReceiveAsync(buffer, cancellation.Token);
@@ -253,6 +255,65 @@ public sealed class WorldConnectionTests
         Assert.Equal(0xEC, buffer[2]);
         Assert.Equal(0x01, buffer[3]);
         Assert.Equal([1, 0, 0, 0], buffer[4..8]);
+
+        connection.CompleteSending();
+        await sending;
+    }
+
+    /// <summary>
+    /// Encryption begins at a position in the send queue, not at a moment in time.
+    /// </summary>
+    /// <remarks>
+    /// The challenge is queued before the session key is known and must reach the client in
+    /// plaintext, because the client has no key either at that point. Once sending stopped being
+    /// synchronous, a flag consulted at write time would encrypt it if the writer had not yet caught
+    /// up — an intermittent failure that depends on thread scheduling, on the very first packet of
+    /// every session. Queuing the switch is what pins it.
+    /// </remarks>
+    [Fact]
+    public async Task PacketsQueuedBeforeEncryption_StillGoOutInPlaintext()
+    {
+        using SocketPair pair = SocketPair.Create();
+        using WorldConnection connection = new(pair.Server);
+
+        using CancellationTokenSource cancellation = new(TimeSpan.FromSeconds(10));
+
+        ServerPacket before = new(Opcode.SMSG_AUTH_CHALLENGE);
+        before.Body.WriteUInt32(1);
+
+        ServerPacket after = new(Opcode.SMSG_AUTH_CHALLENGE);
+        after.Body.WriteUInt32(1);
+
+        // Everything is queued before the send loop starts, so the writer sees all three items at
+        // once — which is exactly the interleaving a flag would get wrong.
+        connection.Send(before);
+        connection.EnableEncryption(new byte[40]);
+        connection.Send(after);
+
+        Task sending = connection.RunSendLoopAsync(cancellation.Token);
+
+        byte[] buffer = new byte[16];
+        int read = 0;
+
+        while (read < 16)
+        {
+            read += await pair.Client.ReceiveAsync(buffer.AsMemory(read), cancellation.Token);
+        }
+
+        // First header: readable as-is.
+        Assert.Equal(6, (buffer[0] << 8) | buffer[1]);
+        Assert.Equal(0xEC, buffer[2]);
+        Assert.Equal(0x01, buffer[3]);
+
+        // Second header: the same four bytes, encrypted, so they must differ.
+        Assert.NotEqual(buffer[0..4], buffer[8..12]);
+
+        // Bodies are never encrypted, in either case.
+        Assert.Equal([1, 0, 0, 0], buffer[4..8]);
+        Assert.Equal([1, 0, 0, 0], buffer[12..16]);
+
+        connection.CompleteSending();
+        await sending;
     }
 
     /// <summary>A header that cannot be parsed is unrecoverable: there is no framing to resync to.</summary>

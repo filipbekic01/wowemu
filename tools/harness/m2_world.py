@@ -235,11 +235,33 @@ class WorldClient:
         payload = recv_exactly(self.sock, size - 2, "packet body") if size > 2 else b""
         return opcode, payload
 
-    def expect(self, wanted, name):
-        opcode, payload = self.recv()
-        if opcode != wanted:
-            fail(f"expected {name} (0x{wanted:03X}), got opcode 0x{opcode:03X}")
-        return payload
+    def expect(self, wanted, name, skip_unsolicited=True):
+        """Reads until the wanted opcode, stepping over packets the server pushes on its own.
+
+        Once the world has creatures in it, entering it produces a create block per creature in
+        range, and they arrive whenever the map gets round to them -- including in the middle of a
+        request and its reply. A real client handles them at any time, so the gate has to as well.
+        Skipping is disabled when the wanted opcode is itself an update, so the checks that read a
+        create block still read the one they meant to.
+        """
+        skippable = {SMSG_UPDATE_OBJECT, SMSG_COMPRESSED_UPDATE_OBJECT} - {wanted}
+
+        if not skip_unsolicited:
+            skippable = set()
+
+        # Bounded: a server that only ever sends updates is a failure, not something to wait out.
+        # The bound is generous because the server currently sends one packet per object rather than
+        # batching a tick's worth into one -- 131 creatures stand within sight of the human start.
+        for _ in range(1024):
+            opcode, payload = self.recv()
+
+            if opcode == wanted:
+                return payload
+
+            if opcode not in skippable:
+                fail(f"expected {name} (0x{wanted:03X}), got opcode 0x{opcode:03X}")
+
+        fail(f"expected {name} (0x{wanted:03X}), got 64 unsolicited packets instead")
 
 
 def world_session(host, port, user, session_key):

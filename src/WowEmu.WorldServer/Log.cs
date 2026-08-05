@@ -140,6 +140,46 @@ internal static partial class Log
     public static partial void CreatureContentLoaded(
         ILogger logger, int templates, int models, int spawns, int maps, double elapsedMs);
 
+    [LoggerMessage(EventId = 2315, Level = LogLevel.Error,
+        Message = "Handler for {Opcode} threw ({Address})")]
+    public static partial void PacketHandlerFailed(
+        ILogger logger, Exception exception, Opcode opcode, string address);
+
+    [LoggerMessage(EventId = 2316, Level = LogLevel.Error,
+        Message = "Deferred work for a session threw ({Address})")]
+    public static partial void DeferredWorkFailed(ILogger logger, Exception exception, string address);
+
+    // ------------------------------------------------------------------ world tick
+
+    [LoggerMessage(EventId = 2400, Level = LogLevel.Information,
+        Message = "World tick running at a {MinUpdateMs} ms floor over {MapCount} map(s)")]
+    public static partial void TickStarted(ILogger logger, uint minUpdateMs, int mapCount);
+
+    [LoggerMessage(EventId = 2401, Level = LogLevel.Information,
+        Message = "World tick stopped after {Ticks} tick(s); longest was {LongestMs:F1} ms")]
+    public static partial void TickStopped(ILogger logger, long ticks, double longestMs);
+
+    [LoggerMessage(EventId = 2402, Level = LogLevel.Warning,
+        Message = "Tick took {ElapsedMs:F1} ms for {DiffMs} ms of game time with {Sessions} session(s)")]
+    public static partial void SlowTick(ILogger logger, double elapsedMs, uint diffMs, int sessions);
+
+    [LoggerMessage(EventId = 2403, Level = LogLevel.Error,
+        Message = "Work posted to the world tick threw")]
+    public static partial void TickWorkFailed(ILogger logger, Exception exception);
+
+    [LoggerMessage(EventId = 2404, Level = LogLevel.Warning,
+        Message = "Tick drain hit its budget; {Deferred} item(s) held over")]
+    public static partial void TickWorkDeferred(ILogger logger, int deferred);
+
+    [LoggerMessage(EventId = 2405, Level = LogLevel.Debug,
+        Message = "Periodic save: {Count} character(s)")]
+    public static partial void PeriodicSave(ILogger logger, int count);
+
+    [LoggerMessage(EventId = 2406, Level = LogLevel.Information,
+        Message = "{Ticks} ticks | {Sessions} session(s) | {Maps} map(s) | worst tick {LongestMs:F1} ms")]
+    public static partial void TickReport(
+        ILogger logger, long ticks, int sessions, int maps, double longestMs);
+
     // ------------------------------------------------------------------ addons
 
     [LoggerMessage(EventId = 2200, Level = LogLevel.Warning,

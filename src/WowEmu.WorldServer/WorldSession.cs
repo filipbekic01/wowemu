@@ -58,8 +58,16 @@ public sealed class WorldSession(
     /// <summary>Retail's per-realm cap, and the client's own assumption.</summary>
     private const int MaxCharactersPerAccount = 10;
 
-    private readonly byte[] _authSeed = RandomNumberGenerator.GetBytes(4);
+    /// <summary>
+    /// Upstream's <c>MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE</c>.
+    /// </summary>
+    private const int MaxPacketsPerUpdate = 150;
 
+    private readonly byte[] _authSeed = RandomNumberGenerator.GetBytes(4);
+    private readonly InboundPackets _inbound = new();
+
+    private UpdateData _pendingUpdates = new();
+    private TickScheduler? _scheduler;
     private AuthAccount? _account;
     private Player? _player;
     private Map? _map;
@@ -76,25 +84,68 @@ public sealed class WorldSession(
     /// </remarks>
     public SessionStatus Status { get; private set; } = SessionStatus.Authed;
 
-    /// <summary>Sends the challenge that opens the handshake, then pumps packets.</summary>
+    /// <summary>The map this session's character is on, or null at the character screen.</summary>
+    public Map? CurrentMap => _map;
+
+    /// <summary>Whether a character is in the world and therefore worth saving.</summary>
+    public bool HasPlayerInWorld => _player is not null;
+
+    /// <summary>
+    /// Binds this session to the loop that drains its world queue.
+    /// </summary>
+    /// <remarks>
+    /// Called by the world loop when the session joins it. Handlers that await start their work on
+    /// this scheduler, so their continuations come back to the tick rather than to the thread pool.
+    /// </remarks>
+    public void AttachTo(TickScheduler scheduler) => _scheduler = scheduler;
+
+    /// <summary>
+    /// Sends the challenge that opens the handshake, then pumps packets until the client goes.
+    /// </summary>
+    /// <remarks>
+    /// Two loops, not one. Reading and writing are independent now that sending is a queue write, so
+    /// a client that has stopped reading cannot stall the reader — and the world protocol opens with
+    /// the <i>server</i> speaking, which is why the challenge is queued before either loop starts.
+    /// </remarks>
     public async Task RunAsync(CancellationToken cancellationToken)
     {
-        await SendAuthChallengeAsync(cancellationToken).ConfigureAwait(false);
-        await connection.RunAsync(HandleAsync, cancellationToken).ConfigureAwait(false);
+        SendAuthChallenge();
+
+        Task sending = connection.RunSendLoopAsync(cancellationToken);
+
+        try
+        {
+            await connection.RunAsync(HandleAsync, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Drains what is already queued before the loop stops. A rejection sent as the last act
+            // of a session still has to reach the client, or it sees a bare disconnect instead of
+            // the reason.
+            connection.CompleteSending();
+            await sending.ConfigureAwait(false);
+        }
     }
 
+    /// <summary>
+    /// Classifies an arriving packet and files it for the loop allowed to run it.
+    /// </summary>
+    /// <remarks>
+    /// This runs on the connection's read task, so it must not handle anything itself: the read task
+    /// is not the world tick and is not a map worker, and PLAN.md §4.2 rule 1 forbids it touching
+    /// game state. Two opcodes are exceptions, exactly as upstream — the handshake, because no
+    /// session exists to queue onto yet, and the ping, because it has to answer even when the
+    /// session is busy and touches nothing.
+    /// </remarks>
     private async Task<bool> HandleAsync(Opcode opcode, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
     {
-        // CMSG_AUTH_SESSION and CMSG_PING are handled here at the socket layer rather than through
-        // a session dispatch table, exactly as upstream does — the first because no session exists
-        // yet, the second because it must answer even when the session is busy.
         switch (opcode)
         {
             case Opcode.CMSG_AUTH_SESSION:
-                return await HandleAuthSessionAsync(payload, cancellationToken).ConfigureAwait(false);
+                return await HandleAuthSessionAsync(payload, cancellationToken).ConfigureAwait(true);
 
             case Opcode.CMSG_PING:
-                return await HandlePingAsync(payload, cancellationToken).ConfigureAwait(false);
+                return HandlePing(payload);
 
             case Opcode.CMSG_KEEP_ALIVE:
                 return true;
@@ -122,57 +173,157 @@ public sealed class WorldSession(
             return true;
         }
 
+        Enqueue(opcode, payload, info.Value.Processing);
+        return true;
+    }
+
+    /// <summary>
+    /// Files a packet for whichever loop is allowed to run it.
+    /// </summary>
+    /// <remarks>
+    /// The payload is copied because it is not ours: the read loop rents it from a pool and returns
+    /// it the moment this returns. Handing the queue a buffer that is about to be reused for another
+    /// packet is the kind of bug that shows up as one client receiving another's data.
+    /// <para>
+    /// Ordering between the two loops is <see cref="InboundPackets"/>'s problem, and worth
+    /// reading about there — getting it wrong saved a character in the wrong place.
+    /// </para>
+    /// </remarks>
+    private void Enqueue(Opcode opcode, ReadOnlyMemory<byte> payload, PacketProcessing processing) =>
+        _inbound.Enqueue(new InboundPacket(opcode, payload.ToArray(), processing));
+
+    /// <summary>Runs the packets that must run on the world tick.</summary>
+    public void DrainWorldPackets(uint diff) => Drain(onMapWorker: false);
+
+    /// <summary>Runs the packets that may run on the owning map's worker.</summary>
+    public void DrainMapPackets(uint diff) => Drain(onMapWorker: true);
+
+    /// <summary>
+    /// Runs queued packets, up to a budget.
+    /// </summary>
+    /// <remarks>
+    /// The cap is upstream's <c>MAX_PROCESSED_PACKETS_IN_SAME_WORLDSESSION_UPDATE</c>. Without it a
+    /// client that floods can hold the tick for as long as it keeps sending, which is a denial of
+    /// service against every other player on the server rather than just itself.
+    /// </remarks>
+    private void Drain(bool onMapWorker)
+    {
+        int processed = 0;
+
+        while (processed < MaxPacketsPerUpdate
+            && _inbound.TryDequeueFor(onMapWorker, _map is not null, out InboundPacket packet))
+        {
+            processed++;
+
+            try
+            {
+                Dispatch(packet.Opcode, packet.Payload);
+            }
+            catch (Exception exception)
+            {
+                // One malformed packet must not take the tick down. The session survives too:
+                // upstream tolerates nonsense from clients, and a disconnect would hide the cause.
+                Log.PacketHandlerFailed(logger, exception, packet.Opcode, connection.RemoteAddress);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Runs one packet's handler.
+    /// </summary>
+    /// <remarks>
+    /// Handlers that need the database start work on the tick-bound scheduler and return
+    /// immediately; their continuations resume at the next drain of the loop that owns them, so the
+    /// tick is never blocked on a query and the code still reads top to bottom. That is PLAN.md
+    /// §4.2 rule 3, and it is the reason <c>TickScheduler</c> exists.
+    /// </remarks>
+    private void Dispatch(Opcode opcode, byte[] payload)
+    {
         switch (opcode)
         {
             case Opcode.CMSG_READY_FOR_ACCOUNT_DATA_TIMES:
-                await SendAccountDataTimesAsync(GlobalCacheMask, cancellationToken).ConfigureAwait(false);
-                return true;
+                SendAccountDataTimes(GlobalCacheMask);
+                return;
 
             case Opcode.CMSG_CHAR_ENUM:
-                await SendCharacterListAsync(cancellationToken).ConfigureAwait(false);
-                return true;
+                RunOnTick(SendCharacterListAsync);
+                return;
 
             case Opcode.CMSG_CHAR_CREATE:
-                await HandleCharacterCreateAsync(payload, cancellationToken).ConfigureAwait(false);
-                return true;
+                RunOnTick(token => HandleCharacterCreateAsync(payload, token));
+                return;
 
             case Opcode.CMSG_CHAR_DELETE:
-                await HandleCharacterDeleteAsync(payload, cancellationToken).ConfigureAwait(false);
-                return true;
+                RunOnTick(token => HandleCharacterDeleteAsync(payload, token));
+                return;
 
             case Opcode.CMSG_PLAYER_LOGIN:
-                await HandlePlayerLoginAsync(payload, cancellationToken).ConfigureAwait(false);
-                return true;
+                RunOnTick(token => HandlePlayerLoginAsync(payload, token));
+                return;
 
             case Opcode.CMSG_REALM_SPLIT:
-                await HandleRealmSplitAsync(payload, cancellationToken).ConfigureAwait(false);
-                return true;
+                HandleRealmSplit(payload);
+                return;
 
             case Opcode.CMSG_LOGOUT_REQUEST:
-                await HandleLogoutRequestAsync(cancellationToken).ConfigureAwait(false);
-                return true;
+                RunOnTick(HandleLogoutRequestAsync);
+                return;
 
             case Opcode.CMSG_LOGOUT_CANCEL:
-                await HandleLogoutCancelAsync(cancellationToken).ConfigureAwait(false);
-                return true;
+                HandleLogoutCancel();
+                return;
 
             default:
                 // Every movement opcode routes to one handler, exactly as upstream does — the
                 // opcode says what the client thinks it is doing, but the payload is identical.
-                if (info.Value.UpstreamHandler == "HandleMovementOpcodes")
+                if (OpcodeTable.TryGet(opcode, out OpcodeInfo? info)
+                    && info.Value.UpstreamHandler == "HandleMovementOpcodes")
                 {
-                    await HandleMovementAsync(opcode, payload, cancellationToken).ConfigureAwait(false);
-                    return true;
+                    HandleMovement(opcode, payload);
+                    return;
                 }
 
                 Log.UnhandledOpcode(logger, opcode, connection.RemoteAddress);
-                return true;
+                return;
         }
+    }
+
+    /// <summary>
+    /// Starts asynchronous work that will resume on the loop that started it.
+    /// </summary>
+    /// <remarks>
+    /// The scheduler is whichever loop is draining this session right now. Its continuations run at
+    /// that loop's next drain point, which is what keeps a database answer from landing on a thread
+    /// pool thread and touching a player from outside its map's worker.
+    /// </remarks>
+    private void RunOnTick(Func<CancellationToken, Task> work)
+    {
+        // Every await inside a handler is ConfigureAwait(true), so the TickSynchronizationContext
+        // this scheduler installed brings the continuation back to the loop. Without that, a
+        // handler would resume on a thread-pool thread and carry on touching player and map state
+        // from outside the loop that owns it — PLAN.md §4.2 rule 1, violated silently.
+
+        TickScheduler scheduler = _scheduler
+            ?? throw new InvalidOperationException("A session was drained before it was attached to a loop.");
+
+        _ = scheduler.Factory.StartNew(
+            async () =>
+            {
+                try
+                {
+                    await work(CancellationToken.None).ConfigureAwait(true);
+                }
+                catch (Exception exception)
+                {
+                    Log.DeferredWorkFailed(logger, exception, connection.RemoteAddress);
+                }
+            },
+            CancellationToken.None).Unwrap();
     }
 
     // ------------------------------------------------------------------ handshake
 
-    private async Task SendAuthChallengeAsync(CancellationToken cancellationToken)
+    private void SendAuthChallenge()
     {
         ServerPacket packet = new(Opcode.SMSG_AUTH_CHALLENGE, 40);
 
@@ -183,7 +334,7 @@ public sealed class WorldSession(
         // them; they matter to later expansions. Sent because the client expects 40 bytes.
         packet.Body.WriteBytes(RandomNumberGenerator.GetBytes(32));
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     private async Task<bool> HandleAuthSessionAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
@@ -194,14 +345,14 @@ public sealed class WorldSession(
             return false;
         }
 
-        _account = await accounts.FindAsync(request.Account, cancellationToken).ConfigureAwait(false);
+        _account = await accounts.FindAsync(request.Account, cancellationToken).ConfigureAwait(true);
 
         if (_account?.SessionKey is null)
         {
             // No key means the account never completed a logon, so there is nothing to encrypt
             // with — the client cannot read this response, but upstream sends it anyway.
             Log.UnknownAccount(logger, request.Account, connection.RemoteAddress);
-            await SendAuthResponseErrorAsync(AuthUnknownAccount, cancellationToken).ConfigureAwait(false);
+            await SendAuthResponseErrorAsync(AuthUnknownAccount, cancellationToken).ConfigureAwait(true);
             return false;
         }
 
@@ -214,24 +365,24 @@ public sealed class WorldSession(
         if (request.RealmId != options.RealmId)
         {
             Log.WrongRealm(logger, request.RealmId, options.RealmId, connection.RemoteAddress);
-            await SendAuthResponseErrorAsync(AuthFailed, cancellationToken).ConfigureAwait(false);
+            await SendAuthResponseErrorAsync(AuthFailed, cancellationToken).ConfigureAwait(true);
             return false;
         }
 
         if (!VerifyDigest(request, _account.SessionKey))
         {
             Log.BadDigest(logger, _account.Username, connection.RemoteAddress);
-            await SendAuthResponseErrorAsync(AuthFailed, cancellationToken).ConfigureAwait(false);
+            await SendAuthResponseErrorAsync(AuthFailed, cancellationToken).ConfigureAwait(true);
             return false;
         }
 
         _authenticated = true;
         Log.Authenticated(logger, _account.Username, request.Build, connection.RemoteAddress);
 
-        await SendAuthResponseAsync(cancellationToken).ConfigureAwait(false);
-        await SendAddonInfoAsync(request.AddonInfo, cancellationToken).ConfigureAwait(false);
-        await SendClientCacheVersionAsync(cancellationToken).ConfigureAwait(false);
-        await SendTutorialFlagsAsync(cancellationToken).ConfigureAwait(false);
+        await SendAuthResponseAsync(cancellationToken).ConfigureAwait(true);
+        await SendAddonInfoAsync(request.AddonInfo, cancellationToken).ConfigureAwait(true);
+        await SendClientCacheVersionAsync(cancellationToken).ConfigureAwait(true);
+        await SendTutorialFlagsAsync(cancellationToken).ConfigureAwait(true);
 
         return true;
     }
@@ -271,7 +422,7 @@ public sealed class WorldSession(
         packet.Body.WriteUInt32(0);                  // billing time rested
         packet.Body.WriteUInt8(options.Expansion);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     private async Task SendAuthResponseErrorAsync(byte code, CancellationToken cancellationToken)
@@ -279,7 +430,7 @@ public sealed class WorldSession(
         ServerPacket packet = new(Opcode.SMSG_AUTH_RESPONSE, 1);
         packet.Body.WriteUInt8(code);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     // ------------------------------------------------------------------ post-auth chatter
@@ -317,7 +468,7 @@ public sealed class WorldSession(
 
         packet.Body.WriteUInt32(0);              // banned addon count
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     private async Task SendClientCacheVersionAsync(CancellationToken cancellationToken)
@@ -325,7 +476,7 @@ public sealed class WorldSession(
         ServerPacket packet = new(Opcode.SMSG_CLIENTCACHE_VERSION, 4);
         packet.Body.WriteUInt32(options.ClientCacheVersion);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     private async Task SendTutorialFlagsAsync(CancellationToken cancellationToken)
@@ -337,10 +488,10 @@ public sealed class WorldSession(
             packet.Body.WriteUInt32(0);
         }
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
-    private async Task SendAccountDataTimesAsync(uint mask, CancellationToken cancellationToken)
+    private void SendAccountDataTimes(uint mask)
     {
         ServerPacket packet = new(Opcode.SMSG_ACCOUNT_DATA_TIMES, 4 + 1 + 4 + (AccountDataTypeCount * 4));
 
@@ -356,7 +507,7 @@ public sealed class WorldSession(
             }
         }
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     /// <summary>
@@ -370,12 +521,12 @@ public sealed class WorldSession(
     {
         IReadOnlyList<CharacterSummary> roster = _account is null
             ? []
-            : await characters.ListForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(false);
+            : await characters.ListForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(true);
 
         ServerPacket packet = new(Opcode.SMSG_CHAR_ENUM, 1 + (roster.Count * CharacterList.MaxBytesPerCharacter));
         CharacterList.Write(packet.Body, roster);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
 
         Log.CharacterListSent(logger, roster.Count, connection.RemoteAddress);
     }
@@ -411,33 +562,33 @@ public sealed class WorldSession(
             !reader.TryReadUInt8(out byte hairColor) ||
             !reader.TryReadUInt8(out byte facialHair))
         {
-            await SendCharacterCreateResultAsync(CharCreateError, cancellationToken).ConfigureAwait(false);
+            await SendCharacterCreateResultAsync(CharCreateError, cancellationToken).ConfigureAwait(true);
             return;
         }
 
         if (!CharacterName.TryNormalize(rawName, out string name))
         {
-            await SendCharacterCreateResultAsync(CharNameInvalidCharacter, cancellationToken).ConfigureAwait(false);
+            await SendCharacterCreateResultAsync(CharNameInvalidCharacter, cancellationToken).ConfigureAwait(true);
             return;
         }
 
         if (gender > 1 || !createInfo.TryGet(race, characterClass, out PlayerCreateInfo start))
         {
             Log.InvalidCharacterCreate(logger, race, characterClass, gender, connection.RemoteAddress);
-            await SendCharacterCreateResultAsync(CharCreateFailed, cancellationToken).ConfigureAwait(false);
+            await SendCharacterCreateResultAsync(CharCreateFailed, cancellationToken).ConfigureAwait(true);
             return;
         }
 
-        if (await characters.CountForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(false)
+        if (await characters.CountForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(true)
             >= MaxCharactersPerAccount)
         {
-            await SendCharacterCreateResultAsync(CharCreateAccountLimit, cancellationToken).ConfigureAwait(false);
+            await SendCharacterCreateResultAsync(CharCreateAccountLimit, cancellationToken).ConfigureAwait(true);
             return;
         }
 
-        if (await characters.NameExistsAsync(name, cancellationToken).ConfigureAwait(false))
+        if (await characters.NameExistsAsync(name, cancellationToken).ConfigureAwait(true))
         {
-            await SendCharacterCreateResultAsync(CharCreateNameInUse, cancellationToken).ConfigureAwait(false);
+            await SendCharacterCreateResultAsync(CharCreateNameInUse, cancellationToken).ConfigureAwait(true);
             return;
         }
 
@@ -464,17 +615,17 @@ public sealed class WorldSession(
             CreatedAt = DateTime.UtcNow,
         };
 
-        uint? id = await characters.CreateAsync(character, cancellationToken).ConfigureAwait(false);
+        uint? id = await characters.CreateAsync(character, cancellationToken).ConfigureAwait(true);
 
         if (id is null)
         {
             // Lost the race on the unique index — someone else took the name in between.
-            await SendCharacterCreateResultAsync(CharCreateNameInUse, cancellationToken).ConfigureAwait(false);
+            await SendCharacterCreateResultAsync(CharCreateNameInUse, cancellationToken).ConfigureAwait(true);
             return;
         }
 
         Log.CharacterCreated(logger, name, id.Value, _account.Username, connection.RemoteAddress);
-        await SendCharacterCreateResultAsync(CharCreateSuccess, cancellationToken).ConfigureAwait(false);
+        await SendCharacterCreateResultAsync(CharCreateSuccess, cancellationToken).ConfigureAwait(true);
     }
 
     /// <summary>Deletes a character the account owns.</summary>
@@ -489,7 +640,7 @@ public sealed class WorldSession(
 
         if (!reader.TryReadUInt64(out ulong rawGuid))
         {
-            await SendCharacterDeleteResultAsync(CharDeleteFailed, cancellationToken).ConfigureAwait(false);
+            await SendCharacterDeleteResultAsync(CharDeleteFailed, cancellationToken).ConfigureAwait(true);
             return;
         }
 
@@ -499,7 +650,7 @@ public sealed class WorldSession(
         // character simply finds nothing to delete.
         bool deleted = await characters
             .DeleteAsync(_account.Id, guid.Counter, cancellationToken)
-            .ConfigureAwait(false);
+            .ConfigureAwait(true);
 
         if (deleted)
         {
@@ -507,7 +658,7 @@ public sealed class WorldSession(
         }
 
         await SendCharacterDeleteResultAsync(deleted ? CharDeleteSuccess : CharDeleteFailed, cancellationToken)
-            .ConfigureAwait(false);
+            .ConfigureAwait(true);
     }
 
     private async Task SendCharacterCreateResultAsync(byte result, CancellationToken cancellationToken)
@@ -515,7 +666,7 @@ public sealed class WorldSession(
         ServerPacket packet = new(Opcode.SMSG_CHAR_CREATE, 1);
         packet.Body.WriteUInt8(result);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     private async Task SendCharacterDeleteResultAsync(byte result, CancellationToken cancellationToken)
@@ -523,7 +674,7 @@ public sealed class WorldSession(
         ServerPacket packet = new(Opcode.SMSG_CHAR_DELETE, 1);
         packet.Body.WriteUInt8(result);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     /// <summary>
@@ -538,10 +689,7 @@ public sealed class WorldSession(
     /// honest players standing on bridges. See <see cref="MovementValidator"/>.
     /// </para>
     /// </remarks>
-    private async Task HandleMovementAsync(
-        Opcode opcode,
-        ReadOnlyMemory<byte> payload,
-        CancellationToken cancellationToken)
+    private void HandleMovement(Opcode opcode, ReadOnlyMemory<byte> payload)
     {
         if (_player is null || _map is null)
         {
@@ -577,7 +725,7 @@ public sealed class WorldSession(
 
             // The client is told where the server thinks it is, so an honest client that drifted
             // snaps back instead of desynchronising silently.
-            await SendKnownPositionAsync(cancellationToken).ConfigureAwait(false);
+            SendKnownPosition();
             return;
         }
 
@@ -585,7 +733,7 @@ public sealed class WorldSession(
         _player.Movement.CopyFrom(claimed);
 
         // The map owns position: moving cells is what keeps visibility queries correct.
-        await _map.RelocateAsync(_player, _player.Movement.Position, cancellationToken).ConfigureAwait(false);
+        _map.Relocate(_player, _player.Movement.Position);
 
         // Cheap enough to do per packet: the tile is already loaded and the lookup is arithmetic
         // plus one array read. Without it the server's idea of where the player is never changes.
@@ -601,8 +749,7 @@ public sealed class WorldSession(
 
         // Relayed under the opcode the client used, so other clients animate it the same way —
         // a walk arrives as a walk, a jump as a jump.
-        await _map.BroadcastMovementAsync(_player, opcode, _player.Movement, cancellationToken)
-            .ConfigureAwait(false);
+        _map.BroadcastMovement(_player, opcode, _player.Movement);
     }
 
     /// <summary>
@@ -612,7 +759,7 @@ public sealed class WorldSession(
     /// A teleport acknowledgement is how the protocol says "you are actually here". Without it a
     /// rejected client keeps walking in its own reality and every later packet is rejected too.
     /// </remarks>
-    private async Task SendKnownPositionAsync(CancellationToken cancellationToken)
+    private void SendKnownPosition()
     {
         if (_player is null)
         {
@@ -626,28 +773,54 @@ public sealed class WorldSession(
         _player.SyncMovement();
         _player.Movement.WriteTo(packet.Body);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     // ------------------------------------------------------------------ IPlayerConnection
 
-    /// <summary>Sends another object's create block to this client.</summary>
+    /// <summary>Adds an object's create block to this tick's batch.</summary>
     /// <remarks>
     /// Players and creatures produce the same block: upstream gives both
     /// <c>UPDATEFLAG_LIVING | UPDATEFLAG_STATIONARY_POSITION</c> in the <c>Unit</c> constructor, and
     /// what differs is the type id and the update type, both of which the builder derives.
     /// </remarks>
-    public async Task SendCreateAsync(WorldObject other, CancellationToken cancellationToken)
+    public void QueueCreate(WorldObject other)
     {
         ArgumentNullException.ThrowIfNull(other);
 
         other.SyncMovement();
 
-        UpdateData update = new();
-        update.AddBlock(UpdateBlockBuilder.BuildCreateBlock(
+        _pendingUpdates.AddBlock(UpdateBlockBuilder.BuildCreateBlock(
             other.Guid, other.TypeId, other.Fields, other.Movement, other.Speeds, isSelf: false));
 
-        byte[] payload = update.BuildPayload();
+        Log.ObjectBecameVisible(logger, other.Name, _player?.Name ?? "?");
+    }
+
+    /// <summary>Adds an object's destroy to this tick's batch.</summary>
+    /// <remarks>
+    /// The out-of-range block is how the client is told to destroy its copy; there is no separate
+    /// destroy opcode in 3.3.5a.
+    /// </remarks>
+    public void QueueDestroy(ObjectGuid objectGuid) => _pendingUpdates.AddOutOfRange(objectGuid);
+
+    /// <summary>
+    /// Sends everything queued this tick as one packet.
+    /// </summary>
+    /// <remarks>
+    /// One <c>SMSG_UPDATE_OBJECT</c> can carry any number of blocks, and the client reads them all.
+    /// Before this existed, entering the world at the human starting point produced 131 packets —
+    /// one per creature in sight — where upstream sends one.
+    /// </remarks>
+    public void FlushUpdates()
+    {
+        if (_pendingUpdates.BlockCount == 0)
+        {
+            return;
+        }
+
+        byte[] payload = _pendingUpdates.BuildPayload();
+        _pendingUpdates = new UpdateData();
+
         bool compressed = UpdateData.TryCompress(payload, out byte[] body);
 
         ServerPacket packet = new(
@@ -655,33 +828,11 @@ public sealed class WorldSession(
             body.Length);
         packet.Body.WriteBytes(body);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
-
-        Log.ObjectBecameVisible(logger, other.Name, _player?.Name ?? "?");
-    }
-
-    /// <summary>Tells this client to forget an object that has left view.</summary>
-    public async Task SendDestroyAsync(ObjectGuid objectGuid, CancellationToken cancellationToken)
-    {
-        // The out-of-range block is how the client is told to destroy its copy; there is no
-        // separate destroy opcode in 3.3.5a.
-        UpdateData update = new();
-        update.AddOutOfRange(objectGuid);
-
-        byte[] payload = update.BuildPayload();
-
-        ServerPacket packet = new(Opcode.SMSG_UPDATE_OBJECT, payload.Length);
-        packet.Body.WriteBytes(payload);
-
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     /// <summary>Relays another player's movement to this client.</summary>
-    public async Task SendMovementAsync(
-        Opcode opcode,
-        ObjectGuid mover,
-        MovementInfo movement,
-        CancellationToken cancellationToken)
+    public void SendMovement(Opcode opcode, ObjectGuid mover, MovementInfo movement)
     {
         ArgumentNullException.ThrowIfNull(movement);
 
@@ -689,7 +840,7 @@ public sealed class WorldSession(
         packet.Body.WritePackedGuid(mover);
         movement.WriteTo(packet.Body);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     /// <summary>
@@ -708,18 +859,18 @@ public sealed class WorldSession(
         ServerPacket response = new(Opcode.SMSG_LOGOUT_RESPONSE, 5);
         response.Body.WriteUInt32(0);   // 0 = allowed
         response.Body.WriteUInt8(1);    // instant
-        await connection.SendAsync(response, cancellationToken).ConfigureAwait(false);
+        connection.Send(response);
 
-        await SavePlayerAsync(cancellationToken).ConfigureAwait(false);
+        await SavePlayerAsync(cancellationToken).ConfigureAwait(true);
 
         ServerPacket complete = new(Opcode.SMSG_LOGOUT_COMPLETE, 0);
-        await connection.SendAsync(complete, cancellationToken).ConfigureAwait(false);
+        connection.Send(complete);
 
         if (_player is not null)
         {
             if (_map is not null)
             {
-                await _map.RemoveAsync(_player, cancellationToken).ConfigureAwait(false);
+                _map.Remove(_player);
             }
 
             Log.PlayerLeftWorld(logger, _player.Name, connection.RemoteAddress);
@@ -732,10 +883,10 @@ public sealed class WorldSession(
         Status = SessionStatus.Authed;
     }
 
-    private async Task HandleLogoutCancelAsync(CancellationToken cancellationToken)
+    private void HandleLogoutCancel()
     {
         ServerPacket packet = new(Opcode.SMSG_LOGOUT_CANCEL_ACK, 0);
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     /// <summary>
@@ -745,6 +896,27 @@ public sealed class WorldSession(
     /// Called on logout and on disconnect. A client that vanishes mid-session — alt-F4, a dropped
     /// connection — must not lose its progress, and there is no tick loop yet to save periodically.
     /// </remarks>
+    /// <summary>
+    /// Saves and detaches the character, from whichever thread the connection died on.
+    /// </summary>
+    /// <remarks>
+    /// A dropped connection is noticed by the read task, which is not the world loop — and
+    /// <see cref="SavePlayerAsync"/> takes the player off its map, which is map state. So the work
+    /// is posted to the loop rather than run where it was noticed. Awaiting the posted task is what
+    /// keeps the host from disposing the connection out from under it.
+    /// </remarks>
+    public Task DisconnectAsync()
+    {
+        if (_scheduler is null)
+        {
+            return SavePlayerAsync(CancellationToken.None);
+        }
+
+        return _scheduler.Factory.StartNew(
+            () => SavePlayerAsync(CancellationToken.None),
+            CancellationToken.None).Unwrap();
+    }
+
     public async Task SavePlayerAsync(CancellationToken cancellationToken)
     {
         if (_player is null)
@@ -760,7 +932,7 @@ public sealed class WorldSession(
             _player.Position.Y,
             _player.Position.Z,
             _player.Position.Orientation,
-            cancellationToken).ConfigureAwait(false);
+            cancellationToken).ConfigureAwait(true);
 
         Log.PlayerSaved(logger, _player.Name, _player.Position.X, _player.Position.Y);
 
@@ -768,7 +940,7 @@ public sealed class WorldSession(
         // player stays visible to everyone else as a statue.
         if (_map is not null)
         {
-            await _map.RemoveAsync(_player, cancellationToken).ConfigureAwait(false);
+            _map.Remove(_player);
             _map = null;
         }
     }
@@ -797,7 +969,7 @@ public sealed class WorldSession(
         ObjectGuid guid = new(rawGuid);
 
         IReadOnlyList<CharacterSummary> roster =
-            await characters.ListForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(false);
+            await characters.ListForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(true);
 
         CharacterSummary? character = roster.FirstOrDefault(entry => entry.Id == guid.Counter);
 
@@ -818,24 +990,21 @@ public sealed class WorldSession(
         _player = player;
         Status = SessionStatus.LoggedIn;
 
-        await PlayerLogin
-            .SendLoginSequenceAsync(connection, player, options.Motd, SendAccountDataTimesAsync, cancellationToken)
-            .ConfigureAwait(false);
-
-        await PlayerLogin.SendSelfCreateAsync(connection, player, cancellationToken).ConfigureAwait(false);
-        await PlayerLogin.SendTimeSyncRequestAsync(connection, 0, cancellationToken).ConfigureAwait(false);
+        PlayerLogin.SendLoginSequence(connection, player, options.Motd, SendAccountDataTimes);
+        PlayerLogin.SendSelfCreate(connection, player);
+        PlayerLogin.SendTimeSyncRequest(connection, 0);
 
         // Added after the self create: the client needs to know about itself before it is told
         // about anyone standing next to it.
         player.Connection = this;
         _map = maps.GetMap(player.MapId);
-        await _map.AddAsync(player, cancellationToken).ConfigureAwait(false);
+        _map.Add(player);
 
         Log.PlayerEnteredWorld(
             logger, player.Name, player.MapId, player.Position.X, player.Position.Y, connection.RemoteAddress);
     }
 
-    private async Task HandleRealmSplitAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
+    private void HandleRealmSplit(ReadOnlyMemory<byte> payload)
     {
         PacketReader reader = new(payload.Span);
         reader.TryReadUInt32(out uint token);
@@ -845,10 +1014,10 @@ public sealed class WorldSession(
         packet.Body.WriteUInt32(0);              // 0 normal, 1 split, 2 split pending
         packet.Body.WriteCString("01/01/01");
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
-    private async Task<bool> HandlePingAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
+    private bool HandlePing(ReadOnlyMemory<byte> payload)
     {
         PacketReader reader = new(payload.Span);
 
@@ -860,7 +1029,7 @@ public sealed class WorldSession(
         ServerPacket packet = new(Opcode.SMSG_PONG, 4);
         packet.Body.WriteUInt32(ping);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
         return true;
     }
 

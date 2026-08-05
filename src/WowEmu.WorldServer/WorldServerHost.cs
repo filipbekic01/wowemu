@@ -13,9 +13,9 @@ namespace WowEmu.WorldServer;
 /// Accepts world connections and runs one <see cref="WorldSession"/> per client.
 /// </summary>
 /// <remarks>
-/// Every connection gets its own task, as the logon server does. The tick loop and map workers of
-/// PLAN.md §4.2 do not exist yet; the <c>TickScheduler</c> they will run on is built and unused, so
-/// sessions can be moved onto it without reshaping this host.
+/// Every connection gets its own task, but that task only reads, decrypts and queues: handling
+/// happens on the world tick or a map worker. See <see cref="WorldLoop"/> for why that separation
+/// is the whole safety story.
 /// </remarks>
 public sealed class WorldServerHost(
     IOptions<WorldServerOptions> options,
@@ -24,6 +24,8 @@ public sealed class WorldServerHost(
     PlayerCreateInfoStore createInfo,
     WorldContent world,
     MapManager maps,
+    SessionRegistry sessions,
+    WorldLoop worldLoop,
     ILogger<WorldServerHost> logger,
     ILoggerFactory loggerFactory) : BackgroundService
 {
@@ -67,16 +69,23 @@ public sealed class WorldServerHost(
 
             WorldSession session = new(connection, accounts, characters, createInfo, world, maps, _options, sessionLogger);
 
+            // Bound to the world tick before it is registered, so the first packet it queues already
+            // has somewhere to resume.
+            session.AttachTo(worldLoop.Scheduler);
+            sessions.Add(session);
+
             try
             {
                 await session.RunAsync(cancellationToken).ConfigureAwait(false);
             }
             finally
             {
+                sessions.Remove(session);
+
                 // A client that vanishes — alt-F4, a dropped connection — never sends a logout, so
-                // the save has to happen here too. CancellationToken.None on purpose: shutdown is
-                // exactly when losing a player's position would be worst.
-                await session.SavePlayerAsync(CancellationToken.None).ConfigureAwait(false);
+                // the save has to happen here too. It runs on the world loop rather than on this
+                // task, because taking a player off a map is map state.
+                await session.DisconnectAsync().ConfigureAwait(false);
             }
         }
         catch (Exception ex) when (ex is SocketException or IOException or ObjectDisposedException or InvalidDataException)

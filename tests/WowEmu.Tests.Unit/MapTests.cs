@@ -85,15 +85,15 @@ public sealed class MapCoordinatesTests
 public sealed class MapVisibilityTests
 {
     [Fact]
-    public async Task PlayersInRange_SeeEachOtherOnArrival()
+    public void PlayersInRange_SeeEachOtherOnArrival()
     {
         Map map = NewMap();
 
         (Player first, RecordingConnection firstLink) = NewPlayer(1, 0f, 0f);
         (Player second, RecordingConnection secondLink) = NewPlayer(2, 10f, 10f);
 
-        await map.AddAsync(first, TestToken);
-        await map.AddAsync(second, TestToken);
+        map.Add(first);
+        map.Add(second);
 
         Assert.Contains(second.Guid, first.VisibleObjects);
         Assert.Contains(first.Guid, second.VisibleObjects);
@@ -103,15 +103,15 @@ public sealed class MapVisibilityTests
     }
 
     [Fact]
-    public async Task PlayersOutOfRange_DoNotSeeEachOther()
+    public void PlayersOutOfRange_DoNotSeeEachOther()
     {
         Map map = NewMap();
 
         (Player first, RecordingConnection firstLink) = NewPlayer(1, 0f, 0f);
         (Player second, _) = NewPlayer(2, 500f, 500f);
 
-        await map.AddAsync(first, TestToken);
-        await map.AddAsync(second, TestToken);
+        map.Add(first);
+        map.Add(second);
 
         Assert.Empty(first.VisibleObjects);
         Assert.Empty(firstLink.Created);
@@ -119,26 +119,26 @@ public sealed class MapVisibilityTests
 
     /// <summary>Walking into range creates; walking out destroys. Both exactly once.</summary>
     [Fact]
-    public async Task WalkingIntoAndOutOfRange_CreatesThenDestroys()
+    public void WalkingIntoAndOutOfRange_CreatesThenDestroys()
     {
         Map map = NewMap();
 
         (Player walker, RecordingConnection walkerLink) = NewPlayer(1, 500f, 0f);
         (Player stationary, RecordingConnection stationaryLink) = NewPlayer(2, 0f, 0f);
 
-        await map.AddAsync(stationary, TestToken);
-        await map.AddAsync(walker, TestToken);
+        map.Add(stationary);
+        map.Add(walker);
 
         Assert.Empty(walkerLink.Created);
 
         // Into range.
-        await map.RelocateAsync(walker, new Position(20f, 0f, 0f, 0f), TestToken);
+        map.Relocate(walker, new Position(20f, 0f, 0f, 0f));
 
         Assert.Equal([stationary.Guid], walkerLink.Created);
         Assert.Equal([walker.Guid], stationaryLink.Created);
 
         // Back out again.
-        await map.RelocateAsync(walker, new Position(500f, 0f, 0f, 0f), TestToken);
+        map.Relocate(walker, new Position(500f, 0f, 0f, 0f));
 
         Assert.Equal([stationary.Guid], walkerLink.Destroyed);
         Assert.Equal([walker.Guid], stationaryLink.Destroyed);
@@ -150,22 +150,22 @@ public sealed class MapVisibilityTests
     /// nearby character flicker on every movement packet.
     /// </summary>
     [Fact]
-    public async Task MovingWhileVisible_DoesNotResendCreates()
+    public void MovingWhileVisible_DoesNotResendCreates()
     {
         Map map = NewMap();
 
         (Player mover, RecordingConnection moverLink) = NewPlayer(1, 0f, 0f);
         (Player other, RecordingConnection otherLink) = NewPlayer(2, 10f, 0f);
 
-        await map.AddAsync(other, TestToken);
-        await map.AddAsync(mover, TestToken);
+        map.Add(other);
+        map.Add(mover);
 
         int createsBefore = moverLink.Created.Count;
         int otherCreatesBefore = otherLink.Created.Count;
 
         for (int step = 1; step <= 5; step++)
         {
-            await map.RelocateAsync(mover, new Position(step, 0f, 0f, 0f), TestToken);
+            map.Relocate(mover, new Position(step, 0f, 0f, 0f));
         }
 
         Assert.Equal(createsBefore, moverLink.Created.Count);
@@ -173,17 +173,17 @@ public sealed class MapVisibilityTests
     }
 
     [Fact]
-    public async Task LeavingTheMap_DestroysForEveryoneWhoCouldSee()
+    public void LeavingTheMap_DestroysForEveryoneWhoCouldSee()
     {
         Map map = NewMap();
 
         (Player leaver, _) = NewPlayer(1, 0f, 0f);
         (Player watcher, RecordingConnection watcherLink) = NewPlayer(2, 5f, 5f);
 
-        await map.AddAsync(watcher, TestToken);
-        await map.AddAsync(leaver, TestToken);
+        map.Add(watcher);
+        map.Add(leaver);
 
-        await map.RemoveAsync(leaver, TestToken);
+        map.Remove(leaver);
 
         Assert.Equal([leaver.Guid], watcherLink.Destroyed);
         Assert.DoesNotContain(leaver.Guid, watcher.VisibleObjects);
@@ -192,32 +192,32 @@ public sealed class MapVisibilityTests
 
     /// <summary>Movement goes to everyone who can see the mover, and never back to the mover.</summary>
     [Fact]
-    public async Task MovementBroadcast_SkipsTheMover()
+    public void MovementBroadcast_SkipsTheMover()
     {
         Map map = NewMap();
 
         (Player mover, RecordingConnection moverLink) = NewPlayer(1, 0f, 0f);
         (Player watcher, RecordingConnection watcherLink) = NewPlayer(2, 10f, 0f);
 
-        await map.AddAsync(mover, TestToken);
-        await map.AddAsync(watcher, TestToken);
+        map.Add(mover);
+        map.Add(watcher);
 
-        await map.BroadcastMovementAsync(mover, Opcode.MSG_MOVE_HEARTBEAT, mover.Movement, TestToken);
+        map.BroadcastMovement(mover, Opcode.MSG_MOVE_HEARTBEAT, mover.Movement);
 
         Assert.Equal([mover.Guid], watcherLink.Moved);
         Assert.Empty(moverLink.Moved);
     }
 
     [Fact]
-    public async Task FindInRange_ExcludesTheSubject()
+    public void FindInRange_ExcludesTheSubject()
     {
         Map map = NewMap();
 
         (Player first, _) = NewPlayer(1, 0f, 0f);
         (Player second, _) = NewPlayer(2, 10f, 0f);
 
-        await map.AddAsync(first, TestToken);
-        await map.AddAsync(second, TestToken);
+        map.Add(first);
+        map.Add(second);
 
         IReadOnlyList<WorldObject> found = map.FindInRange(first.Position, 50f, first);
 
@@ -254,28 +254,24 @@ public sealed class MapVisibilityTests
 
         public List<ObjectGuid> Moved { get; } = [];
 
-        public Task SendCreateAsync(WorldObject other, CancellationToken cancellationToken)
+        /// <summary>How many times a tick's worth of updates was flushed.</summary>
+        public int Flushes { get; private set; }
+
+        public void QueueCreate(WorldObject other)
         {
             ArgumentNullException.ThrowIfNull(other);
 
             Created.Add(other.Guid);
-            return Task.CompletedTask;
         }
 
-        public Task SendDestroyAsync(ObjectGuid objectGuid, CancellationToken cancellationToken)
+        public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
+
+        public void FlushUpdates() => Flushes++;
+
+        public void DrainMapPackets(uint diff)
         {
-            Destroyed.Add(objectGuid);
-            return Task.CompletedTask;
         }
 
-        public Task SendMovementAsync(
-            Opcode opcode,
-            ObjectGuid mover,
-            MovementInfo movement,
-            CancellationToken cancellationToken)
-        {
-            Moved.Add(mover);
-            return Task.CompletedTask;
-        }
+        public void SendMovement(Opcode opcode, ObjectGuid mover, MovementInfo movement) => Moved.Add(mover);
     }
 }

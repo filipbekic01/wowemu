@@ -2,6 +2,7 @@ using System.Buffers;
 using System.IO.Pipelines;
 using System.Net;
 using System.Net.Sockets;
+using System.Threading.Channels;
 using WowEmu.Cryptography;
 using WowEmu.Protocol;
 
@@ -27,13 +28,29 @@ public delegate Task<bool> WorldPacketHandler(Opcode opcode, ReadOnlyMemory<byte
 /// That is why a header is decrypted only once it has arrived in full, and why sends are
 /// serialized: two packets encrypting their headers concurrently would interleave the keystream.
 /// </para>
+/// <para>
+/// <b>Sending does not touch the socket.</b> <see cref="Send"/> puts a packet on an unbounded
+/// channel and returns; one writer task drains it. That is PLAN.md §4.3's replacement for upstream's
+/// <c>MPSCQueueIntrusive</c>, and it is what the tick loop needs: gameplay code runs on a map worker
+/// and must never block behind a slow client's TCP window, because that worker owns every other
+/// object on the map too. The single reader also serializes the keystream by construction, which is
+/// a stronger guarantee than the lock it replaces and costs nothing.
+/// </para>
 /// </remarks>
 public sealed class WorldConnection(Socket socket) : IDisposable
 {
     private readonly Socket _socket = socket;
     private readonly AuthCrypt _crypt = new();
-    private readonly SemaphoreSlim _sendLock = new(1, 1);
     private readonly byte[] _headerBuffer = new byte[WorldPacketHeader.ClientSize];
+
+    // Unbounded and single-reader. Unbounded because dropping a packet desynchronises the client
+    // far worse than a moment of memory pressure does, and because the writer only falls behind if
+    // the client has stopped reading — at which point the connection is about to die anyway.
+    private readonly Channel<OutboundItem> _outbound = Channel.CreateUnbounded<OutboundItem>(
+        new UnboundedChannelOptions { SingleReader = true });
+
+    // Touched only by the send loop. See EnableEncryption for why this is not just _crypt.IsInitialized.
+    private bool _sendEncrypted;
 
     // Created up front, not in RunAsync: the world protocol opens with the *server* speaking, so
     // SMSG_AUTH_CHALLENGE goes out before the read loop has started.
@@ -58,8 +75,21 @@ public sealed class WorldConnection(Socket socket) : IDisposable
     /// authentication failure still has to be sent as an encrypted packet, because the client has
     /// already switched its own crypt on and cannot read a plaintext header. Verifying first and
     /// initializing after would leave a rejected client staring at a hang instead of an error.
+    /// <para>
+    /// The two directions start at different points, and they have to. Receiving switches on
+    /// immediately, because the client's very next packet is already encrypted. Sending switches on
+    /// at a <i>position in the send queue</i> rather than at a moment in time: the challenge sent at
+    /// the start of the session is plaintext, and if it were still queued when this ran, a flag
+    /// checked at write time would encrypt it and the client could not read it. The sentinel below
+    /// is what makes "from here on" mean here in the stream. The two ARC4 states are independent, so
+    /// starting them at different points is safe.
+    /// </para>
     /// </remarks>
-    public void EnableEncryption(ReadOnlySpan<byte> sessionKey) => _crypt.Init(sessionKey);
+    public void EnableEncryption(ReadOnlySpan<byte> sessionKey)
+    {
+        _crypt.Init(sessionKey);
+        _outbound.Writer.TryWrite(OutboundItem.EnableEncryption);
+    }
 
     /// <summary>Reads packets until the connection closes or a handler asks to stop.</summary>
     public async Task RunAsync(WorldPacketHandler handler, CancellationToken cancellationToken)
@@ -170,25 +200,70 @@ public sealed class WorldConnection(Socket socket) : IDisposable
         return true;
     }
 
-    /// <summary>Sends one packet, encrypting its header if encryption is on.</summary>
-    public async Task SendAsync(ServerPacket packet, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Queues one packet. Returns immediately; the socket is written by the send loop.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not <c>async</c>. Everything that sends a packet runs on the world tick or a map
+    /// worker, and neither may block: a worker waiting on one client's TCP window is a worker not
+    /// updating anyone else's map. Ordering is preserved because the channel is FIFO and has a
+    /// single reader.
+    /// </remarks>
+    public void Send(ServerPacket packet)
     {
         ArgumentNullException.ThrowIfNull(packet);
 
+        // Fails only once the channel is completed, which is the connection shutting down. A packet
+        // written to a dying connection is not an error worth propagating into gameplay code.
+        _outbound.Writer.TryWrite(new OutboundItem(packet));
+    }
+
+    /// <summary>
+    /// Drains the outbound queue onto the socket until the connection closes.
+    /// </summary>
+    /// <remarks>
+    /// The one place that touches the send keystream. Framing, header encryption and the write all
+    /// happen here, on one task, in queue order — which is what keeps the RC4 stream intact without
+    /// a lock.
+    /// </remarks>
+    public async Task RunSendLoopAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await foreach (OutboundItem item in _outbound.Reader.ReadAllAsync(cancellationToken).ConfigureAwait(false))
+            {
+                if (item.Packet is null)
+                {
+                    // Everything queued before this point went out in plaintext, which is correct.
+                    _sendEncrypted = true;
+                    continue;
+                }
+
+                await WriteAsync(item.Packet, cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Shutdown.
+        }
+        catch (Exception exception) when (exception is IOException or SocketException or ObjectDisposedException)
+        {
+            // Client vanished. The read loop notices too and closes the session.
+        }
+    }
+
+    private async Task WriteAsync(ServerPacket packet, CancellationToken cancellationToken)
+    {
         int payloadLength = packet.Length;
         int headerLength = WorldPacketHeader.ServerHeaderLength(payloadLength);
 
         byte[] frame = ArrayPool<byte>.Shared.Rent(headerLength + payloadLength);
 
-        // One packet at a time: the header keystream is stateful, so concurrent sends would
-        // interleave it and corrupt every header after the collision.
-        await _sendLock.WaitAsync(cancellationToken).ConfigureAwait(false);
-
         try
         {
             WorldPacketHeader.WriteServer(frame.AsSpan(0, headerLength), packet.Opcode, payloadLength);
 
-            if (_crypt.IsInitialized)
+            if (_sendEncrypted)
             {
                 _crypt.EncryptSend(frame.AsSpan(0, headerLength));
             }
@@ -201,14 +276,29 @@ public sealed class WorldConnection(Socket socket) : IDisposable
         }
         finally
         {
-            _sendLock.Release();
             ArrayPool<byte>.Shared.Return(frame);
         }
     }
 
+    /// <summary>Stops the send loop once everything already queued has gone out.</summary>
+    public void CompleteSending() => _outbound.Writer.TryComplete();
+
+    /// <summary>
+    /// One thing to send: a packet, or the point at which header encryption begins.
+    /// </summary>
+    /// <remarks>
+    /// The encryption marker travels in the queue rather than being a flag on the side, so that
+    /// "encryption starts now" means the same thing to the writer as it did to the caller. See
+    /// <see cref="EnableEncryption"/>.
+    /// </remarks>
+    private readonly record struct OutboundItem(ServerPacket? Packet)
+    {
+        public static OutboundItem EnableEncryption => new((ServerPacket?)null);
+    }
+
     public void Dispose()
     {
-        _sendLock.Dispose();
+        CompleteSending();
         _stream.Dispose();
     }
 }

@@ -2,10 +2,10 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** Creatures spawn. 145,946 of them load from `creature`, are built through their template
-and base stats, and are filed into grids that load the first time a player can see into one. Next:
-gameobject spawns, which are the same shape with a different create block — and then creatures need
-to *do* something, which is Phase 8's pathfinding and Phase 11's AI.
+**Now:** The server runs on a tick. The world loop drains sessions, then the map workers run, and
+the two never overlap — which is what lets `Map` be lock-free the way upstream's entity code is.
+`TickScheduler` is finally what it was built for. Next: gameobject spawns, and then creature
+movement, which is the first thing that needs the tick it now has.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -177,8 +177,8 @@ to *do* something, which is Phase 8's pathfinding and Phase 11's AI.
 - [ ] Gameobject spawn loading per grid
 - [ ] Unload cells and tiles when a grid empties — a grid, once loaded, currently stays for the life
       of the process, and there is no tick to notice that the last player left
-- [ ] `MapUpdater` worker pool, `MapMgr` 4-phase round-robin
-- [ ] Move sessions onto the `TickScheduler` — the map lock is a stand-in for it
+- [x] `MapUpdater` worker pool, `MapMgr` 4-phase round-robin with the accumulated-diff rule
+- [x] Sessions moved onto the `TickScheduler`; the map lock is gone
 - [ ] 400-yard far-visibility second pass
 
 ## Phase 7 — Movement 🔵 → **M4**
@@ -282,6 +282,31 @@ play, which is exactly why they are written down.
       309 tables of someone else's shape, and owning the `CREATE` without a transform breaks the
       match with upstream's `INSERT`s. See `sql/README.md`.)
 
+## Phase 4.2 — The tick ✅
+
+The threading model PLAN.md §4.2 calls the single most important constraint in the port.
+
+- [x] Outbound packets go through a `Channel` with one writer task — sending never touches a socket,
+      so gameplay code on a map worker cannot block behind a slow client
+- [x] Header encryption begins at a *position in the send queue*, not a moment in time, or the
+      plaintext challenge would be encrypted if the writer had not caught up
+- [x] `Map` is synchronous and lock-free; safety comes from the tick's ordering, not a mutex
+- [x] World loop: drain the scheduler → drain sessions → run maps, in that order and never overlapping
+- [x] `MapUpdater` — dedicated threads, not the thread pool, so a callback storm cannot starve a tick
+- [x] One inbound queue per session, drained by whichever loop may run the packet at its front
+- [x] Handlers resume on the loop that started them (`ConfigureAwait(true)` under the tick's
+      `SynchronizationContext`), so a database answer never lands on a pool thread holding a `Player`
+- [x] Per-viewer update batching — one `SMSG_UPDATE_OBJECT` per tick instead of one per object;
+      logging in at Northshire went from 131 packets to 1
+- [x] Periodic save — the first thing that could not exist before there was a tick
+- [ ] Analyzer banning bare `Task.Run` in gameplay code (PLAN §4.2)
+- [ ] `AssertOwnerThread` is not called anywhere yet — the invariant is documented and structural,
+      but nothing fails loudly if a future caller breaks it
+- [ ] Map workers default to 0 (inline). The pool is written and tested but unproven under load.
+- [ ] **Grid loading blocks the tick it happens on.** Measured: 875 ticks/second idle, but the tick
+      a player logs in on takes ~71 ms, over the 50 ms budget, because the grid around them builds
+      ~960 creatures inside the map update. Upstream splits this per cell rather than per grid.
+
 ## Cross-cutting
 
 - [ ] CI — build, test, vector verification on every push
@@ -305,9 +330,9 @@ play, which is exactly why they are written down.
 
 ## Known gaps worth remembering
 
-- The world server has no tick loop; every session runs on its own task, and the map's lock stands
-  in for the per-map worker PLAN §4.2 describes.
-- `TickScheduler` is built and tested but still unused.
+- Session handlers that await resume on the tick, but nothing *enforces* it: a future handler that
+  writes `ConfigureAwait(false)` would silently resume on the thread pool and touch a `Player` from
+  outside its loop. `TickScheduler.AssertOwnerThread` exists for exactly this and is not yet wired in.
 - Movement is validated for coordinates, teleports, speed and flag sanity — but not against
   terrain height or liquid, because both need vmaps to avoid false positives.
 - Character creation accepts any race/class the client offers — no expansion or faction gating.

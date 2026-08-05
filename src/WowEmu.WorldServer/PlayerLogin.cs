@@ -15,6 +15,10 @@ namespace WowEmu.WorldServer;
 /// upstream's, minus the parts that need systems no phase has built — guild info, reputations,
 /// action buttons, spells, auras.
 /// </para>
+/// <para>
+/// Nothing here awaits. Sending queues a packet and returns, so the order the client sees is the
+/// order these are called in — which is the only thing that ever mattered about the sequence.
+/// </para>
 /// </remarks>
 public static class PlayerLogin
 {
@@ -25,40 +29,39 @@ public static class PlayerLogin
     public const float GameSpeed = 0.01666667f;
 
     /// <summary>Sends everything that precedes the player appearing.</summary>
-    public static async Task SendLoginSequenceAsync(
+    public static void SendLoginSequence(
         WorldConnection connection,
         Player player,
         string motd,
-        Func<uint, CancellationToken, Task> sendAccountDataTimes,
-        CancellationToken cancellationToken)
+        Action<uint> sendAccountDataTimes)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(player);
         ArgumentNullException.ThrowIfNull(sendAccountDataTimes);
 
-        await SendVerifyWorldAsync(connection, player, cancellationToken).ConfigureAwait(false);
+        SendVerifyWorld(connection, player);
 
         // Per-character slots this time, not the account-wide mask sent before character selection.
-        await sendAccountDataTimes(PerCharacterCacheMask, cancellationToken).ConfigureAwait(false);
+        sendAccountDataTimes(PerCharacterCacheMask);
 
-        await SendFeatureSystemStatusAsync(connection, cancellationToken).ConfigureAwait(false);
-        await SendMotdAsync(connection, motd, cancellationToken).ConfigureAwait(false);
-        await SendLearnedDanceMovesAsync(connection, cancellationToken).ConfigureAwait(false);
+        SendFeatureSystemStatus(connection);
+        SendMotd(connection, motd);
+        SendLearnedDanceMoves(connection);
 
         // Before add-to-map.
-        await SendBindPointAsync(connection, player, cancellationToken).ConfigureAwait(false);
-        await SendInstanceDifficultyAsync(connection, cancellationToken).ConfigureAwait(false);
-        await SendTimeSpeedAsync(connection, cancellationToken).ConfigureAwait(false);
+        SendBindPoint(connection, player);
+        SendInstanceDifficulty(connection);
+        SendTimeSpeed(connection);
     }
 
     /// <summary>
     /// Tells the client which map and where on it. This is what ends the loading screen.
     /// </summary>
-    public static async Task SendVerifyWorldAsync(
-        WorldConnection connection,
-        Player player,
-        CancellationToken cancellationToken)
+    public static void SendVerifyWorld(WorldConnection connection, Player player)
     {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(player);
+
         ServerPacket packet = new(Opcode.SMSG_LOGIN_VERIFY_WORLD, 20);
 
         packet.Body.WriteUInt32(player.MapId);
@@ -67,25 +70,20 @@ public static class PlayerLogin
         packet.Body.WriteSingle(player.Position.Z);
         packet.Body.WriteSingle(player.Position.Orientation);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
-    private static async Task SendFeatureSystemStatusAsync(
-        WorldConnection connection,
-        CancellationToken cancellationToken)
+    private static void SendFeatureSystemStatus(WorldConnection connection)
     {
         ServerPacket packet = new(Opcode.SMSG_FEATURE_SYSTEM_STATUS, 2);
 
         packet.Body.WriteUInt8(2);   // complaint system: enabled with auto-ignore
         packet.Body.WriteUInt8(0);   // voice chat off
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
-    private static async Task SendMotdAsync(
-        WorldConnection connection,
-        string motd,
-        CancellationToken cancellationToken)
+    private static void SendMotd(WorldConnection connection, string motd)
     {
         string[] lines = motd.Split('\n', StringSplitOptions.RemoveEmptyEntries);
 
@@ -97,26 +95,21 @@ public static class PlayerLogin
             packet.Body.WriteCString(line);
         }
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
-    private static async Task SendLearnedDanceMovesAsync(
-        WorldConnection connection,
-        CancellationToken cancellationToken)
+    private static void SendLearnedDanceMoves(WorldConnection connection)
     {
         ServerPacket packet = new(Opcode.SMSG_LEARNED_DANCE_MOVES, 8);
 
         packet.Body.WriteUInt32(0);
         packet.Body.WriteUInt32(0);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     /// <summary>Where the character resurrects and hearthstones to.</summary>
-    private static async Task SendBindPointAsync(
-        WorldConnection connection,
-        Player player,
-        CancellationToken cancellationToken)
+    private static void SendBindPoint(WorldConnection connection, Player player)
     {
         ServerPacket packet = new(Opcode.SMSG_BINDPOINTUPDATE, 20);
 
@@ -128,25 +121,21 @@ public static class PlayerLogin
         packet.Body.WriteUInt32(player.MapId);
         packet.Body.WriteUInt32(player.ZoneId);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
-    private static async Task SendInstanceDifficultyAsync(
-        WorldConnection connection,
-        CancellationToken cancellationToken)
+    private static void SendInstanceDifficulty(WorldConnection connection)
     {
         ServerPacket packet = new(Opcode.SMSG_INSTANCE_DIFFICULTY, 8);
 
         packet.Body.WriteUInt32(0);   // normal
         packet.Body.WriteUInt32(0);   // not a dynamic-difficulty raid
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     /// <summary>Synchronises the client's clock and calendar.</summary>
-    private static async Task SendTimeSpeedAsync(
-        WorldConnection connection,
-        CancellationToken cancellationToken)
+    private static void SendTimeSpeed(WorldConnection connection)
     {
         ServerPacket packet = new(Opcode.SMSG_LOGIN_SETTIMESPEED, 12);
 
@@ -154,7 +143,7 @@ public static class PlayerLogin
         packet.Body.WriteSingle(GameSpeed);
         packet.Body.WriteUInt32(0);   // added in 3.1.2
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 
     /// <summary>
@@ -165,10 +154,7 @@ public static class PlayerLogin
     /// field and there are a lot of them. The opcode changes with the compression, so the two are
     /// decided together.
     /// </remarks>
-    public static async Task SendSelfCreateAsync(
-        WorldConnection connection,
-        Player player,
-        CancellationToken cancellationToken)
+    public static void SendSelfCreate(WorldConnection connection, Player player)
     {
         ArgumentNullException.ThrowIfNull(connection);
         ArgumentNullException.ThrowIfNull(player);
@@ -193,23 +179,20 @@ public static class PlayerLogin
 
         packet.Body.WriteBytes(body);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
 
         // The client now has everything it was sent; anything further is a change from here.
         player.Fields.ClearDirty();
     }
 
     /// <summary>Asks the client to report its clock, which it does periodically from then on.</summary>
-    public static async Task SendTimeSyncRequestAsync(
-        WorldConnection connection,
-        uint counter,
-        CancellationToken cancellationToken)
+    public static void SendTimeSyncRequest(WorldConnection connection, uint counter)
     {
         ArgumentNullException.ThrowIfNull(connection);
 
         ServerPacket packet = new(Opcode.SMSG_TIME_SYNC_REQ, 4);
         packet.Body.WriteUInt32(counter);
 
-        await connection.SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        connection.Send(packet);
     }
 }

@@ -19,7 +19,7 @@ public sealed class MapGridLoadingTests
 {
     /// <summary>A player arriving must see the creatures already standing around it.</summary>
     [Fact]
-    public async Task ArrivingPlayer_IsSentTheSpawnsAroundIt()
+    public void ArrivingPlayer_IsSentTheSpawnsAroundIt()
     {
         RecordingGridLoader loader = new();
         loader.PlaceAt(0f, 0f, count: 3);
@@ -27,7 +27,7 @@ public sealed class MapGridLoadingTests
         Map map = NewMap(loader);
         (Player player, RecordingConnection link) = NewPlayer(1, 0f, 0f);
 
-        await map.AddAsync(player, TestToken);
+        map.Add(player);
 
         Assert.Equal(3, link.Created.Count);
         Assert.Equal(3, player.VisibleObjects.Count);
@@ -46,7 +46,7 @@ public sealed class MapGridLoadingTests
     /// walks past.
     /// </remarks>
     [Fact]
-    public async Task SpawnsInRangeAreSent_ButNotTheRestOfTheGrid()
+    public void SpawnsInRangeAreSent_ButNotTheRestOfTheGrid()
     {
         RecordingGridLoader loader = new();
         loader.PlaceAt(0f, 0f, count: 1);
@@ -55,7 +55,7 @@ public sealed class MapGridLoadingTests
         Map map = NewMap(loader);
         (Player player, RecordingConnection link) = NewPlayer(1, 0f, 0f);
 
-        await map.AddAsync(player, TestToken);
+        map.Add(player);
 
         Assert.Single(link.Created);
         Assert.Equal(3, map.ObjectCount);
@@ -66,7 +66,7 @@ public sealed class MapGridLoadingTests
     /// with the same guid, and the client would be told to create things it already has.
     /// </summary>
     [Fact]
-    public async Task Grids_AreLoadedAtMostOnce()
+    public void Grids_AreLoadedAtMostOnce()
     {
         RecordingGridLoader loader = new();
         loader.PlaceAt(0f, 0f, count: 1);
@@ -74,7 +74,7 @@ public sealed class MapGridLoadingTests
         Map map = NewMap(loader);
         (Player player, _) = NewPlayer(1, 0f, 0f);
 
-        await map.AddAsync(player, TestToken);
+        map.Add(player);
 
         int afterArrival = loader.Requested.Count;
         Assert.Equal(afterArrival, loader.Requested.Distinct().Count());
@@ -82,7 +82,7 @@ public sealed class MapGridLoadingTests
         // Walking about inside the same grids must not ask again.
         for (int step = 1; step <= 10; step++)
         {
-            await map.RelocateAsync(player, new Position(step * 5f, 0f, 0f, 0f), TestToken);
+            map.Relocate(player, new Position(step * 5f, 0f, 0f, 0f));
         }
 
         Assert.Equal(afterArrival, loader.Requested.Count);
@@ -91,7 +91,7 @@ public sealed class MapGridLoadingTests
 
     /// <summary>Walking towards an unvisited grid loads it and reveals what is in it.</summary>
     [Fact]
-    public async Task WalkingIntoANewGrid_LoadsIt()
+    public void WalkingIntoANewGrid_LoadsIt()
     {
         RecordingGridLoader loader = new();
         loader.PlaceAt(0f, 0f, count: 1);
@@ -100,12 +100,12 @@ public sealed class MapGridLoadingTests
         Map map = NewMap(loader);
         (Player player, RecordingConnection link) = NewPlayer(1, 0f, 0f);
 
-        await map.AddAsync(player, TestToken);
+        map.Add(player);
         Assert.Single(link.Created);
 
         int gridsBefore = map.LoadedGridCount;
 
-        await map.RelocateAsync(player, new Position(-2000f, 0f, 0f, 0f), TestToken);
+        map.Relocate(player, new Position(-2000f, 0f, 0f, 0f));
 
         Assert.True(map.LoadedGridCount > gridsBefore);
         Assert.Equal(3, link.Created.Count);
@@ -119,12 +119,12 @@ public sealed class MapGridLoadingTests
     /// what lets every other map test run without a database.
     /// </summary>
     [Fact]
-    public async Task MapWithoutALoader_HasNoSpawns()
+    public void MapWithoutALoader_HasNoSpawns()
     {
         Map map = new(0, new TerrainMap(0, Path.GetTempPath()));
         (Player player, RecordingConnection link) = NewPlayer(1, 0f, 0f);
 
-        await map.AddAsync(player, TestToken);
+        map.Add(player);
 
         Assert.Empty(link.Created);
         Assert.Equal(0, map.LoadedGridCount);
@@ -140,7 +140,7 @@ public sealed class MapGridLoadingTests
     /// loaded and would never be asked for again.
     /// </remarks>
     [Fact]
-    public async Task Spawns_StayOnTheMapAfterThePlayerLeaves()
+    public void Spawns_StayOnTheMapAfterThePlayerLeaves()
     {
         RecordingGridLoader loader = new();
         loader.PlaceAt(0f, 0f, count: 2);
@@ -148,8 +148,8 @@ public sealed class MapGridLoadingTests
         Map map = NewMap(loader);
         (Player first, _) = NewPlayer(1, 0f, 0f);
 
-        await map.AddAsync(first, TestToken);
-        await map.RemoveAsync(first, TestToken);
+        map.Add(first);
+        map.Remove(first);
 
         Assert.Equal(0, map.PlayerCount);
         Assert.Equal(2, map.ObjectCount);
@@ -158,7 +158,7 @@ public sealed class MapGridLoadingTests
         int requestsBefore = loader.Requested.Count;
         (Player second, RecordingConnection secondLink) = NewPlayer(2, 0f, 0f);
 
-        await map.AddAsync(second, TestToken);
+        map.Add(second);
 
         Assert.Equal(2, secondLink.Created.Count);
         Assert.Equal(requestsBefore, loader.Requested.Count);
@@ -252,28 +252,24 @@ public sealed class MapGridLoadingTests
 
         public List<ObjectGuid> Moved { get; } = [];
 
-        public Task SendCreateAsync(WorldObject other, CancellationToken cancellationToken)
+        /// <summary>How many times a tick's worth of updates was flushed.</summary>
+        public int Flushes { get; private set; }
+
+        public void QueueCreate(WorldObject other)
         {
             ArgumentNullException.ThrowIfNull(other);
 
             Created.Add(other.Guid);
-            return Task.CompletedTask;
         }
 
-        public Task SendDestroyAsync(ObjectGuid objectGuid, CancellationToken cancellationToken)
+        public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
+
+        public void FlushUpdates() => Flushes++;
+
+        public void DrainMapPackets(uint diff)
         {
-            Destroyed.Add(objectGuid);
-            return Task.CompletedTask;
         }
 
-        public Task SendMovementAsync(
-            Opcode opcode,
-            ObjectGuid mover,
-            MovementInfo movement,
-            CancellationToken cancellationToken)
-        {
-            Moved.Add(mover);
-            return Task.CompletedTask;
-        }
+        public void SendMovement(Opcode opcode, ObjectGuid mover, MovementInfo movement) => Moved.Add(mover);
     }
 }

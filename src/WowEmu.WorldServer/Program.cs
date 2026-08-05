@@ -58,8 +58,15 @@ builder.Services.AddSingleton<CreatureFactory>();
 builder.Services.AddSingleton<IGridObjectLoader, CreatureGridLoader>();
 builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<TerrainManager>(),
-    services.GetRequiredService<IGridObjectLoader>()));
+    services.GetRequiredService<IGridObjectLoader>(),
+    new MapUpdater(startupOptions.MapUpdateThreads)));
 
+// The tick has to be running before the listener accepts anyone: a session that queues a packet
+// with nothing draining it would sit at the loading screen forever. Hosted services start in
+// registration order, so this one goes first.
+builder.Services.AddSingleton<SessionRegistry>();
+builder.Services.AddSingleton<WorldLoop>();
+builder.Services.AddHostedService(services => services.GetRequiredService<WorldLoop>());
 builder.Services.AddHostedService<WorldServerHost>();
 
 IHost host = builder.Build();

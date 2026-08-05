@@ -49,4 +49,43 @@ public sealed class WorldServerOptions
     /// <summary>Expansion level offered to clients: 0 vanilla, 1 TBC, 2 WotLK.</summary>
     [Range(0, 2)]
     public byte Expansion { get; set; } = 2;
+
+    /// <summary>
+    /// Floor on how often the world tick runs, in milliseconds.
+    /// </summary>
+    /// <remarks>
+    /// Upstream's <c>MinWorldUpdateTime</c>, and its default is 1. PLAN.md §4.5 records that there
+    /// is <b>no fixed 50 ms tick</b> in this tree, whatever the folklore says — the loop runs as
+    /// fast as it can and this is only the floor that stops it spinning.
+    /// </remarks>
+    [Range(1, 1000)]
+    public uint MinWorldUpdateTimeMs { get; set; } = 1;
+
+    /// <summary>
+    /// How many threads run map updates. Zero runs them inline on the world tick.
+    /// </summary>
+    /// <remarks>
+    /// Defaults to zero because there is one continent's worth of players and inline is simpler to
+    /// reason about; raise it when there is enough happening to be worth the barrier. The pool is
+    /// dedicated threads, not the thread pool — see <c>MapUpdater</c>.
+    /// </remarks>
+    [Range(0, 64)]
+    public int MapUpdateThreads { get; set; }
+
+    /// <summary>A tick slower than this is logged. PLAN.md §4.5 budgets p99 under 50 ms at 1k players.</summary>
+    [Range(1, 60000)]
+    public double SlowTickThresholdMs { get; set; } = 50;
+
+    /// <summary>How often logged-in characters are written back, in milliseconds.</summary>
+    /// <remarks>
+    /// Upstream's <c>PlayerSave.Interval</c> default is 15 minutes. Five is used here because
+    /// nothing else about a character is persisted yet, so a lost save costs only position — and
+    /// because a save that never visibly happens is a save nobody notices is broken.
+    /// </remarks>
+    [Range(1000, 3_600_000)]
+    public uint PlayerSaveIntervalMs { get; set; } = 300_000;
+
+    /// <summary>How often the tick reports its own health, in milliseconds.</summary>
+    [Range(1000, 3_600_000)]
+    public uint TickReportIntervalMs { get; set; } = 60_000;
 }
