@@ -45,6 +45,8 @@ builder.Services.AddKeyedSingleton("creature_loot", (_, _) => new LootStore("cre
 builder.Services.AddKeyedSingleton("reference_loot", (_, _) => new LootStore("reference_loot_template"));
 
 builder.Services.AddSingleton<QuestStore>();
+builder.Services.AddSingleton<GossipStore>();
+builder.Services.AddSingleton<VendorStore>();
 
 // Starter and ender are separate tables, and very often name different NPCs for the same quest.
 builder.Services.AddKeyedSingleton(

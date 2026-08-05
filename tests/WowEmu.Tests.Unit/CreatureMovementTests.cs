@@ -476,7 +476,8 @@ internal static class CreatureFixture
         Position? position = null,
         uint lootId = 0,
         uint minGold = 0,
-        uint maxGold = 0)
+        uint maxGold = 0,
+        uint gossipMenuId = 0)
     {
         StubModels models = new();
         models.Add(new CreatureModelInfo(4481, 0.372f, 1.5f, 0, 0));
@@ -540,7 +541,8 @@ internal static class CreatureFixture
             FlagsExtra: flagsExtra,
             LootId: lootId,
             MinGold: minGold,
-            MaxGold: maxGold);
+            MaxGold: maxGold,
+            GossipMenuId: gossipMenuId);
 
         CreatureBaseStats stats = new(100, 200, 300, 50, 60, 20, 5, 1.5f, 2f, 3f);
 

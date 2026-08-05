@@ -381,6 +381,30 @@ public sealed class WorldSession(
                 HandleQuestLogRemoveQuest(payload);
                 return;
 
+            case Opcode.CMSG_GOSSIP_HELLO:
+                HandleGossipHello(payload);
+                return;
+
+            case Opcode.CMSG_GOSSIP_SELECT_OPTION:
+                HandleGossipSelectOption(payload);
+                return;
+
+            case Opcode.CMSG_NPC_TEXT_QUERY:
+                HandleNpcTextQuery(payload);
+                return;
+
+            case Opcode.CMSG_LIST_INVENTORY:
+                HandleListInventory(payload);
+                return;
+
+            case Opcode.CMSG_BUY_ITEM:
+                HandleBuyItem(payload);
+                return;
+
+            case Opcode.CMSG_SELL_ITEM:
+                HandleSellItem(payload);
+                return;
+
             default:
                 // Every movement opcode routes to one handler, exactly as upstream does — the
                 // opcode says what the client thinks it is doing, but the payload is identical.
@@ -1376,6 +1400,494 @@ public sealed class WorldSession(
 
     /// <summary>The questgiver flag. <c>UNIT_NPC_FLAG_QUESTGIVER</c>.</summary>
     private const uint NpcFlagQuestGiver = 0x0002;
+
+    /// <summary>
+    /// Opens an NPC's gossip window. <c>CMSG_GOSSIP_HELLO</c>.
+    /// </summary>
+    /// <remarks>
+    /// The quests ride in the same packet as the gossip lines, which is what puts both in one
+    /// window. Sending them separately produces two, and the client closes one of them at once.
+    /// <para>
+    /// An NPC with no gossip menu of its own and something to offer goes straight to that thing —
+    /// a pure vendor opens its stock, a pure questgiver its quest. Showing an empty gossip window
+    /// first is what upstream avoids by the same route.
+    /// </para>
+    /// </remarks>
+    private void HandleGossipHello(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || FindInteractable(new ObjectGuid(rawGuid)) is not { } npc)
+        {
+            return;
+        }
+
+        SendGossipFor(npc);
+    }
+
+    /// <summary>Clicks one gossip line. <c>CMSG_GOSSIP_SELECT_OPTION</c>.</summary>
+    /// <remarks>
+    /// The option's own id is echoed back, not its position in the list. A menu with a gap in its
+    /// ids would otherwise select the wrong line.
+    /// </remarks>
+    private void HandleGossipSelectOption(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || !reader.TryReadUInt32(out uint menuId)
+            || !reader.TryReadUInt32(out uint optionId))
+        {
+            return;
+        }
+
+        if (FindInteractable(new ObjectGuid(rawGuid)) is not { } npc)
+        {
+            return;
+        }
+
+        GossipMenuOption? chosen = null;
+
+        foreach (GossipMenuOption option in world.Gossip.OptionsFor(menuId))
+        {
+            if (option.OptionId == optionId && Offers(npc, option))
+            {
+                chosen = option;
+                break;
+            }
+        }
+
+        if (chosen is null)
+        {
+            CloseGossip();
+            return;
+        }
+
+        switch (chosen.OptionType)
+        {
+            case GossipOption.Vendor:
+                SendVendorList(npc);
+                break;
+
+            case GossipOption.Gossip when chosen.ActionMenuId != 0:
+                SendGossipMenu(npc, chosen.ActionMenuId);
+                break;
+
+            default:
+                // Trainers, flight masters, bankers, innkeepers and the rest. The line is drawn
+                // because the NPC really has the flag; clicking it closes the window rather than
+                // opening something that does not exist.
+                CloseGossip();
+                break;
+        }
+    }
+
+    /// <summary>Answers <c>CMSG_NPC_TEXT_QUERY</c> — what does this text id say?</summary>
+    /// <remarks>
+    /// The client asks for anything it has no cached text for, and blocks the gossip window on the
+    /// answer. Silence leaves an empty frame on screen.
+    /// </remarks>
+    private void HandleNpcTextQuery(ReadOnlyMemory<byte> payload)
+    {
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt32(out uint textId))
+        {
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_NPC_TEXT_UPDATE, 512);
+        GossipPackets.WriteNpcText(packet.Body, textId, world.Gossip.TextFor(textId));
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Opens a vendor's stock. <c>CMSG_LIST_INVENTORY</c>.</summary>
+    private void HandleListInventory(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null || !_player.IsAlive)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || FindInteractable(new ObjectGuid(rawGuid)) is not { } npc)
+        {
+            return;
+        }
+
+        SendVendorList(npc);
+    }
+
+    /// <summary>
+    /// Buys something. <c>CMSG_BUY_ITEM</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>The slot arrives one-based and is decremented here</b>, matching what the list sent out.
+    /// A slot of zero is not a real slot; upstream treats it as a forged packet and so does this.
+    /// </remarks>
+    private void HandleBuyItem(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || !reader.TryReadUInt32(out uint itemId)
+            || !reader.TryReadUInt32(out uint slot) || !reader.TryReadUInt8(out byte count))
+        {
+            return;
+        }
+
+        ObjectGuid vendorGuid = new(rawGuid);
+
+        if (slot == 0 || FindInteractable(vendorGuid) is not { } vendor)
+        {
+            return;
+        }
+
+        Buy(vendor, vendorGuid, itemId, slot, Math.Max(count, (byte)1));
+    }
+
+    /// <summary>Sells something. <c>CMSG_SELL_ITEM</c>.</summary>
+    /// <remarks>
+    /// A successful sale answers with nothing at all: the item leaving the bag and the money
+    /// arriving are both field updates, and the client works out the rest.
+    /// </remarks>
+    private void HandleSellItem(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || !reader.TryReadUInt64(out ulong rawItem)
+            || !reader.TryReadUInt8(out byte count))
+        {
+            return;
+        }
+
+        ObjectGuid vendorGuid = new(rawGuid);
+        ObjectGuid itemGuid = new(rawItem);
+
+        if (FindInteractable(vendorGuid) is null)
+        {
+            SendSellFailed(vendorGuid, itemGuid, SellResult.CantFindVendor);
+            return;
+        }
+
+        if (FindOwnedItem(itemGuid) is not (ItemPosition position, Item item))
+        {
+            SendSellFailed(vendorGuid, itemGuid, SellResult.CantFindItem);
+            return;
+        }
+
+        if (item is Bag bag && !bag.IsEmpty)
+        {
+            SendSellFailed(vendorGuid, itemGuid, SellResult.OnlyEmptyBag);
+            return;
+        }
+
+        if (item.Template.SellPrice == 0)
+        {
+            SendSellFailed(vendorGuid, itemGuid, SellResult.CantSellItem);
+            return;
+        }
+
+        // Zero means the whole stack, which is what "sell all" sends.
+        uint selling = count == 0 ? item.Count : count;
+
+        if (selling > item.Count)
+        {
+            SendSellFailed(vendorGuid, itemGuid, SellResult.CantSellItem);
+            return;
+        }
+
+        _player.Inventory.Destroy(position, selling, out Item? removed);
+        _player.Money += item.Template.SellPrice * selling;
+
+        if (removed is not null)
+        {
+            _knownItems.Remove(removed.Guid);
+            _pendingUpdates.AddOutOfRange(removed.Guid);
+        }
+    }
+
+    /// <summary>Runs one purchase, reporting whatever went wrong.</summary>
+    private void Buy(Creature vendor, ObjectGuid vendorGuid, uint itemId, uint oneBasedSlot, uint count)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        IReadOnlyList<VendorItem> stock = world.Vendors.For(vendor.Entry);
+        int index = (int)oneBasedSlot - 1;
+
+        if (index < 0 || index >= stock.Count || stock[index].ItemId != itemId)
+        {
+            SendBuyFailed(vendorGuid, itemId, BuyResult.CantFindItem);
+            return;
+        }
+
+        VendorItem line = stock[index];
+
+        // Honour, arena points and tokens. The cost is a row in a DBC nothing reads, so the only
+        // honest answer is to refuse rather than hand the item over for nothing.
+        if (!line.IsGoldPurchase)
+        {
+            SendBuyFailed(vendorGuid, itemId, BuyResult.CantFindItem);
+            return;
+        }
+
+        if (!world.Items.TryGet(itemId, out ItemTemplate? template) || template is null)
+        {
+            SendBuyFailed(vendorGuid, itemId, BuyResult.CantFindItem);
+            return;
+        }
+
+        // The count the client sends is a number of *stacks* of BuyCount, which is why a stack of
+        // twenty arrows costs the same as one arrow times twenty.
+        uint quantity = count * Math.Max(template.BuyCount, (byte)1);
+        uint price = (uint)Math.Max(template.BuyPrice, 0) * count;
+
+        if (_player.Money < price)
+        {
+            SendBuyFailed(vendorGuid, itemId, BuyResult.NotEnoughMoney);
+            return;
+        }
+
+        if (_player.Inventory.CanStore(template, quantity, out _) != InventoryResult.Ok)
+        {
+            SendEquipError(InventoryResult.InventoryFull);
+            return;
+        }
+
+        _player.Inventory.Store(template, quantity, itemGuids.Next, out IReadOnlyList<Item> bought);
+        _player.Money -= price;
+
+        ServerPacket packet = new(Opcode.SMSG_BUY_ITEM, 24);
+
+        // Unlimited stock is -1, not zero: zero would grey the line out as sold.
+        GossipPackets.WriteBought(packet.Body, vendorGuid, oneBasedSlot, inStock: -1, count);
+
+        connection.Send(packet);
+
+        foreach (Item item in bought)
+        {
+            ItemPosition? where = _player.Inventory.PositionOf(item);
+
+            SendItemPushed(new ItemPushResult(
+                Player: _player.Guid,
+                FromNpc: true,
+                Created: false,
+                ShowInChat: true,
+                Bag: where?.Bag ?? InventorySlots.Backpack,
+                Slot: where?.Slot ?? 0,
+                Entry: itemId,
+                Count: quantity,
+                TotalOfEntry: _player.Inventory.CountOf(itemId)));
+        }
+    }
+
+    /// <summary>Sends whichever window an NPC should open.</summary>
+    private void SendGossipFor(Creature npc)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        // An NPC with no menu of its own goes straight to whatever it does. Showing an empty
+        // gossip window first is a click the player should not have to make.
+        if (npc.GossipMenuId == 0)
+        {
+            if ((npc.NpcFlags & NpcFlags.Vendor) != 0)
+            {
+                SendVendorList(npc);
+                return;
+            }
+
+            if ((npc.NpcFlags & NpcFlagQuestGiver) != 0)
+            {
+                HandleQuestGiverHello(BitConverter.GetBytes(npc.Guid.Value));
+                return;
+            }
+        }
+
+        SendGossipMenu(npc, npc.GossipMenuId);
+    }
+
+    private void SendGossipMenu(Creature npc, uint menuId)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        List<GossipLine> lines = [];
+
+        foreach (GossipMenuOption option in world.Gossip.OptionsFor(menuId))
+        {
+            if (!Offers(npc, option))
+            {
+                continue;
+            }
+
+            lines.Add(new GossipLine(
+                Index: option.OptionId,
+                Icon: option.Icon,
+                Coded: option.BoxCoded,
+                BoxMoney: option.BoxMoney,
+                Text: option.Text,
+                BoxText: option.BoxText));
+        }
+
+        List<QuestMenuEntry> quests = [];
+
+        foreach (uint questId in QuestsFor(npc))
+        {
+            if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
+            {
+                continue;
+            }
+
+            uint icon = MenuIconFor(quest);
+
+            if (icon != QuestGiverStatus.None)
+            {
+                quests.Add(new QuestMenuEntry(quest.Id, icon, quest.Level, quest.Flags, quest.LogTitle));
+            }
+        }
+
+        ServerPacket packet = new(
+            Opcode.SMSG_GOSSIP_MESSAGE, 32 + (lines.Count * 128) + (quests.Count * 96));
+
+        GossipPackets.WriteGossipMenu(
+            packet.Body, npc.Guid, menuId, world.Gossip.TextIdFor(menuId), lines, quests);
+
+        connection.Send(packet);
+    }
+
+    private void SendVendorList(Creature vendor)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        List<VendorLine> lines = [];
+        IReadOnlyList<VendorItem> stock = world.Vendors.For(vendor.Entry);
+
+        for (int i = 0; i < stock.Count && lines.Count < VendorStore.MaxItems; i++)
+        {
+            if (!world.Items.TryGet(stock[i].ItemId, out ItemTemplate? template) || template is null)
+            {
+                continue;
+            }
+
+            lines.Add(new VendorLine(
+                // One-based: the client subtracts one before sending a purchase back, so a
+                // zero-based slot here buys the item before the one that was clicked.
+                Slot: (uint)(i + 1),
+                ItemId: template.Entry,
+                DisplayId: template.DisplayId,
+
+                // Unlimited stock, which is what a maxcount of zero means and what nearly every
+                // row has. A real count would need the restock timer this phase does not run.
+                InStock: -1,
+                Price: (uint)Math.Max(template.BuyPrice, 0),
+                MaxDurability: template.MaxDurability,
+                BuyCount: Math.Max(template.BuyCount, (byte)1),
+                ExtendedCost: stock[i].ExtendedCost));
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_LIST_INVENTORY, 16 + (lines.Count * 32));
+        GossipPackets.WriteVendorList(packet.Body, vendor.Guid, lines);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Tells the client to shut the gossip window.</summary>
+    private void CloseGossip()
+    {
+        ServerPacket packet = new(Opcode.SMSG_GOSSIP_COMPLETE, 0);
+        connection.Send(packet);
+    }
+
+    private void SendBuyFailed(ObjectGuid vendor, uint itemId, BuyResult reason)
+    {
+        ServerPacket packet = new(Opcode.SMSG_BUY_FAILED, 16);
+        GossipPackets.WriteBuyFailed(packet.Body, vendor, itemId, reason);
+
+        connection.Send(packet);
+    }
+
+    private void SendSellFailed(ObjectGuid vendor, ObjectGuid item, SellResult reason)
+    {
+        ServerPacket packet = new(Opcode.SMSG_SELL_ITEM, 24);
+        GossipPackets.WriteSellFailed(packet.Body, vendor, item, reason);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Whether an NPC has the flag a gossip line needs. A line with no flag is always shown.</summary>
+    /// <remarks>
+    /// This is what makes the shared menu 0 work: its options are "browse your goods", "train me",
+    /// "make this inn your home", and each appears only on an NPC that really does that.
+    /// </remarks>
+    private static bool Offers(Creature npc, GossipMenuOption option) =>
+        option.NpcFlagRequired == 0 || (npc.NpcFlags & option.NpcFlagRequired) != 0;
+
+    /// <summary>The creature behind a guid, if it is one, alive, and close enough to talk to.</summary>
+    private Creature? FindInteractable(ObjectGuid guid)
+    {
+        if (_player is null || _map is null || _map.Find(guid) is not Creature npc || !npc.IsAlive)
+        {
+            return null;
+        }
+
+        if (_player.Position.GetExactDist2dSq(npc.Position)
+            > Map.InteractionDistance * Map.InteractionDistance)
+        {
+            return null;
+        }
+
+        return npc;
+    }
+
+    /// <summary>Where one of this player's items is, found by its guid.</summary>
+    private (ItemPosition Position, Item Item)? FindOwnedItem(ObjectGuid guid)
+    {
+        if (_player is null)
+        {
+            return null;
+        }
+
+        foreach ((ItemPosition position, Item item) in _player.Inventory.AllWithPositions)
+        {
+            if (item.Guid == guid)
+            {
+                return (position, item);
+            }
+        }
+
+        return null;
+    }
 
     /// <summary>
     /// Answers "what mark goes over this NPC's head?". <c>CMSG_QUESTGIVER_STATUS_QUERY</c>.

@@ -210,6 +210,12 @@ internal static class WorldStartup
                 "tools/db/import-world.sh");
         }
 
+        GossipStore gossip = services.GetRequiredService<GossipStore>();
+        VendorStore vendors = services.GetRequiredService<VendorStore>();
+
+        await gossip.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await vendors.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
         // Measured into a local rather than inline: the analyzer objects to work inside a log call,
         // and the elapsed time has to be taken at the same point whether or not anyone is listening.
         double elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -225,6 +231,7 @@ internal static class WorldStartup
         Log.GameObjectContentLoaded(logger, objectTemplates.Count, objectSpawns.Count, objectSpawns.MapCount);
         Log.ItemTemplatesLoaded(logger, items.Count);
         Log.QuestsLoaded(logger, quests.Count, questStarters.RowCount, questEnders.RowCount);
+        Log.GossipLoaded(logger, gossip.MenuCount, gossip.OptionCount, gossip.TextCount, vendors.RowCount);
         Log.LootTemplatesLoaded(
             logger, creatureLoot.RowCount, creatureLoot.Count, lootReferences.RowCount, lootReferences.Count);
     }

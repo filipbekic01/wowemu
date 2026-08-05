@@ -62,7 +62,10 @@ public sealed record CreatureTemplate(
     /// </remarks>
     uint LootId,
     uint MinGold,
-    uint MaxGold)
+    uint MaxGold,
+
+    /// <summary>Which gossip menu right-clicking opens. Zero means it has no gossip of its own.</summary>
+    uint GossipMenuId)
 {
     /// <summary>
     /// Picks one of the up-to-four display ids the entry may use.
@@ -169,7 +172,7 @@ public sealed class CreatureTemplateStore : ICreatureModelSource
                        family, Health_mod, Mana_mod, Armor_mod, MovementType, RegenHealth,
                        mindmg, maxdmg, dmg_multiplier, baseattacktime, rangeattacktime,
                        attackpower, rangedattackpower, flags_extra,
-                       lootid, mingold, maxgold
+                       lootid, mingold, maxgold, gossip_menu_id
                 FROM creature_template
                 """;
 
@@ -220,7 +223,8 @@ public sealed class CreatureTemplateStore : ICreatureModelSource
                     FlagsExtra: reader.GetUInt32(35),
                     LootId: reader.GetUInt32(36),
                     MinGold: reader.GetUInt32(37),
-                    MaxGold: reader.GetUInt32(38));
+                    MaxGold: reader.GetUInt32(38),
+                    GossipMenuId: reader.GetUInt32(39));
 
                 _templates[template.Entry] = template;
             }

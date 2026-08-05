@@ -56,7 +56,7 @@
       "name": "Progression",
       "meaning": "Complete the first quests of a starting zone",
       "state": "progress",
-      "note": "Death, items, bags, loot and quests all work. The quest loop is verified end to end by a headless gate: take a quest from one NPC, hand it in to another, get paid. Gossip, vendors and trainers are what is left."
+      "note": "Death, items, bags, loot, quests, gossip and vendors all work, each verified end to end by a headless gate. Trainers are what is left, and they need a spellbook first."
     },
     {
       "id": "M7",
@@ -1306,7 +1306,7 @@
       "title": "Progression systems",
       "state": "progress",
       "milestone": "M6",
-      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands. Death, items, bags, loot and quests are done; gossip and vendors are next.",
+      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands. Death, items, bags, loot, quests, gossip and vendors are done. Trainers need a spellbook, which does not exist yet.",
       "groups": [
         {
           "title": "Death and release",
@@ -1768,6 +1768,96 @@
           ]
         },
         {
+          "title": "Gossip and vendors",
+          "items": [
+            {
+              "done": true,
+              "text": "gossip_menu, gossip_menu_option, npc_text and npc_vendor vendored"
+            },
+            {
+              "done": true,
+              "text": "GOSSIP LINES ARE FILTERED BY THE NPC'S OWN FLAG, which is the whole mechanism",
+              "note": "One row saying 'I want to browse your goods' — menu 0, option 1 — serves every vendor in the game, and appears only on an NPC with the vendor bit. Ignoring the mask offers stabling and flight paths from a shopkeeper."
+            },
+            {
+              "done": true,
+              "text": "A NEGATIVE item IN NPC_VENDOR IS A REFERENCE to another vendor's whole list",
+              "note": "The fourth table to overload a column's sign. Here it is caught loudly — the column is a signed mediumint, so an unsigned read throws — which is the lucky case. The loot table's version fails silently."
+            },
+            {
+              "done": true,
+              "text": "The quests ride in the SAME packet as the gossip lines",
+              "note": "Which is what puts both in one window. Sending them separately produces two, and the client closes one at once."
+            },
+            {
+              "done": true,
+              "text": "SMSG_NPC_TEXT_UPDATE ALWAYS WRITES EIGHT BLOCKS",
+              "note": "The client reads a fixed eight probability-and-text groups and picks between them. Writing only the one with something in it leaves it reading the rest of the packet as text."
+            },
+            {
+              "done": true,
+              "text": "VENDOR SLOTS ARE ONE-BASED, and unlimited stock is -1 rather than 0",
+              "note": "The client subtracts one before sending a purchase back, so a zero-based slot buys the item before the one clicked. And a stock of zero greys the line out as sold."
+            },
+            {
+              "done": true,
+              "text": "An empty vendor list is a DIFFERENT SHAPE — a zero count and an error byte",
+              "note": "Writing the ordinary form leaves the client waiting for a byte that never comes."
+            },
+            {
+              "done": true,
+              "text": "SMSG_BUY_FAILED's parameter word appears ONLY when it is non-zero",
+              "note": "The packet's length is how the client tells whether one is there. A zero shifts the reason byte into it, and every failure reads as 'can't find item'."
+            },
+            {
+              "done": true,
+              "text": "The purchase count is a number of STACKS of BuyCount, not of items",
+              "note": "Verified live: ten copper buys 200 Rough Arrows, because the row's BuyCount is 200."
+            },
+            {
+              "done": true,
+              "text": "An NPC with no gossip menu of its own goes STRAIGHT to what it does",
+              "note": "A pure vendor opens its stock; a pure questgiver its quest. An empty gossip window first is a click the player should not have to make."
+            },
+            {
+              "done": true,
+              "text": "Selling: zero means the whole stack, a non-empty bag is refused, a success sends NOTHING",
+              "note": "The item leaving the bag and the money arriving are both field updates; the client works the rest out."
+            },
+            {
+              "done": true,
+              "text": "tools/harness/m6_vendor.py — the whole shopping loop over the real protocol",
+              "note": "It reads its own item guids out of the login update packet the way a real client does, which also proved the update-block encoding parses back correctly."
+            },
+            {
+              "done": false,
+              "text": "TRAINERS. npc_trainer is not read and no spell can be learned, because there is no spellbook",
+              "note": "The gossip line is drawn, because the NPC really has the flag, and clicking it closes the window. That is also what blocks dual wield, which is spell 674."
+            },
+            {
+              "done": false,
+              "text": "Flight masters, bankers, innkeepers, auctioneers and stable masters",
+              "note": "Same shape as trainers: the line appears and clicking it closes the window."
+            },
+            {
+              "done": false,
+              "text": "Vendor stock limits and restock timers — every vendor has infinite supply"
+            },
+            {
+              "done": false,
+              "text": "Extended cost — honour, arena points and tokens. Those lines are shown and refused."
+            },
+            {
+              "done": false,
+              "text": "Buyback, repair, and the reputation discount on prices"
+            },
+            {
+              "done": false,
+              "text": "The conditions system, which is how upstream picks between a menu's several texts"
+            }
+          ]
+        },
+        {
           "title": "Still to come",
           "items": [
             {
@@ -2154,15 +2244,27 @@
         "Only creatures give quests — gameobject_queststarter and _questender are not read.",
         "Daily and weekly quests do not reset; a repeatable one can be taken again immediately."
       ]
+    },
+    {
+      "category": "Gossip and vendors",
+      "items": [
+        "NO TRAINERS. npc_trainer is not read and nothing can be learned, because there is no spellbook. The gossip line is drawn — the NPC really has the flag — and clicking it closes the window. It is also what blocks dual wield, which is spell 674.",
+        "Flight masters, bankers, innkeepers, auctioneers and stable masters behave the same way: the line appears and does nothing.",
+        "Every vendor has infinite stock. maxcount and the restock timer are read and ignored.",
+        "Items with an extended cost — honour, arena points, tokens — are listed and refused, because the cost is a row in a DBC nothing reads.",
+        "No buyback, no repair, and no reputation discount on prices.",
+        "Only the first of an npc_text row's eight text slots is read, and only the male variant. The conditions system that picks between a menu's several texts is not implemented, so the first is always used."
+      ]
     }
   ],
   "remember": [
     "Session handlers that await resume on the tick, but nothing ENFORCES it: a future handler that writes ConfigureAwait(false) would silently resume on the thread pool and touch a Player from outside its loop. TickScheduler.AssertOwnerThread exists for exactly this and is not yet wired in.",
     "THE TWO REFERENCE TREES ARE AT DIFFERENT POINTS IN AZEROTHCORE'S HISTORY, and creature spawning is the first place it bites. The C++ reads creature models from a creature_template_model table; the vendored database still has modelid1..4. Ours follows the DATA. Read the C++ for behaviour, but check the dump before trusting a column name.",
     "Both reference trees (azerothcore-wotlk, database-wotlk) have no git root — updating means re-cloning.",
-    "sql/world/ is now ~60 MB: item_template (14 MB), quest_template (13 MB), creature (12 MB), creature_loot_template (9 MB), creature_template (7.6 MB), gameobject (7 MB). The vendoring rule says a fresh clone must be able to start, and that is the price.",
+    "sql/world/ is now ~65 MB: item_template (14 MB), quest_template (13 MB), creature (12 MB), creature_loot_template (9 MB), creature_template (7.6 MB), gameobject (7 MB), npc_text (2.6 MB). The vendoring rule says a fresh clone must be able to start, and that is the price.",
     "data/ is 3 GB of extracted client data and is not committed; a fresh clone needs the extractors run again.",
-    "sql/world/ redistributes AGPL-3.0 content from AzerothCore's database. Deliberate — but it is a licence obligation worth being aware of."
+    "sql/world/ redistributes AGPL-3.0 content from AzerothCore's database. Deliberate — but it is a licence obligation worth being aware of.",
+    "FOUR TABLES NOW OVERLOAD A COLUMN'S SIGN TO MEAN 'REFERENCE': creature_loot_template's mincountOrRef, npc_vendor's item, quest_template's RequiredNpcOrGo (gameobject), and RewardOrRequiredMoney (a cost). Read any of them unsigned and the failure is silent in three cases out of four. Check the column's signedness before writing the reader."
   ],
   "conventions": [
     "Anything used from database-wotlk/ gets vendored into sql/world/ first, via tools/db/export-world.sh, with a note saying what reads it. The server never reads the reference checkout at runtime.",

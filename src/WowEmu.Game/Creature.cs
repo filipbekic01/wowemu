@@ -39,6 +39,9 @@ public sealed class Creature : Unit
     /// </remarks>
     public uint LootId { get; private init; }
 
+    /// <summary>Which gossip menu right-clicking opens. Zero means it has none of its own.</summary>
+    public uint GossipMenuId { get; private init; }
+
     /// <summary>The copper range the corpse carries, before it is rolled.</summary>
     public uint MinGold { get; private init; }
 
@@ -501,6 +504,7 @@ public sealed class Creature : Unit
             CreatureType = template.CreatureType,
             Expansion = template.Expansion,
             LootId = template.LootId,
+            GossipMenuId = template.GossipMenuId,
             MinGold = template.MinGold,
             MaxGold = template.MaxGold,
             CorpseDelayMs = CorpseDelayMsFor(template.Rank),

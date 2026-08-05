@@ -26,7 +26,9 @@ public sealed class WorldContent(
     QuestStore quests,
     [FromKeyedServices("quest_starters")] QuestRelationStore questStarters,
     [FromKeyedServices("quest_enders")] QuestRelationStore questEnders,
-    PlayerXpStore experienceTable)
+    PlayerXpStore experienceTable,
+    GossipStore gossip,
+    VendorStore vendors)
 {
     public TerrainManager Terrain { get; } = terrain;
 
@@ -50,6 +52,12 @@ public sealed class WorldContent(
 
     /// <summary>The experience-per-level table, for quest rewards that cross a level.</summary>
     public PlayerXpStore ExperienceTable { get; } = experienceTable;
+
+    /// <summary>What NPCs say, and what can be clicked.</summary>
+    public GossipStore Gossip { get; } = gossip;
+
+    /// <summary>What each vendor sells.</summary>
+    public VendorStore Vendors { get; } = vendors;
 
     public DbcStores Stores { get; } = stores;
 

@@ -525,7 +525,8 @@ public sealed class CreatureTests
         FlagsExtra: 0,
         LootId: 0,
         MinGold: 0,
-        MaxGold: 0);
+        MaxGold: 0,
+        GossipMenuId: 0);
 
     private static CreatureModelInfo Model() =>
         new(SampleDisplayId, SampleBoundingRadius, SampleCombatReach, SampleGender, 0);
