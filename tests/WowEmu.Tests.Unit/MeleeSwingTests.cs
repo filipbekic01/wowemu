@@ -637,7 +637,8 @@ internal static class MapCombatFixture
         LootStore? lootReferences = null,
         uint lootId = 0,
         uint minGold = 0,
-        uint maxGold = 0)
+        uint maxGold = 0,
+        QuestStore? quests = null)
     {
         Creature victim = CreatureFixture.Build(
             position: new Position(distance, 0f, 0f, 0f),
@@ -656,6 +657,7 @@ internal static class MapCombatFixture
             CreatureLoot = creatureLoot,
             LootReferences = lootReferences,
             NextItemGuid = InventoryFixture.NextGuid,
+            Quests = quests,
         };
 
         CharacterSummary summary = new(1, "Fighter", 1, 1, 0, 0, 0, 0, 0, 0, 1, 12, 0, 0f, 0f, 0f, 0, 0, 0);
@@ -849,6 +851,19 @@ internal static class MapCombatFixture
         public void SendLootReleased(ObjectGuid target) => LootReleases.Add(target);
 
         public void SendItemPushed(in ItemPushResult push) => ItemsPushed.Add(push);
+
+
+        /// <summary>Quest objectives this client was told moved.</summary>
+        public List<(uint QuestId, uint Entry, uint Current, uint Required)> QuestCredits { get; } = [];
+
+        /// <summary>Quests this client was told are ready to hand in.</summary>
+        public List<uint> QuestsCompleted { get; } = [];
+
+        public void SendQuestKillCredit(
+            uint questId, uint wireEntry, uint current, uint required, ObjectGuid victim) =>
+            QuestCredits.Add((questId, wireEntry, current, required));
+
+        public void SendQuestComplete(uint questId) => QuestsCompleted.Add(questId);
 
         public void DrainMapPackets(uint diff)
         {

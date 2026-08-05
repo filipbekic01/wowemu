@@ -1,0 +1,322 @@
+using WowEmu.Core;
+using WowEmu.Data.Db;
+using WowEmu.Protocol;
+
+namespace WowEmu.WorldServer;
+
+/// <summary>One line in the "which of these?" list a multi-quest NPC shows.</summary>
+public readonly record struct QuestMenuEntry(uint QuestId, uint Icon, int Level, uint Flags, string Title);
+
+/// <summary>
+/// Writes the quest packets.
+/// </summary>
+/// <remarks>
+/// Port of <c>PlayerMenu</c>'s quest half. Here rather than in <c>WowEmu.Protocol</c> for the same
+/// reason as <see cref="ItemQueryResponse"/>: these packets are mostly a <c>quest_template</c> row
+/// written straight out, and a wire-shaped copy of a 70-column record would be noise.
+/// <para>
+/// Several of them end in runs of constants whose meaning is not known — <c>0x04 0x08 0x10</c> at
+/// the end of the request-items packet, for instance. They are reproduced because the client reads
+/// them, not because anyone has worked out what they are for.
+/// </para>
+/// </remarks>
+public static class QuestPackets
+{
+    /// <summary>How many emote pairs the details packet always carries. <c>QUEST_EMOTE_COUNT</c>.</summary>
+    public const int EmoteCount = 4;
+
+    /// <summary>Writes <c>SMSG_QUESTGIVER_STATUS</c> — the mark over an NPC's head.</summary>
+    public static void WriteStatus(PacketWriter writer, ObjectGuid npc, uint status)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WriteUInt64(npc.Value);
+
+        // A byte, though the enum behind it is a uint32. Writing four would shift whatever the
+        // client reads next.
+        writer.WriteUInt8((byte)status);
+    }
+
+    /// <summary>
+    /// Writes <c>SMSG_QUESTGIVER_QUEST_LIST</c> — the menu an NPC with several quests shows.
+    /// </summary>
+    /// <param name="greeting">
+    /// What the NPC says before the list. Empty is normal and blizzlike for many creatures.
+    /// </param>
+    public static void WriteQuestList(
+        PacketWriter writer, ObjectGuid npc, string greeting, IReadOnlyList<QuestMenuEntry> quests)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(quests);
+
+        writer.WriteUInt64(npc.Value);
+        writer.WriteCString(greeting);
+
+        writer.WriteUInt32(0);      // emote delay
+        writer.WriteUInt32(0);      // emote
+
+        writer.WriteUInt8((byte)quests.Count);
+
+        foreach (QuestMenuEntry entry in quests)
+        {
+            writer.WriteUInt32(entry.QuestId);
+            writer.WriteUInt32(entry.Icon);
+            writer.WriteUInt32((uint)entry.Level);
+            writer.WriteUInt32(entry.Flags);
+
+            // Whether the icon is a blue question mark rather than a yellow exclamation. Dailies
+            // are repeatable and still get the exclamation, which is why this is not just the flag.
+            writer.WriteUInt8(0);
+
+            writer.WriteCString(entry.Title);
+        }
+    }
+
+    /// <summary>
+    /// Writes <c>SMSG_QUESTGIVER_QUEST_DETAILS</c> — the "accept this?" window.
+    /// </summary>
+    /// <param name="displayIdFor">Resolves an item's display id, for the reward icons.</param>
+    public static void WriteDetails(
+        PacketWriter writer,
+        ObjectGuid npc,
+        QuestTemplate quest,
+        uint rewardMoney,
+        uint rewardXp,
+        Func<uint, uint> displayIdFor)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(quest);
+        ArgumentNullException.ThrowIfNull(displayIdFor);
+
+        writer.WriteUInt64(npc.Value);
+
+        // The "divider" — who shared the quest. Empty unless it came from another player.
+        writer.WriteUInt64(0);
+
+        writer.WriteUInt32(quest.Id);
+        writer.WriteCString(quest.LogTitle);
+        writer.WriteCString(quest.QuestDescription);
+        writer.WriteCString(quest.LogDescription);
+
+        writer.WriteUInt8(1);       // activate accept
+        writer.WriteUInt32(quest.Flags);
+        writer.WriteUInt32(quest.SuggestedPlayers);
+        writer.WriteUInt8(0);       // is finished, echoed back in the accept packet
+
+        WriteRewardBlock(writer, quest, rewardMoney, rewardXp, displayIdFor);
+
+        writer.WriteUInt32(0);      // honor, ten times the real figure
+        writer.WriteSingle(0f);     // honor multiplier
+        writer.WriteUInt32(quest.RewardSpell);
+        writer.WriteUInt32((uint)quest.RewardSpellCast);
+        writer.WriteUInt32(0);      // title
+        writer.WriteUInt32(0);      // bonus talents
+        writer.WriteUInt32(0);      // arena points
+        writer.WriteUInt32(0);      // unknown
+
+        WriteReputationBlock(writer);
+
+        // The emote count is written and then exactly that many pairs follow — unlike the offer
+        // packet, where the count is of the non-zero ones only.
+        writer.WriteUInt32(EmoteCount);
+
+        for (int i = 0; i < EmoteCount; i++)
+        {
+            writer.WriteUInt32(0);  // emote
+            writer.WriteUInt32(0);  // delay
+        }
+    }
+
+    /// <summary>
+    /// Writes <c>SMSG_QUESTGIVER_REQUEST_ITEMS</c> — "have you got them yet?".
+    /// </summary>
+    /// <remarks>
+    /// Sent when a quest asks for items. A quest with none skips straight to the offer, because
+    /// this window would have nothing to show and the player would be stuck at an empty dialog.
+    /// </remarks>
+    public static void WriteRequestItems(
+        PacketWriter writer,
+        ObjectGuid npc,
+        QuestTemplate quest,
+        bool canComplete,
+        Func<uint, uint> displayIdFor)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(quest);
+        ArgumentNullException.ThrowIfNull(displayIdFor);
+
+        writer.WriteUInt64(npc.Value);
+        writer.WriteUInt32(quest.Id);
+        writer.WriteCString(quest.LogTitle);
+        writer.WriteCString(quest.RequestItemsText);
+
+        writer.WriteUInt32(0);      // unknown
+        writer.WriteUInt32(0);      // the complete or incomplete emote
+        writer.WriteUInt32(0);      // close the window on cancel
+
+        writer.WriteUInt32(quest.Flags);
+        writer.WriteUInt32(quest.SuggestedPlayers);
+        writer.WriteUInt32(quest.RequiredMoney);
+
+        writer.WriteUInt32((uint)quest.RequiredItemCount);
+
+        foreach (QuestItem required in quest.RequiredItems)
+        {
+            if (!required.IsUsed)
+            {
+                continue;
+            }
+
+            writer.WriteUInt32(required.ItemId);
+            writer.WriteUInt32(required.Count);
+            writer.WriteUInt32(displayIdFor(required.ItemId));
+        }
+
+        // Three is what enables the Continue button. Zero greys it out, which is how an incomplete
+        // quest is refused without an error message.
+        writer.WriteUInt32(canComplete ? 3u : 0u);
+
+        // Reproduced from upstream. Nobody has established what they mean; the client reads them.
+        writer.WriteUInt32(0x04);
+        writer.WriteUInt32(0x08);
+        writer.WriteUInt32(0x10);
+    }
+
+    /// <summary>Writes <c>SMSG_QUESTGIVER_OFFER_REWARD</c> — "here is what you get".</summary>
+    public static void WriteOfferReward(
+        PacketWriter writer,
+        ObjectGuid npc,
+        QuestTemplate quest,
+        uint rewardMoney,
+        uint rewardXp,
+        Func<uint, uint> displayIdFor)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(quest);
+        ArgumentNullException.ThrowIfNull(displayIdFor);
+
+        writer.WriteUInt64(npc.Value);
+        writer.WriteUInt32(quest.Id);
+        writer.WriteCString(quest.LogTitle);
+        writer.WriteCString(quest.OfferRewardText);
+
+        writer.WriteUInt8(1);       // auto finish
+        writer.WriteUInt32(quest.Flags);
+        writer.WriteUInt32(quest.SuggestedPlayers);
+
+        // Here the count is of the emotes actually written, unlike the details packet where it is
+        // always four. The two are genuinely different shapes.
+        writer.WriteUInt32(0);
+
+        WriteRewardBlock(writer, quest, rewardMoney, rewardXp, displayIdFor);
+
+        writer.WriteUInt32(0);      // honor
+        writer.WriteSingle(0f);     // honor multiplier
+        writer.WriteUInt32(0x08);   // unused by the client
+        writer.WriteUInt32(quest.RewardSpell);
+        writer.WriteUInt32((uint)quest.RewardSpellCast);
+        writer.WriteUInt32(0);      // title
+        writer.WriteUInt32(0);      // bonus talents
+        writer.WriteUInt32(0);      // arena points
+        writer.WriteUInt32(0);
+
+        WriteReputationBlock(writer);
+    }
+
+    /// <summary>Writes <c>SMSG_QUESTGIVER_QUEST_COMPLETE</c> — the reward actually paid.</summary>
+    public static void WriteComplete(PacketWriter writer, uint questId, uint experience, uint money)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WriteUInt32(questId);
+        writer.WriteUInt32(experience);
+        writer.WriteUInt32(money);
+        writer.WriteUInt32(0);      // honor, ten times the real figure
+        writer.WriteUInt32(0);      // bonus talents
+        writer.WriteUInt32(0);      // arena points
+    }
+
+    /// <summary>Writes <c>SMSG_QUESTUPDATE_ADD_KILL</c> — one objective moved.</summary>
+    /// <param name="wireEntry">
+    /// The creature entry, or a gameobject's id with the high bit set. See
+    /// <see cref="QuestObjective.WireEntry"/>.
+    /// </param>
+    public static void WriteAddKill(
+        PacketWriter writer, uint questId, uint wireEntry, uint current, uint required, ObjectGuid victim)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WriteUInt32(questId);
+        writer.WriteUInt32(wireEntry);
+        writer.WriteUInt32(current);
+        writer.WriteUInt32(required);
+        writer.WriteUInt64(victim.Value);
+    }
+
+    /// <summary>Writes <c>SMSG_QUESTUPDATE_COMPLETE</c> — every objective is met.</summary>
+    public static void WriteQuestComplete(PacketWriter writer, uint questId)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WriteUInt32(questId);
+    }
+
+    /// <summary>
+    /// The reward block shared by the details and offer packets.
+    /// </summary>
+    /// <remarks>
+    /// <b>The count is of the used slots and the loop skips the unused ones</b>, so a quest with a
+    /// gap in its reward columns writes fewer entries than the array is long. Writing all four
+    /// regardless puts zeroes where the client expects the money.
+    /// </remarks>
+    private static void WriteRewardBlock(
+        PacketWriter writer,
+        QuestTemplate quest,
+        uint rewardMoney,
+        uint rewardXp,
+        Func<uint, uint> displayIdFor)
+    {
+        writer.WriteUInt32((uint)quest.RewardChoiceCount);
+
+        foreach (QuestItem choice in quest.RewardChoices)
+        {
+            if (!choice.IsUsed)
+            {
+                continue;
+            }
+
+            writer.WriteUInt32(choice.ItemId);
+            writer.WriteUInt32(choice.Count);
+            writer.WriteUInt32(displayIdFor(choice.ItemId));
+        }
+
+        writer.WriteUInt32((uint)quest.RewardCount);
+
+        foreach (QuestItem reward in quest.Rewards)
+        {
+            if (!reward.IsUsed)
+            {
+                continue;
+            }
+
+            writer.WriteUInt32(reward.ItemId);
+            writer.WriteUInt32(reward.Count);
+            writer.WriteUInt32(displayIdFor(reward.ItemId));
+        }
+
+        writer.WriteUInt32(rewardMoney);
+        writer.WriteUInt32(rewardXp);
+    }
+
+    /// <summary>Five faction ids, five values and five overrides — all zero until reputation exists.</summary>
+    private static void WriteReputationBlock(PacketWriter writer)
+    {
+        for (int block = 0; block < 3; block++)
+        {
+            for (int i = 0; i < QuestConstants.MaxReputations; i++)
+            {
+                writer.WriteUInt32(0);
+            }
+        }
+    }
+}

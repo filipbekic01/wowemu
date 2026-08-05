@@ -56,7 +56,7 @@
       "name": "Progression",
       "meaning": "Complete the first quests of a starting zone",
       "state": "progress",
-      "note": "Player death, release and corpse runs work. Inventory, loot and quests are next."
+      "note": "Death, items, bags, loot and quests all work. The quest loop is verified end to end by a headless gate: take a quest from one NPC, hand it in to another, get paid. Gossip, vendors and trainers are what is left."
     },
     {
       "id": "M7",
@@ -1306,7 +1306,7 @@
       "title": "Progression systems",
       "state": "progress",
       "milestone": "M6",
-      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands. Death, items, bags and loot are done; quests are next.",
+      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands. Death, items, bags, loot and quests are done; gossip and vendors are next.",
       "groups": [
         {
           "title": "Death and release",
@@ -1651,12 +1651,125 @@
           ]
         },
         {
-          "title": "Still to come",
+          "title": "Quests",
           "items": [
             {
-              "done": false,
-              "text": "Quests — accept, objective, complete, reward"
+              "done": true,
+              "text": "quest_template (9,464 rows, 70 columns read), creature_queststarter and creature_questender vendored"
             },
+            {
+              "done": true,
+              "text": "STARTER AND ENDER ARE SEPARATE TABLES, and very often different NPCs",
+              "note": "Treating either as both puts the hand-in question mark over the wrong person. The M6 gate takes a quest from Deputy Willem and hands it to Eagan Peltskinner 86 yards away, precisely because a server that conflates them passes every unit test."
+            },
+            {
+              "done": true,
+              "text": "A NEGATIVE OBJECTIVE ENTRY IS A GAMEOBJECT, and the client wants id | 0x80000000",
+              "note": "No column says which kind it is; the sign is the whole distinction. Sending -id leaves the client looking for a creature that does not exist and the objective line never moves."
+            },
+            {
+              "done": true,
+              "text": "RewardOrRequiredMoney is a REWARD when positive and a COST when negative",
+              "note": "Read unsigned, a quest that costs gold pays out four billion copper."
+            },
+            {
+              "done": true,
+              "text": "QUESTXP.DBC IS INDEXED BY THE QUEST'S LEVEL, and RewardXPId is a COLUMN in that row",
+              "note": "Looking the quest up by its own id finds nothing and every quest pays zero. A level of -1 means the player's level; read unsigned it becomes 65,535 and pays nothing."
+            },
+            {
+              "done": true,
+              "text": "The payout is rounded to a band — 5 below 100, then 10, then 25, then 50",
+              "note": "Skipping it pays amounts the real client never shows: close enough to look right, and wrong in a way nothing flags."
+            },
+            {
+              "done": true,
+              "text": "Level 255 is a SENTINEL with no DBC row — four quests carry it and pay nothing",
+              "note": "Upstream returns zero for a missing row too. The data being explicit, not a hole."
+            },
+            {
+              "done": true,
+              "text": "FOUR OBJECTIVE COUNTERS SHARE TWO UPDATE FIELDS, sixteen bits each",
+              "note": "The pair is one 64-bit value to the client. A counter per field puts objective 0's count where the client reads all four."
+            },
+            {
+              "done": true,
+              "text": "A quest with NO objectives is complete the moment it is taken",
+              "note": "A 'go and speak to someone' quest. Marking it incomplete leaves it uncompletable — nothing could ever finish it."
+            },
+            {
+              "done": true,
+              "text": "A kill credits EVERY quest that wants it, not the first",
+              "note": "Two quests asking for the same creature is common, and crediting one is a bug a player notices and cannot explain."
+            },
+            {
+              "done": true,
+              "text": "ITEM OBJECTIVES ARE RECOUNTED FROM THE BAGS, never incremented",
+              "note": "An item can arrive by looting, trading, buying or mail. An increment at each is four chances to miss one; a recount cannot drift. It is also why item counts are not persisted."
+            },
+            {
+              "done": true,
+              "text": "The record survives being handed in, which is what stops the quest being offered twice",
+              "note": "Dropping it lets a player repeat every quest in the game by talking to the same NPC twice."
+            },
+            {
+              "done": true,
+              "text": "Class and race masks are bit masks over ONE-BASED ids, and zero means everyone"
+            },
+            {
+              "done": true,
+              "text": "SMSG_QUESTGIVER_QUEST_DETAILS, _REQUEST_ITEMS, _OFFER_REWARD and _QUEST_COMPLETE",
+              "note": "The details packet always writes four emote pairs; the offer packet writes only the used ones. Genuinely different shapes for the same idea."
+            },
+            {
+              "done": true,
+              "text": "A quest with no item objectives SKIPS the request-items window",
+              "note": "It would have nothing to show and the player would be looking at an empty dialog."
+            },
+            {
+              "done": true,
+              "text": "The reward is paid in ONE place, and nothing is given if not everything fits",
+              "note": "Splitting the payment across the complete and choose handlers is how a quest pays twice. A half-paid quest is worse than an unpaid one: it is gone from the log and the rest is unreachable."
+            },
+            {
+              "done": true,
+              "text": "The accept handler checks the NPC actually offers the quest",
+              "note": "Without it a client can accept any quest in the game by naming its id at any NPC — the packet carries both."
+            },
+            {
+              "done": true,
+              "text": "character_queststatus, with the log slot and the four kill counters"
+            },
+            {
+              "done": true,
+              "text": "tools/harness/m6_quest.py — the whole loop over the real protocol against real content",
+              "note": "Status mark, menu, details, accept, walk to a different NPC, hand in, 85 experience, and the quest no longer on offer."
+            },
+            {
+              "done": false,
+              "text": "Quest chains — PrevQuestId, NextQuestId and exclusive groups are read and ignored"
+            },
+            {
+              "done": false,
+              "text": "Timed quests, area triggers, escort and event objectives"
+            },
+            {
+              "done": false,
+              "text": "Reputation and skill requirements, spell and title rewards, daily resets"
+            },
+            {
+              "done": false,
+              "text": "SMSG_QUEST_QUERY_RESPONSE, so a client with no cached quest text sees nothing"
+            },
+            {
+              "done": false,
+              "text": "gameobject_queststarter / _questender — only creatures give quests"
+            }
+          ]
+        },
+        {
+          "title": "Still to come",
+          "items": [
             {
               "done": false,
               "text": "Vendors, trainers, gossip"
@@ -2030,13 +2143,24 @@
         "Drop rates are taken at face value — upstream scales them per item quality from its configuration, and all those rates are 1.0 by default.",
         "A looted corpse is not despawned early. The corpse delay owns that, so an emptied corpse lies there for the rest of it."
       ]
+    },
+    {
+      "category": "Quests",
+      "items": [
+        "QUEST CHAINS ARE NOT ENFORCED. PrevQuestId, NextQuestId and ExclusiveGroup are read into the template and nothing checks them, so a chain's second quest is offered before its first.",
+        "No timed quests, no area-trigger objectives, no escorts and no event objectives. Only creature kills and carried items count.",
+        "Reputation and skill requirements pass, and reputation, spell and title rewards are not paid.",
+        "SMSG_QUEST_QUERY_RESPONSE is not answered, so a client whose quest cache is empty has no way to learn a quest's text.",
+        "Only creatures give quests — gameobject_queststarter and _questender are not read.",
+        "Daily and weekly quests do not reset; a repeatable one can be taken again immediately."
+      ]
     }
   ],
   "remember": [
     "Session handlers that await resume on the tick, but nothing ENFORCES it: a future handler that writes ConfigureAwait(false) would silently resume on the thread pool and touch a Player from outside its loop. TickScheduler.AssertOwnerThread exists for exactly this and is not yet wired in.",
     "THE TWO REFERENCE TREES ARE AT DIFFERENT POINTS IN AZEROTHCORE'S HISTORY, and creature spawning is the first place it bites. The C++ reads creature models from a creature_template_model table; the vendored database still has modelid1..4. Ours follows the DATA. Read the C++ for behaviour, but check the dump before trusting a column name.",
     "Both reference trees (azerothcore-wotlk, database-wotlk) have no git root — updating means re-cloning.",
-    "sql/world/ is now ~51 MB: item_template (14 MB), creature (12 MB), creature_loot_template (9 MB), creature_template (7.6 MB), gameobject (7 MB). The vendoring rule says a fresh clone must be able to start, and that is the price.",
+    "sql/world/ is now ~60 MB: item_template (14 MB), quest_template (13 MB), creature (12 MB), creature_loot_template (9 MB), creature_template (7.6 MB), gameobject (7 MB). The vendoring rule says a fresh clone must be able to start, and that is the price.",
     "data/ is 3 GB of extracted client data and is not committed; a fresh clone needs the extractors run again.",
     "sql/world/ redistributes AGPL-3.0 content from AzerothCore's database. Deliberate — but it is a licence obligation worth being aware of."
   ],

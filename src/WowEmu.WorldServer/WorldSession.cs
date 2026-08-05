@@ -353,6 +353,34 @@ public sealed class WorldSession(
                 HandleLootRelease(payload);
                 return;
 
+            case Opcode.CMSG_QUESTGIVER_STATUS_QUERY:
+                HandleQuestGiverStatusQuery(payload);
+                return;
+
+            case Opcode.CMSG_QUESTGIVER_HELLO:
+                HandleQuestGiverHello(payload);
+                return;
+
+            case Opcode.CMSG_QUESTGIVER_QUERY_QUEST:
+                HandleQuestGiverQueryQuest(payload);
+                return;
+
+            case Opcode.CMSG_QUESTGIVER_ACCEPT_QUEST:
+                HandleQuestGiverAcceptQuest(payload);
+                return;
+
+            case Opcode.CMSG_QUESTGIVER_COMPLETE_QUEST:
+                HandleQuestGiverCompleteQuest(payload);
+                return;
+
+            case Opcode.CMSG_QUESTGIVER_CHOOSE_REWARD:
+                HandleQuestGiverChooseReward(payload);
+                return;
+
+            case Opcode.CMSG_QUESTLOG_REMOVE_QUEST:
+                HandleQuestLogRemoveQuest(payload);
+                return;
+
             default:
                 // Every movement opcode routes to one handler, exactly as upstream does — the
                 // opcode says what the client thinks it is doing, but the payload is identical.
@@ -1346,6 +1374,547 @@ public sealed class WorldSession(
         connection.Send(packet);
     }
 
+    /// <summary>The questgiver flag. <c>UNIT_NPC_FLAG_QUESTGIVER</c>.</summary>
+    private const uint NpcFlagQuestGiver = 0x0002;
+
+    /// <summary>
+    /// Answers "what mark goes over this NPC's head?". <c>CMSG_QUESTGIVER_STATUS_QUERY</c>.
+    /// </summary>
+    /// <remarks>
+    /// The client asks about every questgiver it can see, repeatedly, so this has to be cheap and
+    /// has to answer even when the answer is "nothing".
+    /// </remarks>
+    private void HandleQuestGiverStatusQuery(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid))
+        {
+            return;
+        }
+
+        ObjectGuid guid = new(rawGuid);
+
+        ServerPacket packet = new(Opcode.SMSG_QUESTGIVER_STATUS, 9);
+        QuestPackets.WriteStatus(packet.Body, guid, QuestGiverStatusFor(guid));
+
+        connection.Send(packet);
+    }
+
+    /// <summary>
+    /// Opens a questgiver. <c>CMSG_QUESTGIVER_HELLO</c>.
+    /// </summary>
+    /// <remarks>
+    /// One quest goes straight to its own window; several produce a menu. Upstream shows a gossip
+    /// menu first when the NPC has one — there is no gossip yet, so this goes directly to the
+    /// quests.
+    /// </remarks>
+    private void HandleQuestGiverHello(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || FindQuestGiver(new ObjectGuid(rawGuid)) is not { } npc)
+        {
+            return;
+        }
+
+        List<QuestMenuEntry> menu = [];
+        QuestTemplate? only = null;
+
+        foreach (uint questId in QuestsFor(npc))
+        {
+            if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
+            {
+                continue;
+            }
+
+            uint icon = MenuIconFor(quest!);
+
+            if (icon == QuestGiverStatus.None)
+            {
+                continue;
+            }
+
+            only = quest;
+            menu.Add(new QuestMenuEntry(quest.Id, icon, quest.Level, quest.Flags, quest.LogTitle));
+        }
+
+        if (menu.Count == 1 && only is not null)
+        {
+            OpenQuest(npc.Guid, only);
+
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_QUESTGIVER_QUEST_LIST, 128 + (menu.Count * 64));
+        QuestPackets.WriteQuestList(packet.Body, npc.Guid, string.Empty, menu);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Opens one quest from the menu. <c>CMSG_QUESTGIVER_QUERY_QUEST</c>.</summary>
+    private void HandleQuestGiverQueryQuest(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || !reader.TryReadUInt32(out uint questId))
+        {
+            return;
+        }
+
+        if (world.Quests.TryGet(questId, out QuestTemplate? quest) && quest is not null)
+        {
+            OpenQuest(new ObjectGuid(rawGuid), quest!);
+        }
+    }
+
+    /// <summary>Takes a quest. <c>CMSG_QUESTGIVER_ACCEPT_QUEST</c>.</summary>
+    /// <remarks>
+    /// The NPC is checked to actually offer it. Without that, a client can accept any quest in the
+    /// game by naming its id at any NPC — the accept packet carries both.
+    /// </remarks>
+    private void HandleQuestGiverAcceptQuest(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || !reader.TryReadUInt32(out uint questId))
+        {
+            return;
+        }
+
+        if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } npc
+            || !QuestsFor(npc).Contains(questId))
+        {
+            return;
+        }
+
+        if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
+        {
+            return;
+        }
+
+        if (_player.Quests.Accept(quest) is not { } progress)
+        {
+            return;
+        }
+
+        Log.QuestAccepted(logger, _player.Name, quest.LogTitle, questId, connection.RemoteAddress);
+
+        // A quest with no objectives is complete on acceptance, and the client needs telling or the
+        // log entry never turns green.
+        if (progress.Status == QuestStatus.Complete)
+        {
+            SendQuestComplete(questId);
+        }
+    }
+
+    /// <summary>Asks to hand a quest in. <c>CMSG_QUESTGIVER_COMPLETE_QUEST</c>.</summary>
+    private void HandleQuestGiverCompleteQuest(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || !reader.TryReadUInt32(out uint questId))
+        {
+            return;
+        }
+
+        if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
+        {
+            return;
+        }
+
+        ObjectGuid npc = new(rawGuid);
+        bool canComplete = _player.Quests.StatusOf(questId) == QuestStatus.Complete;
+
+        // A quest with no item objectives skips the "have you got them?" window entirely — it would
+        // have nothing to show, and the player would be looking at an empty dialog.
+        if (quest.RequiredItemCount == 0 && canComplete)
+        {
+            SendOfferReward(npc, quest);
+
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_QUESTGIVER_REQUEST_ITEMS, 256);
+        QuestPackets.WriteRequestItems(packet.Body, npc, quest, canComplete, DisplayIdFor);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>
+    /// Takes the reward. <c>CMSG_QUESTGIVER_CHOOSE_REWARD</c>.
+    /// </summary>
+    /// <remarks>
+    /// Everything is paid here and nowhere else: the items, the money, the experience, and the
+    /// removal of the required items. Splitting it across the complete and choose handlers is how
+    /// a quest ends up paying twice.
+    /// </remarks>
+    private void HandleQuestGiverChooseReward(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || !reader.TryReadUInt32(out uint questId)
+            || !reader.TryReadUInt32(out uint choice))
+        {
+            return;
+        }
+
+        if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null
+            || _player.Quests.Find(questId) is not { } progress
+            || progress.Status != QuestStatus.Complete)
+        {
+            return;
+        }
+
+        if (!GiveQuestRewards(quest, choice))
+        {
+            return;
+        }
+
+        TakeQuestRequirements(quest);
+
+        _player.Quests.Reward(progress);
+
+        uint experience = QuestReward.Experience(quest, _player.Level, world.Stores.QuestXp);
+        uint money = quest.RewardMoney;
+
+        _player.Money += money;
+
+        if (experience > 0)
+        {
+            IReadOnlyList<LevelUp> levels = Experience.Give(
+                _player, experience, world.ExperienceTable, world.Stats);
+
+            SendExperienceGain(ObjectGuid.Empty, experience, levels);
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_QUESTGIVER_QUEST_COMPLETE, 24);
+        QuestPackets.WriteComplete(packet.Body, questId, experience, money);
+
+        connection.Send(packet);
+
+        Log.QuestCompleted(logger, _player.Name, quest.LogTitle, questId, experience, connection.RemoteAddress);
+    }
+
+    /// <summary>Abandons a quest. <c>CMSG_QUESTLOG_REMOVE_QUEST</c>.</summary>
+    private void HandleQuestLogRemoveQuest(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt8(out byte slot))
+        {
+            return;
+        }
+
+        // The client names a slot, not a quest, so the quest has to be found by where it sits.
+        foreach (QuestProgress progress in _player.Quests.All)
+        {
+            if (progress.Slot == slot)
+            {
+                _player.Quests.Abandon(progress.QuestId);
+
+                return;
+            }
+        }
+    }
+
+    /// <summary>Shows a quest's details, or its hand-in window if it is already complete.</summary>
+    private void OpenQuest(ObjectGuid npc, QuestTemplate quest)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        if (_player.Quests.StatusOf(quest.Id) == QuestStatus.Complete)
+        {
+            SendOfferReward(npc, quest);
+
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_QUESTGIVER_QUEST_DETAILS, 512);
+
+        QuestPackets.WriteDetails(
+            packet.Body, npc, quest, quest.RewardMoney,
+            QuestReward.Experience(quest, _player.Level, world.Stores.QuestXp), DisplayIdFor);
+
+        connection.Send(packet);
+    }
+
+    private void SendOfferReward(ObjectGuid npc, QuestTemplate quest)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_QUESTGIVER_OFFER_REWARD, 384);
+
+        QuestPackets.WriteOfferReward(
+            packet.Body, npc, quest, quest.RewardMoney,
+            QuestReward.Experience(quest, _player.Level, world.Stores.QuestXp), DisplayIdFor);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>
+    /// Hands over a quest's items.
+    /// </summary>
+    /// <remarks>
+    /// Nothing is given if not everything fits. A half-paid quest is worse than an unpaid one: the
+    /// quest is gone from the log and the player cannot get the rest.
+    /// </remarks>
+    private bool GiveQuestRewards(QuestTemplate quest, uint choice)
+    {
+        if (_player is null)
+        {
+            return false;
+        }
+
+        List<(ItemTemplate Template, uint Count)> giving = [];
+
+        foreach (QuestItem reward in quest.Rewards)
+        {
+            if (reward.IsUsed && world.Items.TryGet(reward.ItemId, out ItemTemplate? template) && template is not null)
+            {
+                giving.Add((template, reward.Count));
+            }
+        }
+
+        if (quest.RewardChoiceCount > 0)
+        {
+            QuestItem[] used = [.. quest.RewardChoices.Where(item => item.IsUsed)];
+
+            // The client sends an index into the *used* choices, not into the six columns.
+            if (choice >= used.Length)
+            {
+                return false;
+            }
+
+            if (world.Items.TryGet(used[choice].ItemId, out ItemTemplate? chosen) && chosen is not null)
+            {
+                giving.Add((chosen, used[choice].Count));
+            }
+        }
+
+        foreach ((ItemTemplate template, uint count) in giving)
+        {
+            if (_player.Inventory.CanStore(template, count, out _) != InventoryResult.Ok)
+            {
+                SendEquipError(InventoryResult.InventoryFull);
+
+                return false;
+            }
+        }
+
+        foreach ((ItemTemplate template, uint count) in giving)
+        {
+            _player.Inventory.Store(template, count, itemGuids.Next, out _);
+        }
+
+        return true;
+    }
+
+    /// <summary>Takes back what the quest asked for — the items, and the money.</summary>
+    private void TakeQuestRequirements(QuestTemplate quest)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        foreach (QuestItem required in quest.RequiredItems)
+        {
+            if (required.IsUsed)
+            {
+                RemoveItems(required.ItemId, required.Count);
+            }
+        }
+
+        _player.Money -= Math.Min(_player.Money, quest.RequiredMoney);
+    }
+
+    /// <summary>Takes a number of an item out of the bags, across as many stacks as it takes.</summary>
+    private void RemoveItems(uint entry, uint count)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        uint remaining = count;
+
+        foreach ((ItemPosition position, Item item) in _player.Inventory.AllWithPositions.ToList())
+        {
+            if (remaining == 0)
+            {
+                break;
+            }
+
+            if (item.Entry != entry)
+            {
+                continue;
+            }
+
+            uint taken = Math.Min(item.Count, remaining);
+
+            _player.Inventory.Destroy(position, taken, out Item? removed);
+            remaining -= taken;
+
+            if (removed is not null)
+            {
+                _knownItems.Remove(removed.Guid);
+                _pendingUpdates.AddOutOfRange(removed.Guid);
+            }
+        }
+    }
+
+    /// <summary>Which mark goes over an NPC, from this player's point of view.</summary>
+    private uint QuestGiverStatusFor(ObjectGuid guid)
+    {
+        if (_player is null || FindQuestGiver(guid) is not { } npc)
+        {
+            return QuestGiverStatus.None;
+        }
+
+        uint best = QuestGiverStatus.None;
+
+        // A quest ready to hand in wins over one waiting to be taken: the question mark is the more
+        // urgent of the two, and an NPC showing an exclamation mark over a finished quest sends the
+        // player looking for something to do.
+        foreach (uint questId in world.QuestEnders.For(npc.Entry))
+        {
+            if (_player.Quests.StatusOf(questId) == QuestStatus.Complete)
+            {
+                return QuestGiverStatus.Reward;
+            }
+
+            if (_player.Quests.StatusOf(questId) == QuestStatus.Incomplete)
+            {
+                best = QuestGiverStatus.Incomplete;
+            }
+        }
+
+        foreach (uint questId in world.QuestStarters.For(npc.Entry))
+        {
+            if (world.Quests.TryGet(questId, out QuestTemplate? quest) && quest is not null
+                && _player.Quests.CanTake(quest) == QuestTakeResult.Ok)
+            {
+                return QuestGiverStatus.Available;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>The icon one quest gets in the menu, or None if it should not be listed.</summary>
+    private uint MenuIconFor(QuestTemplate quest)
+    {
+        if (_player is null)
+        {
+            return QuestGiverStatus.None;
+        }
+
+        return _player.Quests.StatusOf(quest.Id) switch
+        {
+            QuestStatus.Complete => QuestGiverStatus.Reward,
+            QuestStatus.Incomplete => QuestGiverStatus.Incomplete,
+            _ => _player.Quests.CanTake(quest) == QuestTakeResult.Ok
+                ? QuestGiverStatus.Available
+                : QuestGiverStatus.None,
+        };
+    }
+
+    /// <summary>Every quest an NPC is involved in, starter and ender alike.</summary>
+    private List<uint> QuestsFor(Creature npc)
+    {
+        List<uint> quests = [.. world.QuestStarters.For(npc.Entry)];
+
+        foreach (uint questId in world.QuestEnders.For(npc.Entry))
+        {
+            if (!quests.Contains(questId))
+            {
+                quests.Add(questId);
+            }
+        }
+
+        return quests;
+    }
+
+    /// <summary>The creature behind a guid, if it is one, alive, and a questgiver in range.</summary>
+    private Creature? FindQuestGiver(ObjectGuid guid)
+    {
+        if (_player is null || _map is null || _map.Find(guid) is not Creature npc)
+        {
+            return null;
+        }
+
+        if (!npc.IsAlive || (npc.NpcFlags & NpcFlagQuestGiver) == 0)
+        {
+            return null;
+        }
+
+        return npc;
+    }
+
+    private uint DisplayIdFor(uint itemId) =>
+        world.Items.TryGet(itemId, out ItemTemplate? template) && template is not null ? template.DisplayId : 0;
+
+    /// <summary>Tells this client one quest objective has moved.</summary>
+    public void SendQuestKillCredit(
+        uint questId, uint wireEntry, uint current, uint required, ObjectGuid victim)
+    {
+        ServerPacket packet = new(Opcode.SMSG_QUESTUPDATE_ADD_KILL, 28);
+        QuestPackets.WriteAddKill(packet.Body, questId, wireEntry, current, required, victim);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Tells this client every objective on a quest is now met.</summary>
+    public void SendQuestComplete(uint questId)
+    {
+        ServerPacket packet = new(Opcode.SMSG_QUESTUPDATE_COMPLETE, 4);
+        QuestPackets.WriteQuestComplete(packet.Body, questId);
+
+        connection.Send(packet);
+    }
+
     /// <summary>Runs one move and reports whatever went wrong.</summary>
     private void Move(ItemPosition from, ItemPosition to)
     {
@@ -2085,6 +2654,10 @@ public sealed class WorldSession(
             .SaveAsync(player.Guid.Counter, Snapshot(player), cancellationToken)
             .ConfigureAwait(true);
 
+        await inventory
+            .SaveQuestsAsync(player.Guid.Counter, QuestSnapshot(player), cancellationToken)
+            .ConfigureAwait(true);
+
         Log.PlayerSaved(logger, player.Name, player.Position.X, player.Position.Y);
 
         // A dropped connection never sends a logout, so the map has to be told here too or the
@@ -2141,6 +2714,10 @@ public sealed class WorldSession(
         // Before the create block, and it has to be: the block carries the slot guids, and the item
         // objects have to exist for the client to be told about them in the same packet.
         await LoadInventoryAsync(player, cancellationToken).ConfigureAwait(true);
+
+        // After the inventory, and it has to be: a collection quest's progress is recounted from
+        // the bags, and counting before they are filled marks every one of them unstarted.
+        await LoadQuestsAsync(player, cancellationToken).ConfigureAwait(true);
 
         _player = player;
         Status = SessionStatus.LoggedIn;
@@ -2316,6 +2893,64 @@ public sealed class WorldSession(
         // The bag is gone. Falling back to the player's own array would overwrite whatever is in
         // that slot, so the item goes nowhere — a slot of 255 is out of range and is ignored.
         return new ItemPosition(InventorySlots.Backpack, InventorySlots.None);
+    }
+
+    /// <summary>
+    /// Rebuilds a character's quest log from the database.
+    /// </summary>
+    /// <remarks>
+    /// Kill counters come back from their columns; <b>item counters are recounted from the bags</b>
+    /// rather than stored. An item can arrive by looting, trading, buying or mail, and a stored
+    /// count is one missed increment away from a quest that can never be finished.
+    /// </remarks>
+    private async Task LoadQuestsAsync(Player player, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<StoredQuest> stored = await inventory
+            .LoadQuestsAsync(player.Guid.Counter, cancellationToken)
+            .ConfigureAwait(true);
+
+        foreach (StoredQuest row in stored)
+        {
+            if (!world.Quests.TryGet(row.QuestId, out QuestTemplate? quest) || quest is null)
+            {
+                continue;
+            }
+
+            QuestProgress progress = new(row.QuestId)
+            {
+                Status = (QuestStatus)row.Status,
+                Slot = row.Slot,
+            };
+
+            for (int i = 0; i < row.Killed.Length && i < progress.Killed.Length; i++)
+            {
+                progress.Killed[i] = row.Killed[i];
+            }
+
+            player.Quests.Restore(progress);
+
+            if (progress.Status == QuestStatus.Incomplete)
+            {
+                player.Quests.RecountItems(quest, progress);
+            }
+        }
+    }
+
+    /// <summary>What a character's quest log holds, in the shape the database stores.</summary>
+    private static List<StoredQuest> QuestSnapshot(Player player)
+    {
+        List<StoredQuest> rows = [];
+
+        foreach (QuestProgress progress in player.Quests.All)
+        {
+            rows.Add(new StoredQuest(
+                progress.QuestId,
+                (byte)progress.Status,
+                progress.Slot,
+                [.. progress.Killed]));
+        }
+
+        return rows;
     }
 
     /// <summary>What a character is carrying, in the shape the database stores.</summary>

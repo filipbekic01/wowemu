@@ -195,6 +195,21 @@ internal static class WorldStartup
                 "Import it with: tools/db/import-world.sh");
         }
 
+        QuestStore quests = services.GetRequiredService<QuestStore>();
+        QuestRelationStore questStarters = services.GetRequiredKeyedService<QuestRelationStore>("quest_starters");
+        QuestRelationStore questEnders = services.GetRequiredKeyedService<QuestRelationStore>("quest_enders");
+
+        await quests.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await questStarters.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await questEnders.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        if (quests.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "quest_template is empty — no NPC would have anything to offer. Import it with: " +
+                "tools/db/import-world.sh");
+        }
+
         // Measured into a local rather than inline: the analyzer objects to work inside a log call,
         // and the elapsed time has to be taken at the same point whether or not anyone is listening.
         double elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -209,6 +224,7 @@ internal static class WorldStartup
 
         Log.GameObjectContentLoaded(logger, objectTemplates.Count, objectSpawns.Count, objectSpawns.MapCount);
         Log.ItemTemplatesLoaded(logger, items.Count);
+        Log.QuestsLoaded(logger, quests.Count, questStarters.RowCount, questEnders.RowCount);
         Log.LootTemplatesLoaded(
             logger, creatureLoot.RowCount, creatureLoot.Count, lootReferences.RowCount, lootReferences.Count);
     }

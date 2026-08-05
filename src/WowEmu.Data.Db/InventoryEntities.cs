@@ -74,3 +74,41 @@ public sealed class CharacterInventoryEntity
     /// <summary>The slot within the bag, or within the player's 150-slot array.</summary>
     public byte Slot { get; set; }
 }
+
+/// <summary>
+/// One quest a character has taken, and how far through it is.
+/// </summary>
+/// <remarks>
+/// The four kill counters are separate columns rather than one packed value. The client packs them
+/// into 16 bits apiece; the database does not have to, and a column that can be read in a query is
+/// worth more than the width saved.
+/// <para>
+/// <b>Item counts are not stored.</b> They are recounted from the bags on load, which cannot drift
+/// — an item can arrive by looting, trading, buying or mail, and a stored count is one missed
+/// increment away from a quest that can never be finished.
+/// </para>
+/// <para>
+/// A row survives being handed in — that is what stops a quest being offered twice — so
+/// <see cref="Status"/> distinguishes rewarded from complete.
+/// </para>
+/// </remarks>
+public sealed class CharacterQuestEntity
+{
+    public uint CharacterId { get; set; }
+
+    public uint QuestId { get; set; }
+
+    /// <summary>A <c>QuestStatus</c>. Rewarded is 6.</summary>
+    public byte Status { get; set; }
+
+    /// <summary>Which log slot, or 255 once it is out of the log.</summary>
+    public byte Slot { get; set; }
+
+    public ushort Killed1 { get; set; }
+
+    public ushort Killed2 { get; set; }
+
+    public ushort Killed3 { get; set; }
+
+    public ushort Killed4 { get; set; }
+}

@@ -16,6 +16,9 @@ public readonly record struct StoredItem(
     uint BagId,
     byte Slot);
 
+/// <summary>One stored quest.</summary>
+public readonly record struct StoredQuest(uint QuestId, byte Status, byte Slot, ushort[] Killed);
+
 /// <summary>Reads and writes what characters are carrying.</summary>
 public interface IInventoryRepository
 {
@@ -45,6 +48,15 @@ public interface IInventoryRepository
 
     /// <summary>Deletes everything a character holds. Part of deleting the character.</summary>
     Task DeleteForCharacterAsync(uint characterId, CancellationToken cancellationToken = default);
+
+    /// <summary>Every quest a character has taken, handed-in ones included.</summary>
+    Task<IReadOnlyList<StoredQuest>> LoadQuestsAsync(uint characterId, CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="SaveAsync"/>
+    Task SaveQuestsAsync(
+        uint characterId,
+        IReadOnlyList<StoredQuest> quests,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The highest item guid in use, so the in-memory allocator can carry on above it.
@@ -164,7 +176,76 @@ public sealed class InventoryRepository(IDbContextFactory<CharactersDbContext> c
             .Where(item => item.OwnerId == characterId)
             .ExecuteDeleteAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        await context.Quests
+            .Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
     }
+
+    public async Task<IReadOnlyList<StoredQuest>> LoadQuestsAsync(
+        uint characterId, CancellationToken cancellationToken = default)
+    {
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        List<CharacterQuestEntity> rows = await context.Quests
+            .AsNoTracking()
+            .Where(row => row.CharacterId == characterId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        List<StoredQuest> loaded = new(rows.Count);
+
+        foreach (CharacterQuestEntity row in rows)
+        {
+            loaded.Add(new StoredQuest(
+                row.QuestId,
+                row.Status,
+                row.Slot,
+                [row.Killed1, row.Killed2, row.Killed3, row.Killed4]));
+        }
+
+        return loaded;
+    }
+
+    public async Task SaveQuestsAsync(
+        uint characterId,
+        IReadOnlyList<StoredQuest> quests,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(quests);
+
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        // Whole-set, for the same reason the inventory is: an abandoned quest has no row to update
+        // and leaving a stale one would put it back in the log on the next login.
+        await context.Quests
+            .Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (StoredQuest quest in quests)
+        {
+            context.Quests.Add(new CharacterQuestEntity
+            {
+                CharacterId = characterId,
+                QuestId = quest.QuestId,
+                Status = quest.Status,
+                Slot = quest.Slot,
+                Killed1 = At(quest.Killed, 0),
+                Killed2 = At(quest.Killed, 1),
+                Killed3 = At(quest.Killed, 2),
+                Killed4 = At(quest.Killed, 3),
+            });
+        }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private static ushort At(ushort[]? counters, int index) =>
+        counters is not null && index < counters.Length ? counters[index] : (ushort)0;
 
     public async Task<uint> HighestItemIdAsync(CancellationToken cancellationToken = default)
     {

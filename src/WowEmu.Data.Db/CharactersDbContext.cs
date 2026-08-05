@@ -94,6 +94,8 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
 
     public DbSet<CharacterInventoryEntity> Inventory => Set<CharacterInventoryEntity>();
 
+    public DbSet<CharacterQuestEntity> Quests => Set<CharacterQuestEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -168,6 +170,24 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
             entity.Property(row => row.Slot).HasColumnName("slot");
 
             entity.HasIndex(row => row.CharacterId).HasDatabaseName("ix_character_inventory_owner");
+        });
+
+        modelBuilder.Entity<CharacterQuestEntity>(entity =>
+        {
+            entity.ToTable("character_queststatus");
+
+            // Composite: a character has at most one row per quest, and that is the whole
+            // invariant — a second row would let the same quest be both complete and rewarded.
+            entity.HasKey(row => new { row.CharacterId, row.QuestId });
+
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.QuestId).HasColumnName("quest");
+            entity.Property(row => row.Status).HasColumnName("status");
+            entity.Property(row => row.Slot).HasColumnName("slot");
+            entity.Property(row => row.Killed1).HasColumnName("mobcount1");
+            entity.Property(row => row.Killed2).HasColumnName("mobcount2");
+            entity.Property(row => row.Killed3).HasColumnName("mobcount3");
+            entity.Property(row => row.Killed4).HasColumnName("mobcount4");
         });
     }
 }

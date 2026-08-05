@@ -445,6 +445,15 @@ public sealed class MapVisibilityTests
         {
         }
 
+        public void SendQuestKillCredit(
+            uint questId, uint wireEntry, uint current, uint required, ObjectGuid victim)
+        {
+        }
+
+        public void SendQuestComplete(uint questId)
+        {
+        }
+
         public void DrainMapPackets(uint diff)
         {
         }

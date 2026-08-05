@@ -158,6 +158,20 @@ internal static partial class Log
         Message = "'{Name}' started attacking '{Target}' — {Address}")]
     public static partial void AttackStarted(ILogger logger, string name, string target, string address);
 
+    [LoggerMessage(EventId = 2332, Level = LogLevel.Debug,
+        Message = "'{Name}' accepted '{Quest}' ({QuestId}) — {Address}")]
+    public static partial void QuestAccepted(
+        ILogger logger, string name, string quest, uint questId, string address);
+
+    [LoggerMessage(EventId = 2333, Level = LogLevel.Debug,
+        Message = "'{Name}' completed '{Quest}' ({QuestId}) for {Experience} xp — {Address}")]
+    public static partial void QuestCompleted(
+        ILogger logger, string name, string quest, uint questId, uint experience, string address);
+
+    [LoggerMessage(EventId = 2334, Level = LogLevel.Information,
+        Message = "Loaded {Quests} quests, {Starters} starter and {Enders} ender links")]
+    public static partial void QuestsLoaded(ILogger logger, int quests, int starters, int enders);
+
     [LoggerMessage(EventId = 2331, Level = LogLevel.Information,
         Message = "Loaded {Rows} creature loot rows across {Ids} ids, {RefRows} reference rows across {RefIds}")]
     public static partial void LootTemplatesLoaded(

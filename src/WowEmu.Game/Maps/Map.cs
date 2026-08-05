@@ -210,6 +210,16 @@ public interface IPlayerConnection
     /// <summary>Tells this client an item has arrived in its bags.</summary>
     void SendItemPushed(in ItemPushResult push);
 
+    /// <summary>Tells this client one quest objective has moved.</summary>
+    /// <param name="wireEntry">
+    /// The creature entry, or a gameobject's with the high bit set. Passed already encoded because
+    /// only the quest layer knows which kind the objective was.
+    /// </param>
+    void SendQuestKillCredit(uint questId, uint wireEntry, uint current, uint required, ObjectGuid victim);
+
+    /// <summary>Tells this client every objective on a quest is now met.</summary>
+    void SendQuestComplete(uint questId);
+
     /// <summary>Runs the packets this session queued for its map's worker.</summary>
     void DrainMapPackets(uint diff);
 }
@@ -311,6 +321,9 @@ public sealed class Map(
     /// <summary>Hands out guids for items the map creates — looted ones, and quest rewards.</summary>
     public Func<uint>? NextItemGuid { get => _itemGuids; init => _itemGuids = value; }
 
+    /// <summary>Every quest, so a kill can be credited against the ones that want it.</summary>
+    public QuestStore? Quests { get => _quests; init => _quests = value; }
+
     /// <summary>Which graveyards a zone offers. Without it a ghost stays where it fell.</summary>
     public GraveyardStore? Graveyards { get => _graveyards; init => _graveyards = value; }
 
@@ -327,6 +340,7 @@ public sealed class Map(
     private readonly LootStore? _lootReferences;
     private readonly ItemTemplateStore? _items;
     private readonly Func<uint>? _itemGuids;
+    private readonly QuestStore? _quests;
     private readonly GraveyardStore? _graveyards;
     private readonly DbcStore<WorldSafeLocsEntry>? _worldSafeLocs;
 
@@ -541,6 +555,7 @@ public sealed class Map(
         // and Kill() forgets all of it. The loot's owner comes from the same list, so it is decided
         // here too.
         AwardExperience(creature);
+        CreditQuestKills(creature);
         RollLoot(creature);
 
         creature.Kill();
@@ -1386,6 +1401,16 @@ public sealed class Map(
         loot.Take(slot);
         player.Connection?.SendLootRemoved(slot);
 
+        // Recounted rather than incremented: an item can arrive by looting, trading, buying or
+        // mail, and an increment at each is four chances to miss one.
+        if (_quests is not null)
+        {
+            foreach (uint finished in player.Quests.RecountAllItems(_quests))
+            {
+                player.Connection?.SendQuestComplete(finished);
+            }
+        }
+
         foreach (Item item in affected)
         {
             ItemPosition? where = player.Inventory.PositionOf(item);
@@ -1496,6 +1521,45 @@ public sealed class Map(
         }
 
         return slots;
+    }
+
+    /// <summary>
+    /// Credits a kill against everyone's quests.
+    /// </summary>
+    /// <remarks>
+    /// Everyone on the threat list, not just the killer: upstream credits every group member in
+    /// range, and the threat list is the closest thing to a group this server has. It is also why
+    /// this runs before <c>Kill()</c>, which clears the list.
+    /// <para>
+    /// Every matching objective is credited, not the first — two quests can ask for the same
+    /// creature, and crediting one of them is a bug a player notices and cannot explain.
+    /// </para>
+    /// </remarks>
+    private void CreditQuestKills(Creature victim)
+    {
+        if (_quests is null)
+        {
+            return;
+        }
+
+        foreach (ThreatEntry entry in victim.Threat.Sorted)
+        {
+            if (entry.Target is not Player player || !player.IsAlive)
+            {
+                continue;
+            }
+
+            foreach (QuestKillCredit credit in player.Quests.CreditKill(victim.Entry, _quests))
+            {
+                player.Connection?.SendQuestKillCredit(
+                    credit.Quest.Id, credit.WireEntry, credit.Current, credit.Required, victim.Guid);
+
+                if (player.Quests.StatusOf(credit.Quest.Id) == QuestStatus.Complete)
+                {
+                    player.Connection?.SendQuestComplete(credit.Quest.Id);
+                }
+            }
+        }
     }
 
     /// <summary>

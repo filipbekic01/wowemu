@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.Extensions.DependencyInjection;
 using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Game;
@@ -21,7 +22,11 @@ public sealed class WorldContent(
     SpellStores spells,
     ItemTemplateStore items,
     CharStartOutfitStore outfits,
-    PlayerCreateInfoStore createInfo)
+    PlayerCreateInfoStore createInfo,
+    QuestStore quests,
+    [FromKeyedServices("quest_starters")] QuestRelationStore questStarters,
+    [FromKeyedServices("quest_enders")] QuestRelationStore questEnders,
+    PlayerXpStore experienceTable)
 {
     public TerrainManager Terrain { get; } = terrain;
 
@@ -33,6 +38,18 @@ public sealed class WorldContent(
 
     /// <summary>What each race, class and gender begins with.</summary>
     public CharStartOutfitStore Outfits { get; } = outfits;
+
+    /// <summary>Every quest.</summary>
+    public QuestStore Quests { get; } = quests;
+
+    /// <summary>Which creature offers which quest.</summary>
+    public QuestRelationStore QuestStarters { get; } = questStarters;
+
+    /// <summary>Which creature takes which quest back. Very often not the same one.</summary>
+    public QuestRelationStore QuestEnders { get; } = questEnders;
+
+    /// <summary>The experience-per-level table, for quest rewards that cross a level.</summary>
+    public PlayerXpStore ExperienceTable { get; } = experienceTable;
 
     public DbcStores Stores { get; } = stores;
 

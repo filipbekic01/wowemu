@@ -43,6 +43,14 @@ builder.Services.AddSingleton<ItemTemplateStore>();
 // a creature row must never resolve against itself.
 builder.Services.AddKeyedSingleton("creature_loot", (_, _) => new LootStore("creature_loot_template"));
 builder.Services.AddKeyedSingleton("reference_loot", (_, _) => new LootStore("reference_loot_template"));
+
+builder.Services.AddSingleton<QuestStore>();
+
+// Starter and ender are separate tables, and very often name different NPCs for the same quest.
+builder.Services.AddKeyedSingleton(
+    "quest_starters", (_, _) => new QuestRelationStore("creature_queststarter"));
+builder.Services.AddKeyedSingleton(
+    "quest_enders", (_, _) => new QuestRelationStore("creature_questender"));
 builder.Services.AddSingleton<GameObjectSpawnStore>();
 builder.Services.AddSingleton<PlayerXpStore>();
 builder.Services.AddSingleton<GraveyardStore>();
@@ -113,7 +121,8 @@ builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<ItemTemplateStore>(),
     services.GetRequiredKeyedService<LootStore>("creature_loot"),
     services.GetRequiredKeyedService<LootStore>("reference_loot"),
-    services.GetRequiredService<ItemGuidGenerator>().Next));
+    services.GetRequiredService<ItemGuidGenerator>().Next,
+    services.GetRequiredService<QuestStore>()));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in

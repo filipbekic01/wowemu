@@ -41,7 +41,8 @@ public sealed class MapManager(
     ItemTemplateStore? items = null,
     LootStore? creatureLoot = null,
     LootStore? lootReferences = null,
-    Func<uint>? nextItemGuid = null) : IDisposable
+    Func<uint>? nextItemGuid = null,
+    QuestStore? quests = null) : IDisposable
 {
     /// <summary>
     /// The four phases. Three update a category of map; the fourth is a pause.
@@ -82,6 +83,7 @@ public sealed class MapManager(
                 CreatureLoot = creatureLoot,
                 LootReferences = lootReferences,
                 NextItemGuid = nextItemGuid,
+                Quests = quests,
             };
             _maps[mapId] = map;
         }

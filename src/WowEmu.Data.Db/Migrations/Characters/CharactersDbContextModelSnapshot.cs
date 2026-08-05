@@ -155,6 +155,45 @@ namespace WowEmu.Data.Db.Migrations.Characters
                     b.ToTable("character_inventory", (string)null);
                 });
 
+            modelBuilder.Entity("WowEmu.Data.Db.CharacterQuestEntity", b =>
+                {
+                    b.Property<uint>("CharacterId")
+                        .HasColumnType("int unsigned")
+                        .HasColumnName("guid");
+
+                    b.Property<uint>("QuestId")
+                        .HasColumnType("int unsigned")
+                        .HasColumnName("quest");
+
+                    b.Property<ushort>("Killed1")
+                        .HasColumnType("smallint unsigned")
+                        .HasColumnName("mobcount1");
+
+                    b.Property<ushort>("Killed2")
+                        .HasColumnType("smallint unsigned")
+                        .HasColumnName("mobcount2");
+
+                    b.Property<ushort>("Killed3")
+                        .HasColumnType("smallint unsigned")
+                        .HasColumnName("mobcount3");
+
+                    b.Property<ushort>("Killed4")
+                        .HasColumnType("smallint unsigned")
+                        .HasColumnName("mobcount4");
+
+                    b.Property<byte>("Slot")
+                        .HasColumnType("tinyint unsigned")
+                        .HasColumnName("slot");
+
+                    b.Property<byte>("Status")
+                        .HasColumnType("tinyint unsigned")
+                        .HasColumnName("status");
+
+                    b.HasKey("CharacterId", "QuestId");
+
+                    b.ToTable("character_queststatus", (string)null);
+                });
+
             modelBuilder.Entity("WowEmu.Data.Db.ItemInstanceEntity", b =>
                 {
                     b.Property<uint>("Id")

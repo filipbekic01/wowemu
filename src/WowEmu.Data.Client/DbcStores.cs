@@ -143,6 +143,23 @@ public sealed record FactionTemplateEntry(
 /// <c>creature_template_model</c> — read the C++ for behaviour, but check the dump before trusting a
 /// column name.
 /// </remarks>
+/// <summary>
+/// One row of <c>QuestXP.dbc</c>: what a quest of this level pays, by difficulty band.
+/// </summary>
+/// <remarks>
+/// The id <i>is</i> the quest level, which is why a quest's <c>RewardXPId</c> column is a column
+/// index into this row rather than a row id. Looking the quest up by its own id finds nothing.
+/// </remarks>
+public sealed record QuestXpEntry(uint Level, uint[] ByDifficulty)
+{
+    /// <summary>How many difficulty columns each row has.</summary>
+    public const int DifficultyCount = 10;
+
+    /// <summary>The payout for one difficulty band. Out-of-range bands pay nothing.</summary>
+    public uint For(byte difficulty) =>
+        difficulty < ByDifficulty.Length ? ByDifficulty[difficulty] : 0;
+}
+
 public sealed record WorldSafeLocsEntry(
     uint Id,
     uint MapId,
@@ -201,13 +218,18 @@ public sealed class DbcStores
     // sixteen locale names and a flags word.
     private const string WorldSafeLocsFormat = "nifffssssssssssssssssx";
 
+    /// <summary>An id and ten difficulty columns. <c>QuestXPfmt</c>.</summary>
+    private const string QuestXpFormat = "niiiiiiiiii";
+
     private DbcStores(
         DbcStore<ChrRacesEntry> races,
         DbcStore<ChrClassesEntry> classes,
         DbcStore<MapEntry> maps,
         DbcStore<FactionTemplateEntry> factionTemplates,
-        DbcStore<WorldSafeLocsEntry> worldSafeLocs)
+        DbcStore<WorldSafeLocsEntry> worldSafeLocs,
+        DbcStore<QuestXpEntry> questXp)
     {
+        QuestXp = questXp;
         Races = races;
         Classes = classes;
         Maps = maps;
@@ -227,9 +249,19 @@ public sealed class DbcStores
     /// <summary>Graveyards and other named safe points.</summary>
     public DbcStore<WorldSafeLocsEntry> WorldSafeLocs { get; }
 
+    /// <summary>
+    /// How much experience a quest pays, by quest level and difficulty.
+    /// </summary>
+    /// <remarks>
+    /// <b>Indexed by the quest's LEVEL, not by its id.</b> The row is the level and the column is
+    /// the quest's <c>RewardXPId</c>, which is a difficulty band rather than an amount.
+    /// </remarks>
+    public DbcStore<QuestXpEntry> QuestXp { get; }
+
     /// <summary>Total rows loaded, for the startup log.</summary>
     public int TotalRows =>
-        Races.Count + Classes.Count + Maps.Count + FactionTemplates.Count + WorldSafeLocs.Count;
+        Races.Count + Classes.Count + Maps.Count + FactionTemplates.Count + WorldSafeLocs.Count
+        + QuestXp.Count;
 
     /// <summary>
     /// Loads every store from a directory of extracted <c>.dbc</c> files.
@@ -330,6 +362,22 @@ public sealed class DbcStores
                     X: record.GetFloat(2),
                     Y: record.GetFloat(3),
                     Z: record.GetFloat(4),
-                    Name: record.GetLocalizedString(5, locale))));
+                    Name: record.GetLocalizedString(5, locale))),
+
+            DbcStore<QuestXpEntry>.Load(
+                Path.Combine(directory, "QuestXP.dbc"),
+                QuestXpFormat,
+                idField: 0,
+                (in DbcRecord record) =>
+                {
+                    uint[] byDifficulty = new uint[QuestXpEntry.DifficultyCount];
+
+                    for (int i = 0; i < byDifficulty.Length; i++)
+                    {
+                        byDifficulty[i] = record.GetUInt32(1 + i);
+                    }
+
+                    return new QuestXpEntry(record.GetUInt32(0), byDifficulty);
+                }));
     }
 }

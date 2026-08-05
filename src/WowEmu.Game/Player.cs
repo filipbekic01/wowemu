@@ -25,6 +25,7 @@ public sealed class Player : Unit
         : base(guid, TypeId.Player, UpdateFields.PLAYER_END, TypeMask.PlayerObject)
     {
         Inventory = new Inventory(this);
+        Quests = new QuestLog(this);
     }
 
     /// <summary>How to reach this player's client. Null for a player with no session.</summary>
@@ -32,6 +33,9 @@ public sealed class Player : Unit
 
     /// <summary>Everything this character is carrying and wearing.</summary>
     public Inventory Inventory { get; }
+
+    /// <summary>Every quest this character has taken, and what became of it.</summary>
+    public QuestLog Quests { get; }
 
     /// <summary>
     /// The corpse whose loot window is open, or empty.
