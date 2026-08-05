@@ -158,6 +158,11 @@ internal static partial class Log
         Message = "'{Name}' started attacking '{Target}' — {Address}")]
     public static partial void AttackStarted(ILogger logger, string name, string target, string address);
 
+    [LoggerMessage(EventId = 2320, Level = LogLevel.Debug,
+        Message = "'{Name}' cast {Spell} at {Target} — {Address}")]
+    public static partial void SpellCast(
+        ILogger logger, string name, string spell, string target, string address);
+
     [LoggerMessage(EventId = 2319, Level = LogLevel.Information,
         Message = "Loaded {Spells} spells, {CastTimes} cast times, {Ranges} ranges and {Durations} durations")]
     public static partial void SpellDataLoaded(

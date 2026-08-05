@@ -74,6 +74,22 @@ public interface IPlayerConnection
     void SendAttackState(ObjectGuid attacker, ObjectGuid? victim, bool attacking, bool victimIsDead);
 
     /// <summary>
+    /// Tells this client that a cast has started, so it draws a cast bar.
+    /// </summary>
+    /// <remarks>
+    /// Immediate, like the attack animation and for the same reason: the bar is the client's own
+    /// confirmation that its keypress was heard.
+    /// </remarks>
+    void SendSpellStart(
+        ObjectGuid caster, uint spellId, byte castCount, int castTimeMs, ObjectGuid target, uint powerLeft);
+
+    /// <summary>Tells this client that a cast landed, so it closes the bar and plays the impact.</summary>
+    void SendSpellGo(ObjectGuid caster, uint spellId, byte castCount, ObjectGuid target, uint powerLeft);
+
+    /// <summary>Tells this client its cast was refused, and why.</summary>
+    void SendCastFailed(byte castCount, uint spellId, SpellCastResult result);
+
+    /// <summary>
     /// Tells this client why its swing did not land.
     /// </summary>
     /// <remarks>
@@ -653,6 +669,7 @@ public sealed class Map(
         foreach (Player player in Players)
         {
             player.UpdateAttackTimers(gameplayDiff);
+            UpdateCasting(player, gameplayDiff);
 
             SwingResult swing = MeleeSwing.Advance(player, WeaponAttackType.BaseAttack, GameRandom.Urand);
 
@@ -795,6 +812,64 @@ public sealed class Map(
     /// ever has line of sight to anything.
     /// </remarks>
     private const float SightHeight = 2.0f;
+
+    /// <summary>
+    /// Advances a caster's cast bar and cooldowns, completing a cast that has run out.
+    /// </summary>
+    /// <remarks>
+    /// A cast that finishes here and one that was instant go through the same
+    /// <see cref="CompleteCast"/>, so cooldowns and packets cannot drift apart between the two paths.
+    /// </remarks>
+    private void UpdateCasting(Player player, uint gameplayDiff)
+    {
+        if (player.Casting.Update(gameplayDiff) is not { } finished)
+        {
+            return;
+        }
+
+        // The target may have died or walked off during the cast. Completing against a dead target
+        // would apply effects to a corpse; the cast still ends, it just lands on nothing.
+        Unit? target = finished.Target is { IsAlive: true } alive && alive.MapId == player.MapId
+            ? alive
+            : null;
+
+        CompleteCast(player, finished.Spell, target, finished.CastCount);
+    }
+
+    /// <summary>
+    /// Finishes a cast: puts it on cooldown and tells everyone who can see it.
+    /// </summary>
+    /// <remarks>
+    /// The one place a cast completes, whether it was instant or had a bar. Effects are not applied
+    /// yet — that is the next task — so this is currently the visible half of a cast and nothing
+    /// more.
+    /// <para>
+    /// <b>Broadcast, not sent to the caster alone.</b> <c>SMSG_SPELL_GO</c> is what plays the
+    /// impact, so everyone in range needs it — sending it only to the caster leaves a fight where
+    /// bystanders see damage numbers appear with nothing causing them.
+    /// </para>
+    /// </remarks>
+    public void CompleteCast(Player caster, SpellEntry spell, Unit? target, byte castCount)
+    {
+        ArgumentNullException.ThrowIfNull(caster);
+        ArgumentNullException.ThrowIfNull(spell);
+
+        if (spell.RecoveryTime > 0)
+        {
+            caster.Casting.StartCooldown(spell.Id, (int)spell.RecoveryTime);
+        }
+
+        ObjectGuid targetGuid = target?.Guid ?? ObjectGuid.Empty;
+
+        // The caster first, then everyone watching. The caster is not in its own visible set, so a
+        // loop over watchers alone would leave the person who cast it without the impact.
+        caster.Connection?.SendSpellGo(caster.Guid, spell.Id, castCount, targetGuid, caster.Power);
+
+        foreach (Player watcher in PlayersWhoSeeCore(caster.Guid))
+        {
+            watcher.Connection?.SendSpellGo(caster.Guid, spell.Id, castCount, targetGuid, caster.Power);
+        }
+    }
 
     /// <summary>Applies one landed swing and tells everyone who can see it.</summary>
     /// <remarks>

@@ -14,9 +14,16 @@ namespace WowEmu.WorldServer;
 /// row says who it is. Missing data in any of them means the character would render wrongly or not
 /// at all, so this refuses rather than logging in something broken.
 /// </remarks>
-public sealed class WorldContent(DbcStores stores, PlayerStatsStore stats, TerrainManager terrain)
+public sealed class WorldContent(
+    DbcStores stores,
+    PlayerStatsStore stats,
+    TerrainManager terrain,
+    SpellStores spells)
 {
     public TerrainManager Terrain { get; } = terrain;
+
+    /// <summary>Every spell, and the tables its cast time, range and duration index into.</summary>
+    public SpellStores Spells { get; } = spells;
 
     public DbcStores Stores { get; } = stores;
 

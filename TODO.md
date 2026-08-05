@@ -270,9 +270,127 @@ Still open and still needing a deliberate yes: the DotRecast fork for pathfindin
       `DT_SLOPE_TOO_STEEP` status bit
 - [ ] Height and liquid checks in movement validation, which have been waiting on vmaps since Phase 7
 
-## Phase 9+ ⬜
+## Phase 9 — Combat 🔵 → **M5**
 
-See [PLAN.md](PLAN.md) §6. Combat, spells, progression, AI.
+M5 is: kill a mob with autoattack and a spell, gain XP, level up. Melee is done end to end; spells
+are loaded but nothing casts yet.
+
+**The melee attack table**
+
+- [x] `RollMeleeOutcomeAgainst` — one `urand(0, 10000)` against a running sum, in the order miss,
+      dodge, parry, block, glancing, crushing, crit, normal. Reproduced structurally, including the
+      `(tmp -= skillBonus) > 0` mutation inside the branch conditions
+- [x] The roll is inclusive at both ends, so there are 10001 outcomes and not 10000
+- [x] Facing asymmetry: only a *player* victim loses its dodge from behind, while parry and block
+      are lost by anyone — that is what makes tanking a boss survivable, not an oversight
+- [x] `creature_template.flags_extra` vendored and wired — the five bits that gate table branches
+      (`NoDodge`, `NoParry`, `NoBlock`, `NoCrushingBlows`, `NoCrit`). 4/4/5/1/4 creatures carry them
+- [x] Distribution verified over 10⁶ rolls, within 0.05 % of the chances asked for
+
+**Damage**
+
+- [x] `CalcArmorReducedDamage` — the `x/(1+x)` curve, the level-59 kink, the 75 % cap, and the
+      `ceil` that stops heavy armour making a target immune to weak hits
+- [x] Outcome multipliers: crit ×2, crushing +½ (integer, so truncated), glancing −10 %/level capped
+      at three levels, flat block, dodge and parry preserving clean damage for rage and threat
+- [x] **Armour is applied before the outcome multiplier**, not after. Observably different on about
+      half of all inputs because of the `ceil` between them
+- [x] `MeleeChances` — the miss curve's two asymmetries (0.04 vs 0.02 against a player; a cliff at
+      ten points against a creature), boss dodge/parry, humanoid-only parry
+- [x] Percentages become hundredths as `int32(chance * 100)` in **float**, not double: 13.4f × 100
+      rounds to exactly 1340.0f, so a boss's parry is 1340 where decimal arithmetic says 1339
+
+**Packets**
+
+- [x] `SMSG_ATTACKERSTATEUPDATE`, whose trailers are conditional on `HitInfo` — an extra or missing
+      one shifts every byte after it and the client notices several packets later
+- [x] Overkill is measured against the victim's health **before** the hit, because upstream sends
+      the packet and only then applies the damage
+- [x] `SMSG_ATTACKSTART` sends full guids where `SMSG_ATTACKSTOP` packs them. Upstream's
+      inconsistency, reproduced rather than tidied
+
+**Auto-attack**
+
+- [x] `CMSG_ATTACKSWING` / `CMSG_ATTACKSTOP`, and every rejection answers with a stop rather than
+      silence — the client has already started its animation by the time the packet arrives
+- [x] Swing timers: a timer overshoots into the negative for exactly one tick, and
+      `min(timer + speed, speed)` carries that overshoot into the next swing rather than discarding it
+- [x] A failed swing costs a 100 ms retry, not a weapon swing — chasing a fleeing target must not
+      cost a full swing every time you fall behind
+- [x] Swing errors are suppressed to one per run of failures, or the client prints the message ten
+      times a second
+
+**Death and respawn**
+
+- [x] `Kill` lands on `Corpse`, never on `JustDied` — upstream promotes through it in one call
+- [x] Corpse delay from rank (60 s common, 300 s rare/elite, 600 s open-world boss); respawn delay
+      from `creature.spawntimesecs`, now vendored
+- [x] **The respawn clock includes the corpse delay.** Measuring from the corpse's removal instead
+      would bring everything back a minute early
+- [x] A despawned creature leaves its cell and the guid index but stays in the update list, which is
+      what leaves something to tick it back
+
+**Threat**
+
+- [x] One point per point of damage; zero threat still joins the list, which is how a missed swing
+      still starts a fight
+- [x] **The victim is sticky**: 110 % to steal it in melee range, 130 % out of it. Without the
+      margin a creature thrashes between two similar attackers and tanking cannot work
+- [x] Ties broken by distance, against a tolerance rather than exact float equality
+
+**Creature AI**
+
+- [x] Aggro radius: 20 yards at parity, ±1/level, clamped to 5–45. **Upstream's `GetAggroRange` has
+      its two locals named backwards** — the one called `creatureLevel` holds the target's level — so
+      this follows `GetAttackDistance`, which computes the same thing with honest names
+- [x] `FactionTemplate.dbc` loaded (841 rows) with `IsHostileTo` / `IsFriendlyTo`: named enemies and
+      friends beat the broad masks, and enemies are checked first
+- [x] A missing faction template is treated as *harmless*. The safe direction to fail — a creature
+      that never fights is noticed; a zone that attacks on sight reads as a game rule
+- [x] Leash at 30 yards from the **spawn point**, not from where the fight started
+- [x] Evading clears the threat list, not only the victim, or it re-acquires and walks straight out
+- [x] A creature turns to face its victim. Not cosmetic: the swing loop enforces a 120° cone, so a
+      creature that never turns stands next to its victim and never lands a hit
+
+**Spell data**
+
+- [x] `Spell.dbc` — 49,839 rows, 234 columns — plus `SpellCastTimes`, `SpellRange`, `SpellDuration`
+      and `SpellRadius`, which cast time, range and duration are *indices into*, not values
+- [x] **`BasePoints` is stored one below the minimum.** Fireball's 14-22 is base 13 with 9 sides;
+      reading the column as the minimum makes every spell in the game hit for one less
+- [x] Costs come from two columns: Wrath moved caster spells to a percentage of base mana and left
+      rage and energy flat, so reading only `ManaCost` finds every mage spell free
+- [x] Effects are three *parallel blocks*, not three interleaved records
+- [x] Verified against spells whose numbers are a matter of record — Fireball 14-22 fire over 1.5 s
+      at 35 yards with a 4 s burn, Frostbolt's 40 % slow, Smite 13-17 holy
+
+**The cast pipeline**
+
+- [x] `CMSG_CAST_SPELL` and its target block, whose entire layout is decided by a leading mask —
+      and where five separate flags share <i>one</i> guid field, not one each
+- [x] `SMSG_SPELL_START` and `SMSG_SPELL_GO`. Two packets per cast, not one: the first opens the
+      cast bar and the second closes it and plays the impact, and an instant spell sends both
+- [x] **The caster guid is written twice** in each. The first is whatever produced the cast, the
+      second is always the unit; writing it once shifts every field after it by a guid
+- [x] `SMSG_SPELL_GO`'s hit and miss lists use **full** guids where the rest of the packet packs
+      them, and the two lists have different strides — a miss carries a reason byte, a hit does not
+- [x] `SMSG_CAST_FAILED`, quoting the client's own cast count so its button unlights
+- [x] Cast bar, cooldowns and the global cooldown, advanced on the map tick
+- [x] **The global cooldown blocks only spells that would start one.** An ability with no
+      `StartRecoveryTime` — Heroic Strike, say — is usable during it
+- [x] Power is taken when the cast *starts*, not when it lands, so a cancelled cast is not free
+- [x] Check order is upstream's, because the client shows only the first failure: a dead target
+      reads as dead rather than as out of range
+- [x] **Power slots are indexed by type.** `Power` used to always read slot 0, so a warrior's rage
+      went into the mana field — a full mana bar and an empty rage bar on the same unit. Percentage
+      costs now read `UNIT_FIELD_BASE_MANA`, which is what they are a percentage of
+
+**Still to do for M5**
+
+- [ ] Spell effect handlers — `SCHOOL_DAMAGE` and `WEAPON_DAMAGE` are all M5 needs
+- [ ] `SMSG_SPELLNONMELEEDAMAGELOG`
+- [ ] XP on kill, `SMSG_LOG_XPGAIN`, level-up and stat recalculation
+- [ ] Verify the whole of M5 against a real client
 
 ---
 
@@ -459,6 +577,29 @@ The threading model PLAN.md §4.2 calls the single most important constraint in 
 - `sql/world/` is now 19 MB, almost all of it `creature` (12 MB) and `creature_template` (7 MB).
   The vendoring rule says a fresh clone must be able to start, and that is the price. `item_template`
   and `gameobject` will roughly double it.
+- **Player death does nothing.** A creature can take a player to zero health and nothing happens —
+  no corpse, no release, no resurrection sickness. Creatures fight back as of Phase 9, so this is
+  now reachable in normal play rather than theoretical.
+- **Loot does not exist**, so `UNIT_DYNFLAG_LOOTABLE` is deliberately never set on a corpse — the
+  flag would promise a lootable corpse that opens an empty window.
+- **`creature_addon` is not vendored**, so every creature is `ReactState.Aggressive`. A passive
+  quest prop currently behaves like anything else and will fight back.
+- **A creature's facing is server-side only.** `CreatureAi.FaceTowards` decides whether a swing
+  lands, but the client is not told — that needs the facing-target form of `SMSG_MONSTER_MOVE`,
+  which `MonsterMove.Write` does not produce. A stationary creature turning to a target that walked
+  around it looks wrong until its next move packet.
+- **Glancing blows exclude a pet victim upstream; pets do not exist here**, so only the player half
+  of that condition is modelled. The check needs widening when they arrive.
+- **Nothing checks that a player knows the spell it casts.** There is no spellbook, so
+  `CMSG_CAST_SPELL` is honoured for any id in `Spell.dbc` — `SPELL_FAILED_NOT_KNOWN` exists as a
+  result and is only sent for ids the client data does not describe at all.
+- **A cast has no effects yet.** The pipeline sends `SMSG_SPELL_START` and `SMSG_SPELL_GO`, so a
+  cast is fully visible and does nothing — no damage, no auras, no `SMSG_SPELLNONMELEEDAMAGELOG`.
+- **Nothing interrupts a cast.** Moving, taking damage and dying all leave the bar running; only
+  `CMSG_CANCEL_CAST` ends one early.
+- Threat has no taunt, no redirection and no aura modifiers, and `MeleeChances` has no aura or
+  expertise terms — the base values are the whole calculation for a creature and the correct
+  starting point for a player.
 - `data/` is 3 GB of extracted client data and is not committed; a fresh clone needs the extractors
   run again. See `data/README.md`.
 - `sql/world/` redistributes AGPL-3.0 content from AzerothCore's database. Deliberate — see

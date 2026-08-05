@@ -62,23 +62,43 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
     }
 
     /// <summary>
-    /// The first power slot.
+    /// The unit's own power — whichever of the seven it actually uses.
     /// </summary>
     /// <remarks>
-    /// Always slot 0 whatever the unit's actual resource is: the client reads the slot named by
-    /// <see cref="PowerType"/>, and the seven slots exist so that a unit can hold several at once.
+    /// The client carries all seven side by side and reads each from its own field, so a warrior's
+    /// rage belongs in slot 1 and not in slot 0. Writing everything to slot 0 shows a full mana bar
+    /// and an empty rage bar on the same unit.
     /// </remarks>
     public uint Power
     {
-        get => Fields.GetUInt32(UpdateFields.UNIT_FIELD_POWER1);
-        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_POWER1, value);
+        get => GetPower(PowerType);
+        set => SetPower(PowerType, value);
     }
 
+    /// <inheritdoc cref="Power"/>
     public uint MaxPower
     {
-        get => Fields.GetUInt32(UpdateFields.UNIT_FIELD_MAXPOWER1);
-        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_MAXPOWER1, value);
+        get => GetMaxPower(PowerType);
+        set => SetMaxPower(PowerType, value);
     }
+
+    /// <summary>One of the seven power values, by type.</summary>
+    /// <remarks>
+    /// Spell costs need this rather than <see cref="Power"/>: a spell priced in mana is checked
+    /// against the caster's mana even when the caster is a warrior whose displayed bar is rage.
+    /// </remarks>
+    public uint GetPower(byte powerType) => Fields.GetUInt32(UpdateFields.UNIT_FIELD_POWER1 + powerType);
+
+    /// <inheritdoc cref="GetPower"/>
+    public void SetPower(byte powerType, uint value) =>
+        Fields.SetUInt32(UpdateFields.UNIT_FIELD_POWER1 + powerType, value);
+
+    /// <inheritdoc cref="GetPower"/>
+    public uint GetMaxPower(byte powerType) => Fields.GetUInt32(UpdateFields.UNIT_FIELD_MAXPOWER1 + powerType);
+
+    /// <inheritdoc cref="GetPower"/>
+    public void SetMaxPower(byte powerType, uint value) =>
+        Fields.SetUInt32(UpdateFields.UNIT_FIELD_MAXPOWER1 + powerType, value);
 
     /// <summary>Decides who this unit is hostile to, and what colour its nameplate is.</summary>
     public uint FactionTemplate
@@ -321,6 +341,26 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
     public ThreatManager Threat => _threat ??= new ThreatManager(this);
 
     private ThreatManager? _threat;
+
+    /// <summary>What this unit is casting, and what it is waiting on.</summary>
+    public SpellCastState Casting => _casting ??= new SpellCastState();
+
+    private SpellCastState? _casting;
+
+    /// <summary>
+    /// The mana a percentage-priced spell is a percentage <i>of</i>.
+    /// </summary>
+    /// <remarks>
+    /// Base mana — what the class has before any gear — not the current maximum. Taking it from the
+    /// maximum makes every percentage-priced spell get more expensive as a character gears up, which
+    /// is backwards.
+    /// <para>
+    /// Approximated by the maximum until <c>player_classlevelstats</c> is read for base mana. That
+    /// is exact for an unequipped character and increasingly wrong with gear, which is the honest
+    /// trade for now — it is recorded in TODO.md rather than hidden here.
+    /// </para>
+    /// </remarks>
+    public virtual uint BasePowerFor(byte powerType) => GetMaxPower(powerType);
 
     /// <summary>Who this unit is attacking, if anyone.</summary>
     /// <remarks>

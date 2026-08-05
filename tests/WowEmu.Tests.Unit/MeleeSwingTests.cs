@@ -713,6 +713,24 @@ internal static class MapCombatFixture
         public void SendAttackState(ObjectGuid attacker, ObjectGuid? victim, bool attacking, bool victimIsDead) =>
             AttackStates.Add((victim ?? ObjectGuid.Empty, attacking, victimIsDead));
 
+
+        /// <summary>Casts this client was told about.</summary>
+        public List<(uint SpellId, int CastTimeMs, bool Landed)> Casts { get; } = [];
+
+        /// <summary>Cast refusals this client was told about.</summary>
+        public List<SpellCastResult> CastFailures { get; } = [];
+
+        public void SendSpellStart(
+            ObjectGuid caster, uint spellId, byte castCount, int castTimeMs, ObjectGuid target, uint powerLeft) =>
+            Casts.Add((spellId, castTimeMs, false));
+
+        public void SendSpellGo(
+            ObjectGuid caster, uint spellId, byte castCount, ObjectGuid target, uint powerLeft) =>
+            Casts.Add((spellId, 0, true));
+
+        public void SendCastFailed(byte castCount, uint spellId, SpellCastResult result) =>
+            CastFailures.Add(result);
+
         public void SendSwingError(SwingError reason) => SwingErrors.Add(reason);
 
         public void DrainMapPackets(uint diff)

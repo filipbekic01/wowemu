@@ -47,6 +47,43 @@ public sealed class Player : Unit
     /// <inheritdoc/>
     public override bool IsPlayerControlled => true;
 
+    /// <summary>
+    /// Base mana, from the character sheet rather than from the current maximum.
+    /// </summary>
+    /// <remarks>
+    /// <c>UNIT_FIELD_BASE_MANA</c> is what a percentage-priced spell is a percentage of — the
+    /// class's mana before any gear. Reading the current maximum instead makes those spells get more
+    /// expensive as a character gears up, which is backwards.
+    /// <para>
+    /// Only mana has a base field; every other resource has a flat cap that gear does not move, so
+    /// the maximum is the right answer for those.
+    /// </para>
+    /// </remarks>
+    public override uint BasePowerFor(byte powerType) => powerType == PowerMana
+        ? BaseMana
+        : GetMaxPower(powerType);
+
+    /// <summary>The class's mana before any gear. <c>UNIT_FIELD_BASE_MANA</c>.</summary>
+    public uint BaseMana
+    {
+        get => Fields.GetUInt32(UpdateFields.UNIT_FIELD_BASE_MANA);
+        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_BASE_MANA, value);
+    }
+
+    /// <summary>The cap for a resource that is not mana.</summary>
+    /// <remarks>
+    /// Rage and runic power are stored ten times what the client displays, so a full bar is 1000.
+    /// Storing 100 gives a bar that fills after ten points.
+    /// </remarks>
+    private static uint MaxPowerFor(byte powerType) => powerType switch
+    {
+        PowerRage => 1000,
+        PowerRunicPower => 1000,
+        PowerEnergy => 100,
+        PowerFocus => 100,
+        _ => 0,
+    };
+
     /// <inheritdoc/>
     public override float DodgeChance => Fields.GetFloat(UpdateFields.PLAYER_DODGE_PERCENTAGE);
 
@@ -130,6 +167,21 @@ public sealed class Player : Unit
         fields.SetUInt32(UpdateFields.UNIT_FIELD_POWER1, stats.MaxMana);
         fields.SetUInt32(UpdateFields.UNIT_FIELD_MAXPOWER1, stats.MaxMana);
         fields.SetUInt32(UpdateFields.UNIT_FIELD_BASE_MANA, stats.MaxMana);
+
+        // A class whose resource is not mana needs its own slot filled too, or the client draws a
+        // bar reading 0 / 0. Rage and runic power are stored ten times their displayed value, which
+        // is why a full rage bar is 1000 rather than 100.
+        byte powerType = (byte)characterClass.PowerType;
+
+        if (powerType != PowerMana)
+        {
+            fields.SetUInt32(UpdateFields.UNIT_FIELD_MAXPOWER1 + powerType, MaxPowerFor(powerType));
+
+            // Rage and runic power start empty and are earned; energy starts full.
+            fields.SetUInt32(
+                UpdateFields.UNIT_FIELD_POWER1 + powerType,
+                powerType == PowerEnergy ? MaxPowerFor(powerType) : 0);
+        }
 
         fields.SetUInt32(UpdateFields.UNIT_FIELD_STAT0, stats.Strength);
         fields.SetUInt32(UpdateFields.UNIT_FIELD_STAT1, stats.Agility);

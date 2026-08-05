@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging;
 using WowEmu.Core;
+using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Game;
 using WowEmu.Game.Combat;
@@ -286,6 +287,14 @@ public sealed class WorldSession(
 
             case Opcode.CMSG_ATTACKSTOP:
                 HandleAttackStop();
+                return;
+
+            case Opcode.CMSG_CAST_SPELL:
+                HandleCastSpell(payload);
+                return;
+
+            case Opcode.CMSG_CANCEL_CAST:
+                HandleCancelCast();
                 return;
 
             default:
@@ -766,6 +775,95 @@ public sealed class WorldSession(
         SendAttackState(_player.Guid, victim, attacking: false, victimIsDead: victimIsDead);
     }
 
+    /// <summary>
+    /// Starts a cast.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>WorldSession::HandleCastSpellOpcode</c> plus the parts of <c>Spell::prepare</c>
+    /// that decide whether the attempt is allowed.
+    /// <para>
+    /// An instant spell is finished here rather than on the next tick. Waiting would put a tick of
+    /// latency on every instant ability, and the client has already played its animation.
+    /// </para>
+    /// </remarks>
+    private void HandleCastSpell(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!SpellCast.TryRead(ref reader, out byte castCount, out uint spellId, out SpellCastTargets targets))
+        {
+            return;
+        }
+
+        if (!world.Spells.Spells.TryGet(spellId, out SpellEntry spell))
+        {
+            // An id the client data does not describe. Nothing sensible to say about it, so the
+            // client is told its attempt failed rather than left waiting.
+            SendCastFailed(castCount, spellId, SpellCastResult.NotKnown);
+            return;
+        }
+
+        Unit? target = targets.HasObjectTarget ? _map.Find(targets.ObjectTarget) as Unit : null;
+
+        SpellCastResult result = SpellCastChecks.Check(
+            _player,
+            spell,
+            target,
+            world.Spells,
+            _player.Casting,
+            () => target is null || _map.IsInLineOfSight(_player.Position, target.Position));
+
+        if (result != SpellCastResult.Ok)
+        {
+            SendCastFailed(castCount, spellId, result);
+            return;
+        }
+
+        int castTimeMs = world.Spells.CastTimeMs(spell);
+
+        // Power is taken when the cast *starts*, not when it lands. Taking it on completion would
+        // make a cancelled cast free, which is a way to hold a spell ready at no cost.
+        uint cost = SpellCastChecks.PowerCost(_player, spell);
+
+        if (cost > 0 && spell.PowerType == _player.PowerType)
+        {
+            _player.Power -= Math.Min(cost, _player.Power);
+        }
+
+        _player.Casting.StartGlobalCooldown(spell);
+
+        SendSpellStart(_player.Guid, spellId, castCount, castTimeMs, target?.Guid ?? ObjectGuid.Empty, _player.Power);
+
+        if (castTimeMs <= 0)
+        {
+            // Instant: completed here rather than on the next tick. Waiting would put a tick of
+            // latency on every instant ability, and the client has already played its animation.
+            _map.CompleteCast(_player, spell, target, castCount);
+        }
+        else
+        {
+            _player.Casting.Begin(spell, target, castCount, castTimeMs);
+        }
+
+        // The name is built into a local: the analyzer objects to work inside a log call, and
+        // ToString() concatenates a rank onto every cast whether or not debug logging is on.
+        string spellName = spell.Name;
+
+        Log.SpellCast(logger, _player.Name, spellName, target?.Name ?? "self", connection.RemoteAddress);
+    }
+
+    /// <summary>Abandons the cast in progress.</summary>
+    /// <remarks>
+    /// The power spent on it is not refunded, which is upstream's behaviour and the reason
+    /// cancelling a cast is a real cost rather than free.
+    /// </remarks>
+    private void HandleCancelCast() => _player?.Casting.Cancel();
+
     private void HandleMovement(Opcode opcode, ReadOnlyMemory<byte> payload)
     {
         if (_player is null || _map is null)
@@ -1003,6 +1101,69 @@ public sealed class WorldSession(
 
         connection.Send(stop);
     }
+
+    /// <summary>Tells this client that a cast has started.</summary>
+    /// <remarks>
+    /// The target block is rebuilt from the guid rather than kept from the incoming packet: the
+    /// client sends flags this server does not act on, and echoing them back would promise blocks
+    /// the writer does not produce.
+    /// </remarks>
+    public void SendSpellStart(
+        ObjectGuid caster, uint spellId, byte castCount, int castTimeMs, ObjectGuid target, uint powerLeft)
+    {
+        ServerPacket packet = new(Opcode.SMSG_SPELL_START, 64);
+
+        SpellCast.WriteSpellStart(
+            packet.Body,
+            caster,
+            castCount,
+            spellId,
+            SpellCastFlags.HasTrajectory | SpellCastFlags.PowerLeftSelf,
+            castTimeMs,
+            TargetsFor(target),
+            powerLeft);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Tells this client that a cast landed.</summary>
+    public void SendSpellGo(
+        ObjectGuid caster, uint spellId, byte castCount, ObjectGuid target, uint powerLeft)
+    {
+        ServerPacket packet = new(Opcode.SMSG_SPELL_GO, 96);
+
+        // One hit and no misses: nothing here can miss yet, so a miss list would be structure with
+        // no way to reach it. A self-cast hits the caster, which is what an empty target means.
+        ObjectGuid[] hits = [target.IsEmpty ? caster : target];
+
+        SpellCast.WriteSpellGo(
+            packet.Body,
+            caster,
+            castCount,
+            spellId,
+            SpellCastFlags.Unknown9 | SpellCastFlags.PowerLeftSelf,
+            MsTime.Now,
+            hits,
+            [],
+            TargetsFor(target),
+            powerLeft);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Tells this client its cast was refused.</summary>
+    public void SendCastFailed(byte castCount, uint spellId, SpellCastResult result)
+    {
+        ServerPacket packet = new(Opcode.SMSG_CAST_FAILED, 8);
+        SpellCast.WriteCastFailed(packet.Body, castCount, spellId, result);
+
+        connection.Send(packet);
+    }
+
+    private static SpellCastTargets TargetsFor(ObjectGuid target) =>
+        target.IsEmpty
+            ? SpellCastTargets.Self
+            : new SpellCastTargets(SpellCastTargetFlags.Unit, ObjectTarget: target);
 
     /// <summary>Tells this client why its swing did not land.</summary>
     /// <remarks>
