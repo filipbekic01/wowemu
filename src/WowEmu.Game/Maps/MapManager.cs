@@ -29,7 +29,8 @@ public sealed class MapManager(
     TerrainManager terrain,
     IGridObjectLoader? gridObjects = null,
     MapUpdater? updater = null,
-    ILogger<Map>? logger = null) : IDisposable
+    ILogger<Map>? logger = null,
+    VmapManager? vmaps = null) : IDisposable
 {
     /// <summary>
     /// The four phases. Three update a category of map; the fourth is a pause.
@@ -58,7 +59,7 @@ public sealed class MapManager(
     {
         if (!_maps.TryGetValue(mapId, out Map? map))
         {
-            map = new Map(mapId, terrain.GetMap(mapId), gridObjects, logger);
+            map = new Map(mapId, terrain.GetMap(mapId), gridObjects, logger, vmaps?.GetMap(mapId));
             _maps[mapId] = map;
         }
 

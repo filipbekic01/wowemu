@@ -2,11 +2,10 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** Line of sight works in world coordinates. `StaticMapTree` loads a map's tiles on demand —
-4,456 model instances around the human start — and a ray through a building is blocked while one
-across open air is not. Working towards **M5** (kill a mob, gain XP, level up) through the task list;
-next is the height query and then melee combat. Still open and still needing a deliberate yes: the
-DotRecast fork for pathfinding.
+**Now:** Collision is wired into the game. Line of sight and floor height answer in world
+coordinates, and movement validation refuses a player who is under the world — the first height
+check that was safe to make. Working towards **M5** (kill a mob, gain XP, level up); melee combat is
+next. Still open and still needing a deliberate yes: the DotRecast fork for pathfinding.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -217,8 +216,11 @@ DotRecast fork for pathfinding.
 - [x] Speed check against server-measured elapsed time, not the client's own timestamp
 - [x] Contradictory flag combinations refused
 - [x] Rejected packets leave player state untouched and snap the client back
-- [ ] Height check against terrain — needs vmaps first, or every bridge and building is a false
-      positive (Phase 8)
+- [x] Under-the-world check — refuses a position far below the floor, where the floor is the higher
+      of terrain and models
+- [ ] The symmetric check — does Z *match* the floor — is still not made, and vmaps did not make it
+      safe. It would have to know about transports, lifts, and the gap between leaving a surface and
+      the fall being reported; each is an honest player disconnected.
 - [ ] Swim/fly distinction — needs the liquid chunk parsed
 - [ ] Speed checks against *applied* speeds rather than a fixed ceiling — needs auras (Phase 9)
 - [ ] Fall damage
@@ -257,7 +259,10 @@ DotRecast fork for pathfinding.
       `{map}{gridX}{gridY}`. Two extractors, opposite conventions, nothing anywhere saying so.
       Measured against 144 real tiles rather than assumed.
 - [ ] `DynamicMapTree` for gameobject-based line of sight, rebalanced every 200 ms
-- [ ] Height queries against vmaps, which movement validation has been waiting on since Phase 7
+- [x] Height queries against vmaps, combined with terrain — the floor is the higher of the two, and
+      246 of 437 sampled points in Stormwind stand on a model rather than the ground
+- [x] The under-the-world check in movement validation, which is the half of the height test that
+      is safe to make
 - [ ] `PathGenerator`, the (y, z, x) Detour coordinate swizzle, `findSmoothPath`
 - [ ] Custom cost function: `dist * (1 + slopeDegrees/100) * areaCost`, and the
       `DT_SLOPE_TOO_STEEP` status bit
@@ -350,8 +355,11 @@ play, which is exactly why they are written down.
 - [ ] Links are not read from `.mmtile` and must not be — the file reserves `MaxLinkCount` links'
       worth of space, but Detour builds them when a tile is added, so what is on disk is
       uninitialised. Anything that starts reading them is reading noise.
-- [ ] Line of sight is available but nothing asks for it: no spell, no attack and no movement check
-      calls `StaticMapTree` yet.
+- [ ] Line of sight is computed but nothing consumes it: no spell or attack is blocked by a wall,
+      because there are no spells or attacks. Movement validation uses the floor height only.
+- [ ] The under-the-world threshold (25 yards) is a judgement, not a measurement. It has been
+      exercised by the gate walking on open ground, not by a real client in a city or a cave — the
+      false-positive rate is unknown.
 - [ ] Vmap tiles are loaded on demand and never unloaded, the same gap grid loading has.
 - [ ] `CollectCandidates` allocates a `List<uint>` per group per ray. Fine for the tests, not for a
       tick — it wants a reusable buffer once something calls it in anger.

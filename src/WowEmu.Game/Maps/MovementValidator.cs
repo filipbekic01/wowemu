@@ -20,6 +20,9 @@ public enum MovementRejection
 
     /// <summary>Jumped further in one packet than the protocol can explain.</summary>
     Teleport,
+
+    /// <summary>Reported a position far below any ground or model at that spot.</summary>
+    UnderTheWorld,
 }
 
 /// <summary>The verdict on one movement packet.</summary>
@@ -40,17 +43,22 @@ public readonly record struct MovementVerdict(MovementRejection Rejection, strin
 /// not to move the player — it is to notice when the client is lying. Every teleport, speed and fly
 /// hack lives in the gap between "the client says so" and "the server checked".
 /// <para>
-/// <b>What this deliberately does not check, and why.</b> The obvious test — does the reported Z
-/// match the ground? — would reject every player legitimately standing on a bridge, a building or a
-/// boat, because terrain only knows the ground and buildings live in the vmaps, which are not
-/// loaded yet (Phase 8). Swimming has the same problem: the liquid chunk is unparsed, so water is
-/// indistinguishable from flying. Both checks are wrong to approximate; a false positive that
-/// disconnects an honest player is worse than a missed cheat.
+/// <b>Height is checked in one direction only, on purpose.</b> Being far <i>below</i> the floor is
+/// unambiguous — there is nothing to stand on down there. Being above it is ordinary: jumping,
+/// falling, a flying mount, a lift. So this refuses a player under the world and says nothing about
+/// one in the air.
+/// </para>
+/// <para>
+/// The symmetric test — does the reported Z <i>match</i> the floor? — is still not made, and vmaps
+/// did not make it safe. It would have to know about transports, lifts, and the moment between
+/// leaving a surface and the fall being reported; each of those is an honest player disconnected.
+/// Swimming is in the same position: the liquid chunk is unparsed, so water is still
+/// indistinguishable from flying.
 /// </para>
 /// <para>
 /// So the checks here are the ones that are exactly right rather than nearly right: coordinates
-/// that cannot exist, flag combinations that contradict themselves, and distances that no speed
-/// explains.
+/// that cannot exist, flag combinations that contradict themselves, distances that no speed
+/// explains, and positions with the whole world above them.
 /// </para>
 /// </remarks>
 public sealed class MovementValidator
@@ -78,6 +86,17 @@ public sealed class MovementValidator
     /// </remarks>
     public const float MaxSingleStep = 150.0f;
 
+    /// <summary>
+    /// How far below the floor a position may be before it is refused.
+    /// </summary>
+    /// <remarks>
+    /// Generous, and deliberately so. The floor is the higher of terrain and models, and there are
+    /// real places — cave mouths, dungeon entrances, the underside of a city — where geometry sits
+    /// above a position a player can legitimately occupy. This is sized to catch a player who has
+    /// left the world entirely, not to measure their feet.
+    /// </remarks>
+    public const float MaxDepthBelowFloor = 25.0f;
+
     /// <summary>Flags that mean the player is moving under its own power.</summary>
     private const MovementFlag MovingFlags =
         MovementFlag.Forward | MovementFlag.Backward |
@@ -92,7 +111,15 @@ public sealed class MovementValidator
     /// Time since the last accepted packet, by the server's clock. Server-side on purpose: the
     /// client's own timestamp is exactly the thing a speed hack would forge.
     /// </param>
-    public static MovementVerdict Validate(Position previous, MovementInfo movement, uint elapsedMilliseconds)
+    /// <param name="floorAt">
+    /// The surface under a position, or null where nothing is known. Optional: without it the height
+    /// check is skipped rather than guessed at.
+    /// </param>
+    public static MovementVerdict Validate(
+        Position previous,
+        MovementInfo movement,
+        uint elapsedMilliseconds,
+        Func<float, float, float, float?>? floorAt = null)
     {
         ArgumentNullException.ThrowIfNull(movement);
 
@@ -132,6 +159,20 @@ public sealed class MovementValidator
                 return MovementVerdict.Reject(
                     MovementRejection.ImpossibleSpeed,
                     $"{speed:F1} yards/second over {seconds:F2}s");
+            }
+        }
+
+        // Last, because it is the only check that reads a file. A packet that fails one of the
+        // cheap tests above never reaches it.
+        if (floorAt is not null && floorAt(position.X, position.Y, position.Z) is { } floor)
+        {
+            float depth = floor - position.Z;
+
+            if (depth > MaxDepthBelowFloor)
+            {
+                return MovementVerdict.Reject(
+                    MovementRejection.UnderTheWorld,
+                    $"{depth:F1} yards below the floor at {floor:F1}");
             }
         }
 

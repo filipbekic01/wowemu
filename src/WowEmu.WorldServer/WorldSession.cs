@@ -718,7 +718,10 @@ public sealed class WorldSession(
         uint now = MsTime.Now;
         uint elapsed = _lastMovementMs == 0 ? 0 : MsTime.Diff(_lastMovementMs, now);
 
-        MovementVerdict verdict = MovementValidator.Validate(_player.Position, claimed, elapsed);
+        // The floor lookup is handed in rather than reached for, so the validator stays a pure
+        // function and a map with no collision data simply skips the check.
+        MovementVerdict verdict = MovementValidator.Validate(
+            _player.Position, claimed, elapsed, _map.GetFloor);
 
         if (!verdict.Accepted)
         {

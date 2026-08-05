@@ -80,7 +80,12 @@ public interface IGridObjectLoader
 /// reason it is safe upstream. Adding a lock here would not make anything safer; it would hide the
 /// day that ordering breaks.
 /// </remarks>
-public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridObjects = null, ILogger? logger = null)
+public sealed class Map(
+    uint mapId,
+    TerrainMap terrain,
+    IGridObjectLoader? gridObjects = null,
+    ILogger? logger = null,
+    StaticMapTree? collision = null)
 {
     private readonly Dictionary<CellCoord, List<WorldObject>> _cells = [];
     private readonly Dictionary<ObjectGuid, WorldObject> _objects = [];
@@ -104,6 +109,23 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
 
     /// <summary>The terrain under this map.</summary>
     public TerrainMap Terrain { get; } = terrain;
+
+    /// <summary>Static collision — buildings, bridges, everything terrain does not know about.</summary>
+    public StaticMapTree? Collision { get; } = collision;
+
+    /// <summary>
+    /// The surface under a point: the higher of terrain and any model standing there.
+    /// </summary>
+    /// <remarks>
+    /// Null where neither knows — a hole in the terrain, an unloaded tile, or open sky. Callers must
+    /// treat that as "no answer" rather than as a floor at zero.
+    /// </remarks>
+    public float? GetFloor(float x, float y, float z) => WorldHeight.GetFloor(Terrain, Collision, x, y, z);
+
+    /// <summary>Whether one point on this map can see another.</summary>
+    /// <remarks>Clear when there is no collision data: a missing file must not blind the world.</remarks>
+    public bool IsInLineOfSight(Position from, Position to) =>
+        Collision is null || Collision.IsInLineOfSight(from.X, from.Y, from.Z, to.X, to.Y, to.Z);
 
     /// <summary>How far players can see here.</summary>
     public float VisibilityDistance { get; init; } = MapCoordinates.DefaultVisibilityDistance;

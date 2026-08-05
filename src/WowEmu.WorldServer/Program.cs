@@ -48,6 +48,11 @@ builder.Services.AddSingleton(_ => DbcStores.Load(
             : Path.Combine(AppContext.BaseDirectory, startupOptions.DataDirectory),
         "dbc")));
 
+builder.Services.AddSingleton(_ => new VmapManager(
+    Path.IsPathRooted(startupOptions.DataDirectory)
+        ? startupOptions.DataDirectory
+        : Path.Combine(AppContext.BaseDirectory, startupOptions.DataDirectory)));
+
 builder.Services.AddSingleton(_ => new TerrainManager(
     Path.IsPathRooted(startupOptions.DataDirectory)
         ? startupOptions.DataDirectory
@@ -70,7 +75,8 @@ builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<TerrainManager>(),
     services.GetRequiredService<IGridObjectLoader>(),
     new MapUpdater(startupOptions.MapUpdateThreads),
-    services.GetRequiredService<ILogger<Map>>()));
+    services.GetRequiredService<ILogger<Map>>(),
+    services.GetRequiredService<VmapManager>()));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in
