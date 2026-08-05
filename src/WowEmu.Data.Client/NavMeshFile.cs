@@ -78,6 +78,100 @@ public readonly record struct DetourMeshHeader(
     float BoundsMaxZ,
     float BvQuantFactor);
 
+/// <summary>
+/// One navigation polygon: up to six vertex indices, its neighbours, and what it is walkable as.
+/// </summary>
+/// <remarks>
+/// <c>dtPoly</c>, 32 bytes. <c>areaAndtype</c> packs two things into one byte — the low six bits are
+/// the terrain area (<c>NavTerrain</c>: ground, water, magma, slime), the top two are the polygon
+/// type. A polygon read without unpacking them has an area of up to 255 and will not match any
+/// filter.
+/// </remarks>
+public readonly record struct DetourPoly(
+    uint FirstLink,
+    ushort[] Verts,
+    ushort[] Neighbours,
+    ushort Flags,
+    byte VertCount,
+    byte AreaAndType)
+{
+    /// <summary>Vertex indices per polygon. <c>DT_VERTS_PER_POLYGON</c>.</summary>
+    public const int MaxVerts = 6;
+
+    /// <summary>The <c>NavTerrain</c> area: ground, water, magma or slime.</summary>
+    public byte Area => (byte)(AreaAndType & 0x3F);
+
+    /// <summary>0 for ground, 1 for an off-mesh connection.</summary>
+    public byte Type => (byte)(AreaAndType >> 6);
+
+    /// <summary>Whether this polygon is a jump or teleport link rather than walkable ground.</summary>
+    public bool IsOffMeshConnection => Type == 1;
+}
+
+/// <summary>A polygon's slice of the detail mesh — the finer triangles that carry real heights.</summary>
+/// <remarks>
+/// <c>dtPolyDetail</c>, 12 bytes: two 4-byte bases, two 1-byte counts, and two bytes of padding the
+/// compiler adds and the file therefore contains.
+/// </remarks>
+public readonly record struct DetourPolyDetail(
+    uint VertBase,
+    uint TriBase,
+    byte VertCount,
+    byte TriCount);
+
+/// <summary>A node in the tile's bounding-volume tree, used to find polygons by position.</summary>
+/// <remarks>
+/// <c>dtBVNode</c>, 16 bytes. The bounds are quantised to the tile using the header's
+/// <c>BvQuantFactor</c>, not world coordinates. A negative <c>Index</c> is an escape sequence — it
+/// says how far to skip, not which polygon.
+/// </remarks>
+public readonly record struct DetourBvNode(
+    ushort[] BoundsMin,
+    ushort[] BoundsMax,
+    int Index)
+{
+    /// <summary>Whether this node points at a polygon rather than telling the walk to skip ahead.</summary>
+    public bool IsLeaf => Index >= 0;
+}
+
+/// <summary>A connection between two points that is not a walk — a jump, a ladder, a portal.</summary>
+/// <remarks><c>dtOffMeshConnection</c>, 36 bytes.</remarks>
+public readonly record struct DetourOffMeshConnection(
+    float StartX,
+    float StartY,
+    float StartZ,
+    float EndX,
+    float EndY,
+    float EndZ,
+    float Radius,
+    ushort Poly,
+    byte Flags,
+    byte Side,
+    uint UserId);
+
+/// <summary>
+/// A whole Detour tile, parsed out of AzerothCore's raw layout.
+/// </summary>
+/// <remarks>
+/// <b>Why this exists.</b> DotRecast reads recast4j's own serialisation format, not the C++ struct
+/// blob <c>mmaps_generator</c> writes — so a reader for this layout is needed whichever Detour we
+/// end up using. See PLAN.md §3.4.1.1.
+/// <para>
+/// Links are deliberately absent. The file reserves <c>MaxLinkCount</c> links' worth of space, but
+/// it is <i>space</i>: Detour builds the links when the tile is added to a mesh, so what is on disk
+/// carries no information. Reading it would be reading uninitialised bytes.
+/// </para>
+/// </remarks>
+public sealed record DetourTile(
+    DetourMeshHeader Header,
+    float[] Vertices,
+    DetourPoly[] Polys,
+    DetourPolyDetail[] DetailMeshes,
+    float[] DetailVertices,
+    byte[] DetailTriangles,
+    DetourBvNode[] BvTree,
+    DetourOffMeshConnection[] OffMeshConnections);
+
 /// <summary>How wide a <c>dtPolyRef</c> is in a tile, which decides which Detour can read it.</summary>
 public enum PolyRefWidth
 {
@@ -201,6 +295,204 @@ public static class NavMeshFile
             BoundsMaxY: BinaryPrimitives.ReadSingleLittleEndian(data[88..]),
             BoundsMaxZ: BinaryPrimitives.ReadSingleLittleEndian(data[92..]),
             BvQuantFactor: BinaryPrimitives.ReadSingleLittleEndian(data[96..]));
+    }
+
+    /// <summary>
+    /// Reads a whole <c>.mmtile</c>: the AzerothCore header, then the Detour tile behind it.
+    /// </summary>
+    /// <remarks>
+    /// Sections appear in the order <c>dtNavMesh::addTile</c> walks them — vertices, polygons,
+    /// links, detail meshes, detail vertices, detail triangles, BV tree, off-mesh connections —
+    /// each 4-byte aligned, with no offsets recorded anywhere. Every section's position is implied
+    /// by the sizes of the ones before it, so a single wrong struct size does not fail: it shifts
+    /// everything after it and yields geometry that looks plausible and is wrong.
+    /// <para>
+    /// That is why this verifies the total against <see cref="ExpectedTileSize"/> before returning.
+    /// </para>
+    /// </remarks>
+    public static DetourTile ReadTile(ReadOnlySpan<byte> file)
+    {
+        MmapTileHeader tile = ReadTileHeader(file);
+
+        if (tile.MmapMagic != MmapMagic)
+        {
+            throw new InvalidDataException(
+                $"Not a .mmtile: magic was 0x{tile.MmapMagic:X8}, expected 0x{MmapMagic:X8}.");
+        }
+
+        if (tile.MmapVersion != MmapVersion)
+        {
+            throw new InvalidDataException(
+                $"This .mmtile is version {tile.MmapVersion}; this reader handles {MmapVersion}. " +
+                "Re-run mmaps_generator rather than reading it anyway.");
+        }
+
+        ReadOnlySpan<byte> body = file[MmapTileHeaderSize..];
+        DetourMeshHeader header = ReadMeshHeader(body);
+
+        if (header.Magic != DetourMagic || header.Version != DetourVersion)
+        {
+            throw new InvalidDataException(
+                $"Detour tile magic/version was 0x{header.Magic:X8}/{header.Version}, " +
+                $"expected 0x{DetourMagic:X8}/{DetourVersion}.");
+        }
+
+        // The tiles we have use 64-bit polygon references — established from the data itself, see
+        // PLAN.md §3.4.1.1. Anything else means a tile built against a different Detour, and the
+        // section offsets below would all be wrong.
+        int expected = ExpectedTileSize(header, PolyRefLinkSize);
+
+        if (expected != (int)tile.DataSize)
+        {
+            throw new InvalidDataException(
+                $"Tile is {tile.DataSize} bytes but its counts predict {expected} for the 64-bit " +
+                "layout. It was built against a different Detour and its sections would not line up.");
+        }
+
+        int offset = DetourMeshHeaderSize;
+
+        float[] vertices = ReadFloats(body, ref offset, 3 * header.VertCount);
+        DetourPoly[] polys = ReadPolys(body, ref offset, header.PolyCount);
+
+        // Skipped, not read: the file reserves this space but Detour fills it when the tile is
+        // added to a mesh. What is on disk here is uninitialised.
+        offset += Align4(PolyRefLinkSize * header.MaxLinkCount);
+
+        DetourPolyDetail[] detailMeshes = ReadDetailMeshes(body, ref offset, header.DetailMeshCount);
+        float[] detailVertices = ReadFloats(body, ref offset, 3 * header.DetailVertCount);
+
+        byte[] detailTriangles = body.Slice(offset, 4 * header.DetailTriCount).ToArray();
+        offset += Align4(4 * header.DetailTriCount);
+
+        DetourBvNode[] bvTree = ReadBvNodes(body, ref offset, header.BvNodeCount);
+        DetourOffMeshConnection[] offMesh = ReadOffMeshConnections(body, ref offset, header.OffMeshConCount);
+
+        if (offset != expected)
+        {
+            throw new InvalidDataException(
+                $"Tile parse consumed {offset} bytes but the layout predicts {expected}.");
+        }
+
+        return new DetourTile(
+            header, vertices, polys, detailMeshes, detailVertices, detailTriangles, bvTree, offMesh);
+    }
+
+    /// <summary><c>sizeof(dtLink)</c> with 64-bit references, which ours use.</summary>
+    public const int PolyRefLinkSize = 16;
+
+    private static float[] ReadFloats(ReadOnlySpan<byte> body, ref int offset, int count)
+    {
+        float[] values = new float[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            values[i] = BinaryPrimitives.ReadSingleLittleEndian(body[(offset + (i * 4))..]);
+        }
+
+        offset += Align4(4 * count);
+        return values;
+    }
+
+    private static DetourPoly[] ReadPolys(ReadOnlySpan<byte> body, ref int offset, int count)
+    {
+        DetourPoly[] polys = new DetourPoly[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            int at = offset + (i * 32);
+
+            ushort[] verts = new ushort[DetourPoly.MaxVerts];
+            ushort[] neighbours = new ushort[DetourPoly.MaxVerts];
+
+            for (int v = 0; v < DetourPoly.MaxVerts; v++)
+            {
+                verts[v] = BinaryPrimitives.ReadUInt16LittleEndian(body[(at + 4 + (v * 2))..]);
+                neighbours[v] = BinaryPrimitives.ReadUInt16LittleEndian(body[(at + 16 + (v * 2))..]);
+            }
+
+            polys[i] = new DetourPoly(
+                FirstLink: BinaryPrimitives.ReadUInt32LittleEndian(body[at..]),
+                Verts: verts,
+                Neighbours: neighbours,
+                Flags: BinaryPrimitives.ReadUInt16LittleEndian(body[(at + 28)..]),
+                VertCount: body[at + 30],
+                AreaAndType: body[at + 31]);
+        }
+
+        offset += Align4(32 * count);
+        return polys;
+    }
+
+    private static DetourPolyDetail[] ReadDetailMeshes(ReadOnlySpan<byte> body, ref int offset, int count)
+    {
+        DetourPolyDetail[] meshes = new DetourPolyDetail[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            int at = offset + (i * 12);
+
+            meshes[i] = new DetourPolyDetail(
+                VertBase: BinaryPrimitives.ReadUInt32LittleEndian(body[at..]),
+                TriBase: BinaryPrimitives.ReadUInt32LittleEndian(body[(at + 4)..]),
+                VertCount: body[at + 8],
+                TriCount: body[at + 9]);
+        }
+
+        offset += Align4(12 * count);
+        return meshes;
+    }
+
+    private static DetourBvNode[] ReadBvNodes(ReadOnlySpan<byte> body, ref int offset, int count)
+    {
+        DetourBvNode[] nodes = new DetourBvNode[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            int at = offset + (i * 16);
+
+            ushort[] min = new ushort[3];
+            ushort[] max = new ushort[3];
+
+            for (int axis = 0; axis < 3; axis++)
+            {
+                min[axis] = BinaryPrimitives.ReadUInt16LittleEndian(body[(at + (axis * 2))..]);
+                max[axis] = BinaryPrimitives.ReadUInt16LittleEndian(body[(at + 6 + (axis * 2))..]);
+            }
+
+            nodes[i] = new DetourBvNode(min, max, BinaryPrimitives.ReadInt32LittleEndian(body[(at + 12)..]));
+        }
+
+        offset += Align4(16 * count);
+        return nodes;
+    }
+
+    private static DetourOffMeshConnection[] ReadOffMeshConnections(
+        ReadOnlySpan<byte> body,
+        ref int offset,
+        int count)
+    {
+        DetourOffMeshConnection[] connections = new DetourOffMeshConnection[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            int at = offset + (i * 36);
+
+            connections[i] = new DetourOffMeshConnection(
+                StartX: BinaryPrimitives.ReadSingleLittleEndian(body[at..]),
+                StartY: BinaryPrimitives.ReadSingleLittleEndian(body[(at + 4)..]),
+                StartZ: BinaryPrimitives.ReadSingleLittleEndian(body[(at + 8)..]),
+                EndX: BinaryPrimitives.ReadSingleLittleEndian(body[(at + 12)..]),
+                EndY: BinaryPrimitives.ReadSingleLittleEndian(body[(at + 16)..]),
+                EndZ: BinaryPrimitives.ReadSingleLittleEndian(body[(at + 20)..]),
+                Radius: BinaryPrimitives.ReadSingleLittleEndian(body[(at + 24)..]),
+                Poly: BinaryPrimitives.ReadUInt16LittleEndian(body[(at + 28)..]),
+                Flags: body[at + 30],
+                Side: body[at + 31],
+                UserId: BinaryPrimitives.ReadUInt32LittleEndian(body[(at + 32)..]));
+        }
+
+        offset += Align4(36 * count);
+        return connections;
     }
 
     /// <summary>

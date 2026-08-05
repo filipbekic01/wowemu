@@ -2,11 +2,10 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** Phase 8's first task is answered. The Detour spike says **fork DotRecast and change three
-constants** — our tiles use 64-bit polyrefs with a 12/21/31 split, DotRecast has the right reference
-width but stock's 16/28/20, and its encoder is static so passing our params does not reconfigure it.
-See PLAN.md §3.4.1.1. Next: the fork plus a reader for AzerothCore's raw tile layout, and then a real
-path compared against the C++ server.
+**Now:** Navmesh tiles parse. All 3,682 of them — 11,073,201 polygons — read out of AzerothCore's
+raw Detour layout, with the geometry checked against invariants rather than merely not throwing.
+Next is the decision the spike surfaced: vendoring a DotRecast fork with three changed constants,
+which is a maintenance commitment worth weighing before taking.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -229,11 +228,17 @@ path compared against the C++ server.
 - [x] **Detour compatibility spike** (PLAN §3.4.1, and the phase's mandated first task).
       Answer: outcome 2 — fork DotRecast, change three constants. Recorded in PLAN.md §3.4.1.1.
 - [x] `.mmap` and `.mmtile` headers parsed and verified against 40 real tiles
-- [ ] Fork DotRecast; change `DtDetour.DT_SALT_BITS/TILE_BITS/POLY_BITS` to 12/21/31
-- [ ] A `DtMeshData` reader for AzerothCore's raw layout — DotRecast reads recast4j's own
-      serialisation, not the C++ struct blob, so this is needed whichever Detour we use
-- [ ] Load a real tile, run a path, compare against the C++ server's `.mmap path` — the phase's
-      actual exit criterion, and still unproven
+- [x] **Full tile reader** for AzerothCore's raw layout — vertices, polygons, detail mesh, BV tree,
+      off-mesh connections. Needed whichever Detour we use, since DotRecast reads recast4j's own
+      serialisation rather than the C++ struct blob.
+- [x] Verified by invariant, not by "it parsed": every vertex inside its tile bounds, every polygon
+      indexing a real vertex, every detail base inside its array, every BV escape inside the tree,
+      and each section consuming exactly its predicted bytes
+- [ ] **Decision needed:** fork DotRecast (zlib) and change `DtDetour.DT_SALT_BITS/TILE_BITS/POLY_BITS`
+      to 12/21/31. It is three constants, but it means vendoring and maintaining a third-party
+      codebase — worth a deliberate yes rather than drifting into it.
+- [ ] Load a real tile into a mesh, run a path, compare against the C++ server's `.mmap path` — the
+      phase's actual exit criterion, and still unproven
 - [ ] VMAPs: `.vmtree`/`.vmtile`, BIH traversal, `IsInLineOfSight`
 - [ ] `PathGenerator`, the (y, z, x) Detour coordinate swizzle, `findSmoothPath`
 - [ ] Custom cost function: `dist * (1 + slopeDegrees/100) * areaCost`, and the
@@ -324,6 +329,12 @@ play, which is exactly why they are written down.
 
 **Data**
 
+- [ ] Links are not read from `.mmtile` and must not be — the file reserves `MaxLinkCount` links'
+      worth of space, but Detour builds them when a tile is added, so what is on disk is
+      uninitialised. Anything that starts reading them is reading noise.
+- [ ] Off-mesh connections are exercised by exactly one tile in the entire extraction
+      (`5622031.mmtile`, Blade's Edge Arena, 2 connections). That branch of the reader has a single
+      real test case and no second opinion.
 - [ ] Only 3 of 109 DBC stores are loaded (`ChrRaces`, `ChrClasses`, `Map`)
 - [ ] `.map` flight bounds are parsed past but discarded
 - [ ] Terrain holes are implemented but never exercised by a test against a known hole
