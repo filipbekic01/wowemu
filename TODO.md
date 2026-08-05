@@ -2,10 +2,10 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** Collision is wired into the game. Line of sight and floor height answer in world
-coordinates, and movement validation refuses a player who is under the world — the first height
-check that was safe to make. Working towards **M5** (kill a mob, gain XP, level up); melee combat is
-next. Still open and still needing a deliberate yes: the DotRecast fork for pathfinding.
+**Now:** Units have combat state. Attack power, swing speed, armour and a damage range, all derived
+from the real tables — 516 creatures in Northshire's grid come out with plausible numbers across
+levels 1 to 70. Working towards **M5** (kill a mob, gain XP, level up); the attack table is next.
+Still open and still needing a deliberate yes: the DotRecast fork for pathfinding.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -107,6 +107,8 @@ next. Still open and still needing a deliberate yes: the DotRecast fork for path
 - [x] `creature_template` (29,928), `creature` (145,946), `creature_model_info` (24,143),
       `creature_classlevelstats` (400) — vendored and loaded in 0.9 s
 - [x] `gameobject_template` (21,512), `gameobject` (85,552) — vendored and loaded
+- [x] `creature_template` widened with the combat columns: damage range, multiplier, swing times
+      and attack power. `creature_classlevelstats` widened with the per-expansion base damage.
 - [ ] `creature_addon`, `creature_equip_template` — auras and visible weapons on spawn
 - [ ] `gameobject_template_addon` — per-template faction and flag overrides
 - [ ] `item_template`
@@ -344,8 +346,13 @@ play, which is exactly why they are written down.
       than hard-coded to a number that would look deliberate.
 - [ ] `creature_addon` and `creature_equip_template` are not read, so no creature has visible
       weapons or its spawn auras
-- [ ] Damage, attack power and attack times are read from `creature_classlevelstats` into nothing —
-      `SelectLevel` sets them upstream and there is no combat to consume them (Phase 9)
+- [x] Attack power, swing speed, armour and the damage range now reach the update fields
+- [ ] The damage formula follows our **data**, not the C++ checkout: the current tree scales
+      `damage_base` by a `BaseVariance` column our dump predates, so the older
+      `mindmg`/`maxdmg`/`dmg_multiplier` form is used instead. Same divergence as
+      `creature_template_model`. Worth revisiting if the dump is ever refreshed.
+- [ ] No aura or item contributes to damage, because neither exists — upstream runs the result
+      through four modifier layers that are all identity without them
 - [ ] Difficulty entries (`difficulty_entry_1..3`) are ignored; every creature is built from its
       normal-mode template
 - [ ] `phaseMask` is loaded and stored but never checked — everything is visible to everyone

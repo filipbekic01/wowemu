@@ -153,6 +153,169 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
         get => Fields.GetFloat(UpdateFields.OBJECT_FIELD_SCALE_X);
         set => Fields.SetFloat(UpdateFields.OBJECT_FIELD_SCALE_X, value);
     }
+
+    // ------------------------------------------------------------------ combat
+
+    /// <summary>Physical resistance. Slot 0 of the seven; the other six are magic schools.</summary>
+    public uint Armor
+    {
+        get => Fields.GetUInt32(UpdateFields.UNIT_FIELD_RESISTANCES);
+        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_RESISTANCES, value);
+    }
+
+    public uint AttackPower
+    {
+        get => Fields.GetUInt32(UpdateFields.UNIT_FIELD_ATTACK_POWER);
+        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_ATTACK_POWER, value);
+    }
+
+    public uint RangedAttackPower
+    {
+        get => Fields.GetUInt32(UpdateFields.UNIT_FIELD_RANGED_ATTACK_POWER);
+        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_RANGED_ATTACK_POWER, value);
+    }
+
+    /// <summary>The low end of a main-hand swing, after attack power.</summary>
+    public float MinDamage
+    {
+        get => Fields.GetFloat(UpdateFields.UNIT_FIELD_MINDAMAGE);
+        set => Fields.SetFloat(UpdateFields.UNIT_FIELD_MINDAMAGE, value);
+    }
+
+    /// <inheritdoc cref="MinDamage"/>
+    public float MaxDamage
+    {
+        get => Fields.GetFloat(UpdateFields.UNIT_FIELD_MAXDAMAGE);
+        set => Fields.SetFloat(UpdateFields.UNIT_FIELD_MAXDAMAGE, value);
+    }
+
+    /// <summary>
+    /// Milliseconds between main-hand swings.
+    /// </summary>
+    /// <remarks>
+    /// Two consecutive field slots hold the main hand and the off hand, which is why this is indexed
+    /// rather than named per weapon.
+    /// </remarks>
+    public uint GetAttackTime(WeaponAttackType attackType) => attackType switch
+    {
+        WeaponAttackType.RangedAttack => Fields.GetUInt32(UpdateFields.UNIT_FIELD_RANGEDATTACKTIME),
+        _ => Fields.GetUInt32(UpdateFields.UNIT_FIELD_BASEATTACKTIME + (int)attackType),
+    };
+
+    /// <inheritdoc cref="GetAttackTime"/>
+    public void SetAttackTime(WeaponAttackType attackType, uint milliseconds)
+    {
+        if (attackType == WeaponAttackType.RangedAttack)
+        {
+            Fields.SetUInt32(UpdateFields.UNIT_FIELD_RANGEDATTACKTIME, milliseconds);
+            return;
+        }
+
+        Fields.SetUInt32(UpdateFields.UNIT_FIELD_BASEATTACKTIME + (int)attackType, milliseconds);
+    }
+
+    /// <summary>What this unit is currently attacking or has selected. Empty for nothing.</summary>
+    public ObjectGuid Target
+    {
+        get => Fields.GetGuid(UpdateFields.UNIT_FIELD_TARGET);
+        set => Fields.SetGuid(UpdateFields.UNIT_FIELD_TARGET, value);
+    }
+
+    /// <summary>
+    /// How far through dying this unit is.
+    /// </summary>
+    /// <remarks>
+    /// Server-side. The client learns about death from health reaching zero and from the unit flags,
+    /// not from this — it is the server's own state machine.
+    /// </remarks>
+    public DeathState DeathState { get; set; } = DeathState.Alive;
+
+    /// <summary>Whether the unit can act and be attacked.</summary>
+    public bool IsAlive => DeathState == DeathState.Alive;
+
+    /// <summary>
+    /// Whether the unit is in combat, which the client draws on the nameplate.
+    /// </summary>
+    /// <remarks>
+    /// Held in <c>UNIT_FIELD_FLAGS</c> rather than beside it, because the client reads the flag and
+    /// a separate server-side bool would drift from what the player sees.
+    /// </remarks>
+    public bool IsInCombat
+    {
+        get => (UnitFlags & (uint)Game.UnitFlags.InCombat) != 0;
+        set => UnitFlags = value
+            ? UnitFlags | (uint)Game.UnitFlags.InCombat
+            : UnitFlags & ~(uint)Game.UnitFlags.InCombat;
+    }
+
+    /// <summary>Rolls a swing's damage between the unit's two bounds.</summary>
+    /// <remarks>
+    /// Inclusive of both ends, like upstream's <c>urand</c> — the attack table depends on that
+    /// convention elsewhere, and mixing the two within one system is how off-by-one damage creeps in.
+    /// </remarks>
+    public uint RollSwingDamage(Func<uint, uint, uint> pick)
+    {
+        ArgumentNullException.ThrowIfNull(pick);
+
+        uint low = (uint)MathF.Max(0f, MathF.Floor(MinDamage));
+        uint high = (uint)MathF.Max(low, MathF.Floor(MaxDamage));
+
+        return low == high ? low : pick(low, high);
+    }
+}
+
+/// <summary>How far through dying a unit is. <c>DeathState</c> in <c>Unit.h</c>.</summary>
+/// <remarks>
+/// Five states, not two. The gap between <see cref="JustDied"/> and <see cref="Corpse"/> is where
+/// loot is assigned and experience awarded, and it exists precisely so those happen once.
+/// </remarks>
+public enum DeathState : byte
+{
+    Alive = 0,
+    JustDied = 1,
+    Corpse = 2,
+    Dead = 3,
+    JustRespawned = 4,
+}
+
+/// <summary>Unit flags, from <c>UnitDefines.h</c>. Only the ones this phase sets or reads.</summary>
+[Flags]
+[System.Diagnostics.CodeAnalysis.SuppressMessage(
+    "Naming",
+    "CA1711:Identifiers should not have incorrect suffix",
+    Justification = "UnitFlags is upstream's name for this enum.")]
+public enum UnitFlags : uint
+{
+    None = 0x00000000,
+    ServerControlled = 0x00000001,
+    NonAttackable = 0x00000002,
+    DisableMove = 0x00000004,
+    PlayerControlled = 0x00000008,
+    Rename = 0x00000010,
+    NotAttackable1 = 0x00000080,
+    ImmuneToPc = 0x00000100,
+    ImmuneToNpc = 0x00000200,
+    Looting = 0x00000400,
+    PetInCombat = 0x00000800,
+    Pvp = 0x00001000,
+    Silenced = 0x00002000,
+    Pacified = 0x00020000,
+    Stunned = 0x00040000,
+    InCombat = 0x00080000,
+    Disarmed = 0x00200000,
+    Confused = 0x00400000,
+    Fleeing = 0x00800000,
+    NotSelectable = 0x02000000,
+    Skinnable = 0x04000000,
+    Mount = 0x08000000,
+}
+
+/// <summary>Which weapon a swing comes from. <c>WeaponAttackType</c>.</summary>
+public enum WeaponAttackType : byte
+{
+    BaseAttack = 0,
+    OffAttack = 1,
+    RangedAttack = 2,
 }
 
 /// <summary>Sizes every unit falls back to, from <c>ObjectDefines.h</c>.</summary>

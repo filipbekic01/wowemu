@@ -513,7 +513,14 @@ public sealed class CreatureTests
         ManaModifier: 1.0f,
         ArmorModifier: 1.0f,
         MovementType: 0,
-        RegeneratesHealth: true);
+        RegeneratesHealth: true,
+        MinDamage: 4f,
+        MaxDamage: 6f,
+        DamageModifier: 1f,
+        BaseAttackTime: 2000,
+        RangeAttackTime: 2000,
+        AttackPower: 14,
+        RangedAttackPower: 0);
 
     private static CreatureModelInfo Model() =>
         new(SampleDisplayId, SampleBoundingRadius, SampleCombatReach, SampleGender, 0);
@@ -525,7 +532,10 @@ public sealed class CreatureTests
         BaseMana: 50,
         BaseArmor: 60,
         AttackPower: 20,
-        RangedAttackPower: 5);
+        RangedAttackPower: 5,
+        BaseDamageClassic: 1.5f,
+        BaseDamageBurningCrusade: 2f,
+        BaseDamageWrath: 3f);
 
     private static StubModelSource Models(
         CreatureModelInfo? model = null,

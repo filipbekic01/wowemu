@@ -349,8 +349,65 @@ public sealed class Creature : Unit
             creature.Power = Math.Min(spawn.CurrentMana, maxMana);
         }
 
-        creature.Fields.SetUInt32(
-            UpdateFields.UNIT_FIELD_RESISTANCES,
-            (uint)Math.Ceiling(stats.BaseArmor * (double)template.ArmorModifier));
+        creature.Armor = (uint)Math.Ceiling(stats.BaseArmor * (double)template.ArmorModifier);
+
+        ApplyCombatStats(creature, template, stats);
     }
+
+    /// <summary>
+    /// Sets what a swing is worth: attack power, swing speed, and the damage range.
+    /// </summary>
+    /// <remarks>
+    /// <b>The formula follows our data, not the C++ checkout.</b> The current tree computes weapon
+    /// damage from <c>creature_classlevelstats.damage_base</c> scaled by a <c>BaseVariance</c> column
+    /// on the template — but our vendored dump predates that column and carries <c>mindmg</c>,
+    /// <c>maxdmg</c> and <c>dmg_multiplier</c> instead, all populated (only 911 of 29,928 templates
+    /// have no damage). This is the same divergence as <c>creature_template_model</c>: read the C++
+    /// for behaviour, but check the dump before trusting a column name.
+    /// <para>
+    /// So: <c>damage = template range × multiplier + attackPower / 14 × swing seconds</c>, which is
+    /// the older form the schema supports. A level-2 wolf comes out around 5 per swing and a level-60
+    /// vendor around 90–110, both of which are right.
+    /// </para>
+    /// <para>
+    /// Auras and items contribute nothing here because neither exists. Upstream's full calculation
+    /// runs the result through four modifier layers, all of which are identity without them.
+    /// </para>
+    /// </remarks>
+    private static void ApplyCombatStats(Creature creature, CreatureTemplate template, CreatureBaseStats stats)
+    {
+        creature.AttackPower = template.AttackPower != 0 ? template.AttackPower : stats.AttackPower;
+        creature.RangedAttackPower =
+            template.RangedAttackPower != 0 ? template.RangedAttackPower : stats.RangedAttackPower;
+
+        // A template with no swing time would otherwise attack infinitely fast.
+        uint swing = template.BaseAttackTime != 0 ? template.BaseAttackTime : DefaultAttackTimeMs;
+
+        creature.SetAttackTime(WeaponAttackType.BaseAttack, swing);
+        creature.SetAttackTime(WeaponAttackType.OffAttack, swing);
+        creature.SetAttackTime(
+            WeaponAttackType.RangedAttack,
+            template.RangeAttackTime != 0 ? template.RangeAttackTime : DefaultAttackTimeMs);
+
+        float multiplier = template.DamageModifier > 0f ? template.DamageModifier : 1f;
+        float fromAttackPower = creature.AttackPower / 14f * (swing / 1000f);
+
+        float min = (template.MinDamage * multiplier) + fromAttackPower;
+        float max = (template.MaxDamage * multiplier) + fromAttackPower;
+
+        // 911 templates carry no damage range at all; the class/level table is the fallback so they
+        // do not stand there hitting for nothing.
+        if (template.MinDamage <= 0f && template.MaxDamage <= 0f)
+        {
+            float baseDamage = stats.BaseDamageFor(template.Expansion);
+            min = baseDamage + fromAttackPower;
+            max = (baseDamage * 1.5f) + fromAttackPower;
+        }
+
+        creature.MinDamage = MathF.Max(0f, min);
+        creature.MaxDamage = MathF.Max(creature.MinDamage, max);
+    }
+
+    /// <summary>Two seconds, the commonest swing in the table and upstream's fallback.</summary>
+    private const uint DefaultAttackTimeMs = 2000;
 }

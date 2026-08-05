@@ -45,7 +45,14 @@ public sealed record CreatureTemplate(
     float ManaModifier,
     float ArmorModifier,
     byte MovementType,
-    bool RegeneratesHealth)
+    bool RegeneratesHealth,
+    float MinDamage,
+    float MaxDamage,
+    float DamageModifier,
+    uint BaseAttackTime,
+    uint RangeAttackTime,
+    uint AttackPower,
+    uint RangedAttackPower)
 {
     /// <summary>
     /// Picks one of the up-to-four display ids the entry may use.
@@ -149,7 +156,9 @@ public sealed class CreatureTemplateStore : ICreatureModelSource
                 SELECT entry, name, IFNULL(subname, ''), modelid1, modelid2, modelid3, modelid4,
                        minlevel, maxlevel, exp, faction, npcflag, speed_walk, speed_run, scale,
                        `rank`, unit_class, unit_flags, unit_flags2, dynamicflags, type, type_flags,
-                       family, Health_mod, Mana_mod, Armor_mod, MovementType, RegenHealth
+                       family, Health_mod, Mana_mod, Armor_mod, MovementType, RegenHealth,
+                       mindmg, maxdmg, dmg_multiplier, baseattacktime, rangeattacktime,
+                       attackpower, rangedattackpower
                 FROM creature_template
                 """;
 
@@ -189,7 +198,14 @@ public sealed class CreatureTemplateStore : ICreatureModelSource
                     ManaModifier: reader.GetFloat(24),
                     ArmorModifier: reader.GetFloat(25),
                     MovementType: reader.GetByte(26),
-                    RegeneratesHealth: reader.GetByte(27) != 0);
+                    RegeneratesHealth: reader.GetByte(27) != 0,
+                    MinDamage: reader.GetFloat(28),
+                    MaxDamage: reader.GetFloat(29),
+                    DamageModifier: reader.GetFloat(30),
+                    BaseAttackTime: reader.GetUInt32(31),
+                    RangeAttackTime: reader.GetUInt32(32),
+                    AttackPower: reader.GetUInt32(33),
+                    RangedAttackPower: reader.GetUInt16(34));
 
                 _templates[template.Entry] = template;
             }

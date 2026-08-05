@@ -16,8 +16,20 @@ public readonly record struct CreatureBaseStats(
     uint BaseMana,
     uint BaseArmor,
     uint AttackPower,
-    uint RangedAttackPower)
+    uint RangedAttackPower,
+    float BaseDamageClassic,
+    float BaseDamageBurningCrusade,
+    float BaseDamageWrath)
 {
+    /// <summary>Base weapon damage for an expansion, falling back to classic.</summary>
+    /// <remarks>Same slot rule as health: a level means different things per expansion.</remarks>
+    public float BaseDamageFor(byte expansion) => expansion switch
+    {
+        1 => BaseDamageBurningCrusade,
+        2 => BaseDamageWrath,
+        _ => BaseDamageClassic,
+    };
+
     /// <summary>
     /// Base health for an expansion, falling back to classic for an out-of-range value.
     /// </summary>
@@ -58,7 +70,7 @@ public sealed class CreatureStatsStore
         command.CommandText =
             """
             SELECT level, class, basehp0, basehp1, basehp2, basemana, basearmor,
-                   attackpower, rangedattackpower
+                   attackpower, rangedattackpower, damage_base, damage_exp1, damage_exp2
             FROM creature_classlevelstats
             """;
 
@@ -74,7 +86,10 @@ public sealed class CreatureStatsStore
                 reader.GetUInt16(5),
                 reader.GetUInt16(6),
                 reader.GetUInt16(7),
-                reader.GetUInt16(8));
+                reader.GetUInt16(8),
+                reader.GetFloat(9),
+                reader.GetFloat(10),
+                reader.GetFloat(11));
         }
     }
 

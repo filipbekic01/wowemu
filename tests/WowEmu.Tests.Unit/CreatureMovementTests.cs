@@ -500,9 +500,16 @@ internal static class CreatureFixture
             ManaModifier: 1.0f,
             ArmorModifier: 1.0f,
             MovementType: movementType,
-            RegeneratesHealth: true);
+            RegeneratesHealth: true,
+            MinDamage: 4f,
+            MaxDamage: 6f,
+            DamageModifier: 1f,
+            BaseAttackTime: 2000,
+            RangeAttackTime: 2000,
+            AttackPower: 14,
+            RangedAttackPower: 0);
 
-        CreatureBaseStats stats = new(100, 200, 300, 50, 60, 20, 5);
+        CreatureBaseStats stats = new(100, 200, 300, 50, 60, 20, 5, 1.5f, 2f, 3f);
 
         Creature? creature = Creature.Create(
             spawn, template, models, stats, level: 5, useOppositeGenderModel: false, displayId: 4481);
