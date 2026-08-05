@@ -200,11 +200,12 @@
   .summary-line { color: var(--mute); font-size: 13.5px; margin: 14px 0 18px; }
 
   .group + .group { margin-top: 22px; }
-  .group h3 {
+  .group h3, section h3 {
     font-family: var(--mono); font-size: 11.5px; letter-spacing: .14em; text-transform: uppercase;
     color: var(--mute); margin: 0 0 10px; font-weight: 600;
   }
-  .group h3::before { content: "▸ "; color: var(--dim); }
+  section h3 { margin-top: 24px; }
+  .group h3::before, section h3::before { content: "▸ "; color: var(--dim); }
 
   ul.items { list-style: none; margin: 0; padding: 0; }
 
@@ -549,7 +550,16 @@ function render(data) {
         `<tr><td class="path">${t.label}</td><td class="what">${t.what}</td></tr>`).join("") +
       "</tbody>";
     vs.append(scrollable(vt));
-    main.append(section("▶ VS Code tasks", vs));
+
+    if (data.vscode.launch) {
+      vs.append(el("h3", null, "Run and Debug (⇧⌘D)"));
+      const lt = el("table");
+      lt.innerHTML = "<tbody>" + data.vscode.launch.map((l) =>
+        `<tr><td class="path">${l.label}</td><td class="what">${l.what}</td></tr>`).join("") + "</tbody>";
+      vs.append(scrollable(lt));
+    }
+
+    main.append(section("▶ VS Code", vs));
   }
 
   // ---- conventions

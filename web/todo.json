@@ -1775,7 +1775,7 @@
   },
   "legal": "This project reimplements a server for a game client it does not distribute. It contains no Blizzard assets. You must own a legitimate copy of the client, and all game data (.dbc, .map, .vmap, .mmap) is extracted locally and never committed.",
   "vscode": {
-    "note": "Press ⌘⇧B to build, or ⌘⇧P → Tasks: Run Task for the rest. .vscode/launch.json can launch either server, or both at once via the Debug: Auth + World compound. To debug a single test, use the gutter icon next to the test method.",
+    "note": "Press ⌘⇧B to build, or ⌘⇧P → Tasks: Run Task for the rest. The Run and Debug panel (⇧⌘D) has the play-button entries: either server, both at once via the Debug: Auth + World compound, and Run: Progress Board — which starts the server and opens this page in Chrome, with the page's own console wired into the Debug Console. To debug a single test, use the gutter icon next to the test method.",
     "tasks": [
       {
         "label": "build",
@@ -1858,8 +1858,30 @@
         "what": "Start the world server on port 8085"
       },
       {
+        "label": "board: serve",
+        "what": "Serve web/ on http://localhost:8000 without opening a browser. The 'Run: Progress Board' launch configuration uses this; run it alone if you would rather open the page yourself."
+      }
+    ],
+    "launch": [
+      {
+        "label": "Debug: Auth Server",
+        "what": "Logon server on 3724, with the debugger attached"
+      },
+      {
+        "label": "Debug: World Server",
+        "what": "World server on 8085, with the debugger attached"
+      },
+      {
+        "label": "Debug: Auth + World",
+        "what": "Both at once (a compound); stopping one stops both"
+      },
+      {
         "label": "Run: Progress Board",
-        "what": "Serve web/ and open this page. Prompts for a port, default 8000."
+        "what": "Serves web/ and opens this page in Chrome. The play button for the board."
+      },
+      {
+        "label": "Attach to process",
+        "what": "Attach to an already-running server"
       }
     ]
   }
