@@ -2,10 +2,10 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** VMAP placement files parse — all 101 map trees, their BIH indices walked rather than
-scanned, and every model a tile places resolved to a real file on disk. Next in Phase 8 is the
-`.vmo` geometry itself, and then line of sight. Still open and still needing a deliberate yes: the
-DotRecast fork for pathfinding.
+**Now:** All the collision *data* is readable. 101 map trees, every model placement, and all 7,086
+`.vmo` files — 11,945,292 triangles — parse and check out against invariants. What is missing is the
+maths: transforming a model into world space and intersecting a ray with it. That is line of sight,
+and it is next. Still open and still needing a deliberate yes: the DotRecast fork for pathfinding.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -242,9 +242,11 @@ DotRecast fork for pathfinding.
 - [x] VMAPs: `.vmtree` and `.vmtile` readers — BIH index, model placements, bounds
 - [x] BIH traversal from the root, with a cycle guard; verified to reach every primitive
 - [x] The model-name terminator rule, which decides which file on disk holds the geometry
-- [ ] `.vmo` model files — the actual triangles, per-group meshes and their own BIH
+- [x] `.vmo` model files — groups, vertices, triangles, per-group BIH, and model liquids.
+      All 7,086 parse; 11,945,292 triangles, every one indexing a vertex its group has.
 - [ ] `ModelInstance` transforms — position, rotation and scale into world space
 - [ ] `IsInLineOfSight` — ray/triangle intersection through the two BIH levels
+- [ ] `DynamicMapTree` for gameobject-based line of sight, rebalanced every 200 ms
 - [ ] `PathGenerator`, the (y, z, x) Detour coordinate swizzle, `findSmoothPath`
 - [ ] Custom cost function: `dist * (1 + slopeDegrees/100) * areaCost`, and the
       `DT_SLOPE_TOO_STEEP` status bit
@@ -337,8 +339,15 @@ play, which is exactly why they are written down.
 - [ ] Links are not read from `.mmtile` and must not be — the file reserves `MaxLinkCount` links'
       worth of space, but Detour builds them when a tile is added, so what is on disk is
       uninitialised. Anything that starts reading them is reading noise.
-- [ ] VMAP geometry is not read yet: the placement layer says *which* models stand *where*, but the
-      triangles live in `.vmo` files nothing opens. Nothing can be occluded until they are.
+- [ ] VMAP data is read but nothing *uses* it. The triangles are in memory on demand; no ray is
+      cast, no model is transformed into world space, and movement validation still cannot check
+      height. Reading the files was the prerequisite, not the feature.
+- [ ] 132 of 436 sampled model groups carry an all-zero bounding box while holding real geometry.
+      A zero box means "not recorded", not "empty" — anything that culls by it must not conclude the
+      group is nowhere, or its triangles silently stop blocking anything. See
+      `WorldModelGroup.HasBounds`.
+- [ ] Model liquids parse but are unused; the tileless single-height form was not seen in the
+      sampled files, so that branch is written from the C++ and never exercised.
 - [ ] Off-mesh connections are exercised by exactly one tile in the entire extraction
       (`5622031.mmtile`, Blade's Edge Arena, 2 connections). That branch of the reader has a single
       real test case and no second opinion.
