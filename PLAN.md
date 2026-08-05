@@ -350,11 +350,25 @@ Formats we must read (all parseable with `BinaryReader`/spans):
   build, then area/height/liquid/holes offset+size pairs), `GridTerrainData.h:59-72`. Heights are
   packed uint8 when Δ < 2.0, uint16 when Δ < 2048, else float.
 - **`.vmtree` / `.vmtile`** — magic `VMAP_4.8` (8 bytes, no NUL), BIH tree + `ModelSpawn` placements.
-  BIH nodes are 3 × uint32, axis in bits 31-30 (3 = leaf), offset in bits 28-0.
+  A BIH node is one packed uint32 — axis in bits 31-30 (3 = leaf), a single-child flag in bit 29,
+  offset in bits 0-28, so the offset mask is `~(7<<29)` and **not** `~(3<<30)`. The node array is
+  **not an array of nodes**: a node occupies *three* words, the descriptor plus two split planes
+  stored as floats, and its children sit at `offset` and `offset + 3`. Scanning the array linearly
+  decodes those floats as descriptors and yields offsets in the hundreds of millions — nodes can
+  only be enumerated by traversing from the root.
 - **`.mmap` / `.mmtile`** — 28-byte raw `dtNavMeshParams`, then per tile a 56-byte `MmapTileHeader`
   (`MMAP_MAGIC 0x4d4d4150`, `MMAP_VERSION 20`) + Detour tile. See §3.4.1.
 
 **Three traps that produce silent, error-free wrongness:**
+
+0. **A VMAP model name's NUL terminator is significant.** `ModelSpawn::readFromFile` builds the name
+   as `std::string(nameBuff, nameLen)`, and `nameLen` counts a terminator about half the time —
+   54.5 % with, 45.5 % without, mixed inside a single tile. Upstream then does
+   `readFile(basepath + name + ".vmo")` and hands it to `fopen`, which stops at the first NUL — so a
+   terminated name opens the **bare** file and never sees the `.vmo`. The extractor writes both
+   forms to match: on map 0, every unterminated name has a `.vmo`, and 18,278 spawns whose name is
+   terminated have *only* the bare file. Trimming the NUL and appending `.vmo` — the obvious reading
+   — silently fails to find 8 % of doodads. See `ModelSpawn.ModelFileName`.
 
 1. **Filename axis.** `.map`, `.vmtile` and `.mmtile` all encode **tileY before tileX**. The extractor
    writes `(mapId, adtY, adtX)`; the server reads `(mapId, gridX, gridY)` — i.e. **`gridX` is the ADT

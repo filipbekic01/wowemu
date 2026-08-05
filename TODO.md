@@ -2,10 +2,10 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** Navmesh tiles parse. All 3,682 of them — 11,073,201 polygons — read out of AzerothCore's
-raw Detour layout, with the geometry checked against invariants rather than merely not throwing.
-Next is the decision the spike surfaced: vendoring a DotRecast fork with three changed constants,
-which is a maintenance commitment worth weighing before taking.
+**Now:** VMAP placement files parse — all 101 map trees, their BIH indices walked rather than
+scanned, and every model a tile places resolved to a real file on disk. Next in Phase 8 is the
+`.vmo` geometry itself, and then line of sight. Still open and still needing a deliberate yes: the
+DotRecast fork for pathfinding.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -239,7 +239,12 @@ which is a maintenance commitment worth weighing before taking.
       codebase — worth a deliberate yes rather than drifting into it.
 - [ ] Load a real tile into a mesh, run a path, compare against the C++ server's `.mmap path` — the
       phase's actual exit criterion, and still unproven
-- [ ] VMAPs: `.vmtree`/`.vmtile`, BIH traversal, `IsInLineOfSight`
+- [x] VMAPs: `.vmtree` and `.vmtile` readers — BIH index, model placements, bounds
+- [x] BIH traversal from the root, with a cycle guard; verified to reach every primitive
+- [x] The model-name terminator rule, which decides which file on disk holds the geometry
+- [ ] `.vmo` model files — the actual triangles, per-group meshes and their own BIH
+- [ ] `ModelInstance` transforms — position, rotation and scale into world space
+- [ ] `IsInLineOfSight` — ray/triangle intersection through the two BIH levels
 - [ ] `PathGenerator`, the (y, z, x) Detour coordinate swizzle, `findSmoothPath`
 - [ ] Custom cost function: `dist * (1 + slopeDegrees/100) * areaCost`, and the
       `DT_SLOPE_TOO_STEEP` status bit
@@ -332,6 +337,8 @@ play, which is exactly why they are written down.
 - [ ] Links are not read from `.mmtile` and must not be — the file reserves `MaxLinkCount` links'
       worth of space, but Detour builds them when a tile is added, so what is on disk is
       uninitialised. Anything that starts reading them is reading noise.
+- [ ] VMAP geometry is not read yet: the placement layer says *which* models stand *where*, but the
+      triangles live in `.vmo` files nothing opens. Nothing can be occluded until they are.
 - [ ] Off-mesh connections are exercised by exactly one tile in the entire extraction
       (`5622031.mmtile`, Blade's Edge Arena, 2 connections). That branch of the reader has a single
       real test case and no second opinion.
