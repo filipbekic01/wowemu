@@ -18,26 +18,15 @@ namespace WowEmu.Game;
 /// field, because a value that lives anywhere else would not reach the client.
 /// </para>
 /// </remarks>
-public sealed class Player : WorldObject
+public sealed class Player : Unit
 {
-    /// <summary>Power types, from <c>ChrClasses.dbc</c>.</summary>
-    public const byte PowerMana = 0;
-    public const byte PowerRage = 1;
-    public const byte PowerEnergy = 3;
-    public const byte PowerRunicPower = 6;
-
     private Player(ObjectGuid guid)
         : base(guid, TypeId.Player, UpdateFields.PLAYER_END, TypeMask.PlayerObject)
     {
     }
 
-    public string Name { get; private set; } = string.Empty;
-
     /// <summary>How to reach this player's client. Null for a player with no session.</summary>
     public IPlayerConnection? Connection { get; set; }
-
-    /// <summary>Which cell the map currently has this player filed under.</summary>
-    public CellCoord Cell { get; set; }
 
     /// <summary>
     /// Guids this player's client has been told about and has not been told to forget.
@@ -48,30 +37,6 @@ public sealed class Player : WorldObject
     /// standing where a player used to be.
     /// </remarks>
     public HashSet<ObjectGuid> VisibleObjects { get; } = [];
-
-    public byte Race => Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_0, 0);
-
-    public byte Class => Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_0, 1);
-
-    public byte Gender => Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_0, 2);
-
-    public byte Level
-    {
-        get => (byte)Fields.GetUInt32(UpdateFields.UNIT_FIELD_LEVEL);
-        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_LEVEL, value);
-    }
-
-    public uint Health
-    {
-        get => Fields.GetUInt32(UpdateFields.UNIT_FIELD_HEALTH);
-        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_HEALTH, value);
-    }
-
-    public uint MaxHealth
-    {
-        get => Fields.GetUInt32(UpdateFields.UNIT_FIELD_MAXHEALTH);
-        set => Fields.SetUInt32(UpdateFields.UNIT_FIELD_MAXHEALTH, value);
-    }
 
     /// <summary>
     /// Builds a player from everything that describes it: the saved row, the race's client data,

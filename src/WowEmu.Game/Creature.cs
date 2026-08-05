@@ -1,0 +1,226 @@
+using WowEmu.Core;
+using WowEmu.Data.Db;
+using WowEmu.Protocol;
+
+namespace WowEmu.Game;
+
+/// <summary>
+/// A creature standing in the world: one <c>creature</c> row, built out through its template.
+/// </summary>
+/// <remarks>
+/// Port of the parts of <c>Creature</c> that Phase 6 needs — <c>InitEntry</c>, <c>UpdateEntry</c>,
+/// <c>SelectLevel</c> and the health handling at the end of <c>LoadFromDB</c>. Everything past that
+/// is behaviour: AI, threat, respawn, loot, movement generators. None of it exists yet, and a
+/// creature without it stands still and can be looked at, which is exactly what M4 asks for.
+/// </remarks>
+public sealed class Creature : Unit
+{
+    private Creature(ObjectGuid guid)
+        : base(guid, TypeId.Unit, UpdateFields.UNIT_END, TypeMask.CreatureObject)
+    {
+    }
+
+    /// <summary>The <c>creature</c> row this came from — upstream's <c>m_spawnId</c>.</summary>
+    /// <remarks>
+    /// Kept separate from <see cref="GameObjectBase.Guid"/> because they are different numbers with
+    /// different lifetimes: the spawn id is stable in the database, the guid is what the client is
+    /// told and carries the entry in its middle bits.
+    /// </remarks>
+    public uint SpawnId { get; private init; }
+
+    /// <summary>The <c>creature_template</c> entry.</summary>
+    public uint Entry { get; private init; }
+
+    /// <summary>Which phases can see it. Everything is phase 1 until phasing exists.</summary>
+    public uint PhaseMask { get; private init; }
+
+    /// <summary>
+    /// Builds a creature from its spawn row, its template, its model and the base stats for the
+    /// level that gets rolled.
+    /// </summary>
+    /// <param name="spawn">The <c>creature</c> row.</param>
+    /// <param name="template">The <c>creature_template</c> row for <c>spawn.Entry</c>.</param>
+    /// <param name="models">Resolves a display id to its size and opposite-gender twin.</param>
+    /// <param name="stats">Base stats per level and unit class.</param>
+    /// <param name="level">
+    /// The level to build at. Callers pass a roll between the template's minimum and maximum;
+    /// leaving it to the caller keeps the random draw out of a method that is otherwise a pure
+    /// function of its inputs, which is what makes it testable.
+    /// </param>
+    /// <param name="useOppositeGenderModel">
+    /// Whether to swap to <c>DisplayID_Other_Gender</c>. Upstream rolls this at 50 % inside
+    /// <c>GetCreatureModelRandomGender</c>; hoisting it out has the same reason as
+    /// <paramref name="level"/>.
+    /// </param>
+    /// <returns>The creature, or null when the display id has no model info — the one failure that
+    /// is worth refusing rather than papering over, since it produces something unclickable.</returns>
+    public static Creature? Create(
+        CreatureSpawn spawn,
+        CreatureTemplate template,
+        ICreatureModelSource models,
+        CreatureBaseStats stats,
+        byte level,
+        bool useOppositeGenderModel,
+        uint displayId)
+    {
+        ArgumentNullException.ThrowIfNull(template);
+        ArgumentNullException.ThrowIfNull(models);
+
+        if (!models.TryGetModel(displayId, out CreatureModelInfo model))
+        {
+            return null;
+        }
+
+        // The opposite-gender twin has its own model info: swapping the display id without swapping
+        // the size leaves a male model wearing a female hitbox.
+        if (useOppositeGenderModel
+            && model.DisplayIdOtherGender != 0
+            && models.TryGetModel(model.DisplayIdOtherGender, out CreatureModelInfo otherGender))
+        {
+            displayId = model.DisplayIdOtherGender;
+            model = otherGender;
+        }
+
+        Creature creature = new(ObjectGuid.Create(HighGuid.Unit, spawn.Entry, spawn.SpawnId))
+        {
+            SpawnId = spawn.SpawnId,
+            Entry = spawn.Entry,
+            PhaseMask = spawn.PhaseMask,
+            MapId = spawn.MapId,
+            Position = spawn.Position,
+        };
+
+        creature.Name = template.Name;
+
+        UpdateFieldStorage fields = creature.Fields;
+
+        // Creatures carry their entry in OBJECT_FIELD_ENTRY; players do not. Without it the client
+        // has no template to look the creature up in and draws nothing.
+        fields.SetUInt32(UpdateFields.OBJECT_FIELD_ENTRY, spawn.Entry);
+
+        // Race stays 0 — a creature has a class but no race. Only 1, 2, 4 and 8 appear as unit
+        // classes, matching warrior, paladin, rogue and mage.
+        fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_0, 0, 0);
+        fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_0, 1, template.UnitClass);
+        fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_0, 2, model.Gender);
+        fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_0, 3, PowerTypeFor(template.UnitClass));
+
+        // Weapons drawn. Upstream does this for every creature without an addon row.
+        fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_2, 0, SheathStateMelee);
+
+        creature.DisplayId = displayId;
+        creature.NativeDisplayId = displayId;
+        creature.FactionTemplate = template.Faction;
+        creature.Level = level;
+
+        // Scale first: bounding radius and combat reach are both multiplied by it, so setting them
+        // before the scale is known bakes in the wrong size.
+        creature.ObjectScale = template.Scale;
+        creature.BoundingRadius = model.BoundingRadius * template.Scale;
+        creature.CombatReach =
+            (model.CombatReach > 0 ? model.CombatReach : UnitDefaults.CombatReach) * template.Scale;
+
+        // The spawn row *replaces* these rather than adding to them. `if (data->npcflag) npcflag =
+        // data->npcflag` in ChooseCreatureFlags — a spawn that sets one flag drops every template
+        // flag with it, and OR-ing them instead silently gives creatures abilities they should not
+        // have.
+        creature.NpcFlags = spawn.NpcFlags != 0 ? spawn.NpcFlags : template.NpcFlags;
+        creature.UnitFlags = spawn.UnitFlags != 0 ? spawn.UnitFlags : template.UnitFlags;
+        creature.DynamicFlags = spawn.DynamicFlags != 0 ? spawn.DynamicFlags : template.DynamicFlags;
+        creature.UnitFlags2 = template.UnitFlags2;
+
+        ApplyLevelStats(creature, template, stats, spawn);
+
+        creature.Speeds.Walk = UnitDefaults.BaseWalkSpeed * template.SpeedWalk;
+        creature.Speeds.Run = UnitDefaults.BaseRunSpeed * template.SpeedRun;
+
+        creature.SyncMovement();
+        return creature;
+    }
+
+    /// <summary>Picks the level upstream would roll for a template.</summary>
+    /// <remarks>
+    /// The minimum and maximum are ordered before the roll rather than trusted: a handful of
+    /// templates carry <c>maxlevel</c> below <c>minlevel</c>, and an unordered <c>urand</c> would
+    /// draw from an empty range.
+    /// </remarks>
+    public static byte RollLevel(CreatureTemplate template, Func<uint, uint, uint> pick)
+    {
+        ArgumentNullException.ThrowIfNull(template);
+        ArgumentNullException.ThrowIfNull(pick);
+
+        byte low = Math.Min(template.MinLevel, template.MaxLevel);
+        byte high = Math.Max(template.MinLevel, template.MaxLevel);
+
+        return low == high ? low : (byte)pick(low, high);
+    }
+
+    /// <summary>Weapons-drawn sheath state, <c>SHEATH_STATE_MELEE</c>.</summary>
+    private const byte SheathStateMelee = 1;
+
+    /// <summary>Unit classes, from <c>SharedDefines.h</c>. Only these four appear on creatures.</summary>
+    private const byte UnitClassWarrior = 1;
+    private const byte UnitClassPaladin = 2;
+    private const byte UnitClassRogue = 4;
+    private const byte UnitClassMage = 8;
+
+    private static byte PowerTypeFor(byte unitClass) => unitClass switch
+    {
+        UnitClassWarrior => PowerRage,
+        UnitClassRogue => PowerEnergy,
+        UnitClassPaladin or UnitClassMage => PowerMana,
+        _ => PowerMana,
+    };
+
+    /// <summary>
+    /// Sizes health, mana and armour for the rolled level.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>SelectLevel</c> plus the health block at the end of <c>LoadFromDB</c>. The health
+    /// is rounded <b>up</b> — <c>ceil</c>, not a cast — because a <c>Health_mod</c> below 1 on a
+    /// low-level creature otherwise truncates to zero, and a creature with no health is drawn dead.
+    /// <para>
+    /// Upstream also multiplies by a per-rank rate from the config (<c>Rate.Creature.*.HP</c>). Every
+    /// one of those defaults to 1.0 and there is no config system for them yet, so they are omitted
+    /// rather than hard-coded to a number that would look deliberate.
+    /// </para>
+    /// </remarks>
+    private static void ApplyLevelStats(
+        Creature creature,
+        CreatureTemplate template,
+        CreatureBaseStats stats,
+        CreatureSpawn spawn)
+    {
+        uint maxHealth = Math.Max(
+            1u,
+            (uint)Math.Ceiling(stats.BaseHealthFor(template.Expansion) * (double)template.HealthModifier));
+
+        // Mana of zero is meaningful — a warrior creature has none — so it is not floored at 1.
+        uint maxMana = stats.BaseMana == 0
+            ? 0
+            : (uint)Math.Ceiling(stats.BaseMana * (double)template.ManaModifier);
+
+        creature.MaxHealth = maxHealth;
+        creature.Fields.SetUInt32(UpdateFields.UNIT_FIELD_BASE_HEALTH, maxHealth);
+
+        creature.MaxPower = maxMana;
+        creature.Fields.SetUInt32(UpdateFields.UNIT_FIELD_BASE_MANA, maxMana);
+
+        // A creature that regenerates spawns full; one that does not keeps whatever the row saved,
+        // which is how scripted encounters spawn something already wounded.
+        if (template.RegeneratesHealth)
+        {
+            creature.Health = maxHealth;
+            creature.Power = maxMana;
+        }
+        else
+        {
+            creature.Health = Math.Min(spawn.CurrentHealth, maxHealth);
+            creature.Power = Math.Min(spawn.CurrentMana, maxMana);
+        }
+
+        creature.Fields.SetUInt32(
+            UpdateFields.UNIT_FIELD_RESISTANCES,
+            (uint)Math.Ceiling(stats.BaseArmor * (double)template.ArmorModifier));
+    }
+}

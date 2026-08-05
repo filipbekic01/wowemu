@@ -11,4 +11,14 @@
     <ProjectReference Include="..\WowEmu.Data.Db\WowEmu.Data.Db.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!--
+      Abstractions only. Grid loading is the first thing in the game layer with something to report
+      that nobody is waiting on — a spawn skipped for bad data is invisible otherwise — and passing
+      the news back through a return value would put reporting in the caller's hands rather than
+      where the fact is known.
+    -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
+  </ItemGroup>
+
 </Project>

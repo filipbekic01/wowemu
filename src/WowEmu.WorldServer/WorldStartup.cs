@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -60,8 +61,10 @@ internal static class WorldStartup
         {
             throw new InvalidOperationException(
                 "player_levelstats or player_classlevelstats is empty — characters would enter the world " +
-                "with no health. Import both from database-wotlk/sql/base/.");
+                "with no health. Import both with: tools/db/import-world.sh");
         }
+
+        await LoadCreatureContentAsync(services, worldConnection, logger, cancellationToken).ConfigureAwait(false);
 
         WorldContent content = services.GetRequiredService<WorldContent>();
 
@@ -84,5 +87,55 @@ internal static class WorldStartup
             content.Stores.Classes.Count,
             content.Stores.Maps.Count,
             stats.LevelStatCount);
+    }
+
+    /// <summary>
+    /// Loads the three tables creature spawning reads, and reports how long it took.
+    /// </summary>
+    /// <remarks>
+    /// Timed because this is the first load large enough to matter — 176,000 rows against the 5,800
+    /// everything before it read — and PLAN.md §6 Phase 4 budgets the whole startup at under 30
+    /// seconds. A number in the log is what turns that budget into something anyone can check.
+    /// <para>
+    /// Empty tables are fatal for the same reason <c>playercreateinfo</c> is: a server that starts
+    /// and only then turns out to have no creatures looks like a visibility bug, and would be
+    /// debugged as one.
+    /// </para>
+    /// </remarks>
+    private static async Task LoadCreatureContentAsync(
+        IServiceProvider services,
+        string worldConnection,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        long started = Stopwatch.GetTimestamp();
+
+        CreatureTemplateStore templates = services.GetRequiredService<CreatureTemplateStore>();
+        await templates.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        CreatureStatsStore creatureStats = services.GetRequiredService<CreatureStatsStore>();
+        await creatureStats.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        CreatureSpawnStore spawns = services.GetRequiredService<CreatureSpawnStore>();
+        await spawns.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        if (templates.TemplateCount == 0 || spawns.Count == 0 || creatureStats.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "creature_template, creature or creature_classlevelstats is empty — the world would " +
+                "have no creatures in it. Import them with: tools/db/import-world.sh");
+        }
+
+        // Measured into a local rather than inline: the analyzer objects to work inside a log call,
+        // and the elapsed time has to be taken at the same point whether or not anyone is listening.
+        double elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+
+        Log.CreatureContentLoaded(
+            logger,
+            templates.TemplateCount,
+            templates.ModelCount,
+            spawns.Count,
+            spawns.MapCount,
+            elapsedMs);
     }
 }

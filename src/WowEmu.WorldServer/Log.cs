@@ -134,6 +134,12 @@ internal static partial class Log
     public static partial void MovementRejected(
         ILogger logger, string name, string reason, string detail, string address);
 
+    [LoggerMessage(EventId = 2314, Level = LogLevel.Information,
+        Message = "Loaded {Templates} creature templates, {Models} models and {Spawns} spawns "
+                + "across {Maps} maps in {ElapsedMs:F0} ms")]
+    public static partial void CreatureContentLoaded(
+        ILogger logger, int templates, int models, int spawns, int maps, double elapsedMs);
+
     // ------------------------------------------------------------------ addons
 
     [LoggerMessage(EventId = 2200, Level = LogLevel.Warning,

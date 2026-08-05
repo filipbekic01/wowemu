@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using WowEmu.Data.Client;
 using WowEmu.Data.Db;
+using WowEmu.Game;
 using WowEmu.Game.Maps;
 using WowEmu.WorldServer;
 
@@ -31,6 +32,9 @@ builder.Services.AddCharacterDatabase(
 
 builder.Services.AddSingleton<PlayerCreateInfoStore>();
 builder.Services.AddSingleton<PlayerStatsStore>();
+builder.Services.AddSingleton<CreatureTemplateStore>();
+builder.Services.AddSingleton<CreatureStatsStore>();
+builder.Services.AddSingleton<CreatureSpawnStore>();
 
 // The DBC stores are read from disk once and never change, so they are built during registration
 // rather than in the startup pass — a missing data directory should fail before anything else runs.
@@ -47,7 +51,14 @@ builder.Services.AddSingleton(_ => new TerrainManager(
         : Path.Combine(AppContext.BaseDirectory, startupOptions.DataDirectory)));
 
 builder.Services.AddSingleton<WorldContent>();
-builder.Services.AddSingleton<MapManager>();
+
+// Grid object loading is registered as the interface the map layer asks for, so a map can be built
+// without one — which is what the map tests do.
+builder.Services.AddSingleton<CreatureFactory>();
+builder.Services.AddSingleton<IGridObjectLoader, CreatureGridLoader>();
+builder.Services.AddSingleton(services => new MapManager(
+    services.GetRequiredService<TerrainManager>(),
+    services.GetRequiredService<IGridObjectLoader>()));
 
 builder.Services.AddHostedService<WorldServerHost>();
 

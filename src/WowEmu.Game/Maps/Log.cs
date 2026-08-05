@@ -1,0 +1,23 @@
+using Microsoft.Extensions.Logging;
+
+namespace WowEmu.Game.Maps;
+
+/// <summary>
+/// Source-generated log messages for the map layer.
+/// </summary>
+/// <remarks>
+/// Same rationale as the two servers' own: the generator turns each of these into an allocation-free
+/// call that costs nothing when the level is disabled, which matters for a message emitted once per
+/// grid load.
+/// </remarks>
+internal static partial class Log
+{
+    [LoggerMessage(EventId = 3000, Level = LogLevel.Debug,
+        Message = "Grid ({GridX}, {GridY}) on map {MapId}: {Loaded} creature(s) loaded, {Skipped} skipped")]
+    public static partial void GridLoaded(
+        ILogger logger, uint mapId, int gridX, int gridY, int loaded, int skipped);
+
+    [LoggerMessage(EventId = 3001, Level = LogLevel.Debug,
+        Message = "Creature spawn {SpawnId} skipped: {Reason}")]
+    public static partial void CreatureSpawnSkipped(ILogger logger, uint spawnId, string? reason);
+}

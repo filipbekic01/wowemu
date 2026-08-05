@@ -57,6 +57,9 @@ public static class TypeMask
 
     /// <summary>What a player reports: object + unit + player.</summary>
     public const uint PlayerObject = Object | Unit | Player;
+
+    /// <summary>What a creature reports: object + unit. There is no separate creature bit.</summary>
+    public const uint CreatureObject = Object | Unit;
 }
 
 /// <summary>An object that exists somewhere on a map.</summary>
@@ -67,6 +70,16 @@ public static class TypeMask
 public abstract class WorldObject(ObjectGuid guid, TypeId typeId, int fieldCount, uint typeMask)
     : GameObjectBase(guid, typeId, fieldCount, typeMask)
 {
+    /// <summary>
+    /// What the client and the logs call it.
+    /// </summary>
+    /// <remarks>
+    /// On <c>WorldObject</c> rather than on each subclass because upstream puts it here too, and
+    /// because everything that reports on an object — visibility logs, movement rejections — wants a
+    /// name without caring what kind of object it has.
+    /// </remarks>
+    public string Name { get; protected set; } = string.Empty;
+
     /// <summary>Where it is, and which way it faces.</summary>
     public Position Position { get; set; }
 
@@ -75,6 +88,13 @@ public abstract class WorldObject(ObjectGuid guid, TypeId typeId, int fieldCount
 
     /// <summary>Which zone, for the client's location display.</summary>
     public uint ZoneId { get; set; }
+
+    /// <summary>Which cell the map currently has this object filed under.</summary>
+    /// <remarks>
+    /// Owned by the map, not by the object: it is the map's index into its own cell table, and an
+    /// object that changes it without telling the map disappears from every range query.
+    /// </remarks>
+    public Maps.CellCoord Cell { get; set; }
 
     /// <summary>Movement state, sent in every create block.</summary>
     public MovementInfo Movement { get; } = new();

@@ -631,8 +631,13 @@ public sealed class WorldSession(
 
     // ------------------------------------------------------------------ IPlayerConnection
 
-    /// <summary>Sends another player's create block to this client.</summary>
-    public async Task SendCreateAsync(Player other, CancellationToken cancellationToken)
+    /// <summary>Sends another object's create block to this client.</summary>
+    /// <remarks>
+    /// Players and creatures produce the same block: upstream gives both
+    /// <c>UPDATEFLAG_LIVING | UPDATEFLAG_STATIONARY_POSITION</c> in the <c>Unit</c> constructor, and
+    /// what differs is the type id and the update type, both of which the builder derives.
+    /// </remarks>
+    public async Task SendCreateAsync(WorldObject other, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(other);
 

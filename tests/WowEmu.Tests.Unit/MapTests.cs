@@ -219,7 +219,7 @@ public sealed class MapVisibilityTests
         await map.AddAsync(first, TestToken);
         await map.AddAsync(second, TestToken);
 
-        IReadOnlyList<Player> found = map.FindInRange(first.Position, 50f, first);
+        IReadOnlyList<WorldObject> found = map.FindInRange(first.Position, 50f, first);
 
         Assert.Equal([second], found);
     }
@@ -254,8 +254,10 @@ public sealed class MapVisibilityTests
 
         public List<ObjectGuid> Moved { get; } = [];
 
-        public Task SendCreateAsync(Player other, CancellationToken cancellationToken)
+        public Task SendCreateAsync(WorldObject other, CancellationToken cancellationToken)
         {
+            ArgumentNullException.ThrowIfNull(other);
+
             Created.Add(other.Guid);
             return Task.CompletedTask;
         }

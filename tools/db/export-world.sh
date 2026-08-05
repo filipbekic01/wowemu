@@ -39,6 +39,10 @@ docker exec -i "$container" mysql -uroot -p"$password" "$database" < "$upstream"
 mkdir -p "$repo/sql/world/schema" "$repo/sql/world/data"
 
 # Structure and rows go to separate files, so re-seeding content never touches the schema.
+#
+# The sed below carries the table off MyISAM. ROW_FORMAT=FIXED has to go with it: it is a MyISAM
+# option, and InnoDB rejects the CREATE outright with "storage engine doesn't have this option".
+# DYNAMIC and COMPRESSED are left alone — InnoDB understands both.
 {
     cat <<EOF
 -- $table — structure
@@ -56,7 +60,7 @@ EOF
     docker exec "$container" mysqldump -uroot -p"$password" \
         --skip-comments --compact --add-drop-table --no-data \
         "$database" "$table" 2>/dev/null \
-        | sed 's/ENGINE=MyISAM/ENGINE=InnoDB/; s/CHARSET=utf8mb3/CHARSET=utf8mb4/'
+        | sed 's/ENGINE=MyISAM/ENGINE=InnoDB/; s/CHARSET=utf8mb3/CHARSET=utf8mb4/; s/ ROW_FORMAT=FIXED//'
 } > "$schema_out"
 
 {

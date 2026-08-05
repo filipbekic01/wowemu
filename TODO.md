@@ -2,9 +2,10 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** Movement is validated as far as it can be without vmaps — coordinates, teleports, speed
-and flag sanity. The remaining checks (height, swimming) are blocked on the vmap and liquid
-loaders, not on effort. Next: creature and gameobject spawns.
+**Now:** Creatures spawn. 145,946 of them load from `creature`, are built through their template
+and base stats, and are filed into grids that load the first time a player can see into one. Next:
+gameobject spawns, which are the same shape with a different create block — and then creatures need
+to *do* something, which is Phase 8's pathfinding and Phase 11's AI.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -103,11 +104,13 @@ loaders, not on effort. Next: creature and gameobject spawns.
 **World database**
 
 - [x] `player_levelstats` (4960 rows), `player_classlevelstats` (800 rows) — base stats
-- [ ] `creature_template`, `creature`
+- [x] `creature_template` (29,928), `creature` (145,946), `creature_model_info` (24,143),
+      `creature_classlevelstats` (400) — vendored and loaded in 0.9 s
+- [ ] `creature_addon`, `creature_equip_template` — auras and visible weapons on spawn
 - [ ] `gameobject_template`, `gameobject`
 - [ ] `item_template`
 - [ ] `quest_template`, `npc_text`
-- [ ] Startup timing report, target under ~30 s
+- [ ] Startup timing report, target under ~30 s (creature load is timed; nothing else is)
 
 ## Phase 5 — Object model + entering the world ⬜ → **M3**
 
@@ -127,11 +130,13 @@ loaders, not on effort. Next: creature and gameobject spawns.
 
 **Object hierarchy**
 
-- [x] `GameObjectBase` → `WorldObject` → `Player`, with the cumulative type mask
+- [x] `GameObjectBase` → `WorldObject` → `Unit` → `Player`, with the cumulative type mask
 - [x] `Player.Create` from the characters row + `ChrRaces` + `ChrClasses` + base stats
-- [ ] `Unit` as its own layer (Player currently sits directly on `WorldObject`)
-- [ ] `Creature`, `GameObject`
+- [x] `Unit` as its own layer — everything below `UNIT_END` lives there, Player and Creature share it
+- [x] `Creature` — a port of `InitEntry`, `UpdateEntry`, `SelectLevel` and `LoadFromDB`'s health block
+- [ ] `GameObject`
 - [ ] `Item` / `Bag` — an `Object` but **not** a `WorldObject`
+- [ ] Creature equipment, addon auras, and the `creature_template_model` split (see below)
 
 **Login**
 
@@ -164,9 +169,14 @@ loaders, not on effort. Next: creature and gameobject spawns.
 - [x] Visibility — per-player visible set, create on enter, destroy on leave, no duplicate creates
 - [x] Movement broadcast to everyone who can see the mover, never back to the mover
 - [x] Players added on login, removed on logout *and* on disconnect
-- [ ] Creature and gameobject spawn loading per grid
-- [ ] Grid creation (terrain) vs grid object loading as two distinct steps
-- [ ] Unload cells and tiles when a grid empties
+- [x] Cells hold `WorldObject`, not just `Player` — creatures are filed and made visible the same way
+- [x] Creature spawn loading per grid, on first sight, at most once per grid
+- [x] Grid creation (terrain) vs grid object loading as two distinct steps — the second is
+      `IGridObjectLoader`, which is also what lets a map be tested without a database
+- [x] `spawnMask` honoured, so the 78 spawns that exclude difficulty 0 stay out of the normal world
+- [ ] Gameobject spawn loading per grid
+- [ ] Unload cells and tiles when a grid empties — a grid, once loaded, currently stays for the life
+      of the process, and there is no tick to notice that the last player left
 - [ ] `MapUpdater` worker pool, `MapMgr` 4-phase round-robin
 - [ ] Move sessions onto the `TickScheduler` — the map lock is a stand-in for it
 - [ ] 400-yard far-visibility second pass
@@ -242,6 +252,21 @@ play, which is exactly why they are written down.
 - [ ] No declined names (the Russian client asks for them)
 - [ ] Character deletion is immediate — no in-progress state, no undelete window
 
+**Creatures**
+
+- [ ] They do nothing. No AI, no threat, no movement generator, no respawn, no loot — a creature
+      stands where its row puts it and can be looked at. That is what M4 asks for and no more.
+- [ ] Health uses no per-rank rate. Upstream multiplies by `Rate.Creature.*.HP` from the config;
+      all five default to 1.0 and there is no config system for them, so they are omitted rather
+      than hard-coded to a number that would look deliberate.
+- [ ] `creature_addon` and `creature_equip_template` are not read, so no creature has visible
+      weapons or its spawn auras
+- [ ] Damage, attack power and attack times are read from `creature_classlevelstats` into nothing —
+      `SelectLevel` sets them upstream and there is no combat to consume them (Phase 9)
+- [ ] Difficulty entries (`difficulty_entry_1..3`) are ignored; every creature is built from its
+      normal-mode template
+- [ ] `phaseMask` is loaded and stored but never checked — everything is visible to everyone
+
 **Data**
 
 - [ ] Only 3 of 109 DBC stores are loaded (`ChrRaces`, `ChrClasses`, `Map`)
@@ -288,6 +313,15 @@ play, which is exactly why they are written down.
 - Character creation accepts any race/class the client offers — no expansion or faction gating.
 - Both reference trees (`azerothcore-wotlk`, `database-wotlk`) have no git root — updating means
   re-cloning.
+- **The two reference trees are at different points in AzerothCore's history**, and creature
+  spawning is the first place it bites. The C++ reads creature models from a `creature_template_model`
+  table via `GetFirstValidModel()`; the vendored database still has `modelid1..4` on
+  `creature_template` and no such table. Ours follows the *data*, so `GetRandomValidModelId` is the
+  older four-slot form. Expect more of these as later phases touch data-shaped code: read the C++
+  for behaviour, but check the dump before trusting a column name.
+- `sql/world/` is now 19 MB, almost all of it `creature` (12 MB) and `creature_template` (7 MB).
+  The vendoring rule says a fresh clone must be able to start, and that is the price. `item_template`
+  and `gameobject` will roughly double it.
 - `data/` is 3 GB of extracted client data and is not committed; a fresh clone needs the extractors
   run again. See `data/README.md`.
 - `sql/world/` redistributes AGPL-3.0 content from AzerothCore's database. Deliberate — see
