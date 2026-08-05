@@ -17,9 +17,9 @@ namespace WowEmu.Data.Db;
 /// </para>
 /// <para>
 /// A struct, and a narrow one. There are ~146,000 of these resident for the life of the process, so
-/// the columns that belong to systems no phase has built — equipment, respawn timers, wander
-/// distance, waypoints, movement type — are deliberately not read. They stay in the table; the
-/// phase that needs them widens this record and its <c>SELECT</c> together.
+/// columns belonging to systems no phase has built are deliberately not read. Equipment, respawn
+/// timers and waypoint indices are still absent; wander distance and movement type arrived with the
+/// phase that needed them, which is how this is meant to grow.
 /// </para>
 /// </remarks>
 public readonly record struct CreatureSpawn(
@@ -34,7 +34,9 @@ public readonly record struct CreatureSpawn(
     uint CurrentMana,
     uint NpcFlags,
     uint UnitFlags,
-    uint DynamicFlags)
+    uint DynamicFlags,
+    float WanderDistance,
+    byte MovementType)
 {
     /// <summary>
     /// Whether this spawn exists at a given difficulty.
@@ -81,7 +83,8 @@ public sealed class CreatureSpawnStore
             """
             SELECT guid, id, map, spawnMask, phaseMask, modelid,
                    position_x, position_y, position_z, orientation,
-                   curhealth, curmana, npcflag, unit_flags, dynamicflags
+                   curhealth, curmana, npcflag, unit_flags, dynamicflags,
+                   spawndist, MovementType
             FROM creature
             """;
 
@@ -108,7 +111,9 @@ public sealed class CreatureSpawnStore
                 CurrentMana: reader.GetUInt32(11),
                 NpcFlags: reader.GetUInt32(12),
                 UnitFlags: reader.GetUInt32(13),
-                DynamicFlags: reader.GetUInt32(14));
+                DynamicFlags: reader.GetUInt32(14),
+                WanderDistance: reader.GetFloat(15),
+                MovementType: reader.GetByte(16));
 
             if (!_byMap.TryGetValue(mapId, out List<CreatureSpawn>? spawns))
             {

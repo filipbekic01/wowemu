@@ -1,5 +1,6 @@
 using WowEmu.Core;
 using WowEmu.Data.Db;
+using WowEmu.Game.Movement;
 using WowEmu.Protocol;
 
 namespace WowEmu.Game;
@@ -33,6 +34,104 @@ public sealed class Creature : Unit
 
     /// <summary>Which phases can see it. Everything is phase 1 until phasing exists.</summary>
     public uint PhaseMask { get; private init; }
+
+    /// <summary>
+    /// Where the spawn row put it, which is what it wanders around and returns to.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from <see cref="WorldObject.Position"/>, which is where it is now. Conflating the
+    /// two makes a wandering creature drift: each new destination is drawn around wherever it
+    /// happened to stop, so over an hour it walks away and never comes back.
+    /// </remarks>
+    public Position HomePosition { get; private init; }
+
+    /// <summary>How far from home it may stray. Zero for a creature that stands still.</summary>
+    public float WanderDistance { get; private init; }
+
+    /// <summary>Decides where it is trying to go.</summary>
+    public MotionMaster Motion { get; private init; } = null!;
+
+    /// <summary>The move in progress, if any.</summary>
+    public CreatureMove CurrentMove { get; private set; }
+
+    /// <summary>How far through <see cref="CurrentMove"/> it is.</summary>
+    public uint MoveElapsedMs { get; private set; }
+
+    /// <summary>Whether it is part-way through a move.</summary>
+    public bool IsMoving => CurrentMove.IsMoving && MoveElapsedMs < CurrentMove.DurationMs;
+
+    /// <summary>
+    /// Identifies the current move to the client, so a new one supersedes the old.
+    /// </summary>
+    /// <remarks>
+    /// Upstream draws these from one process-wide counter. Per-creature is enough — the client only
+    /// compares a spline id against the last one it saw for that object — and it keeps the number
+    /// small enough to read in a packet log.
+    /// </remarks>
+    public uint SplineId { get; private set; }
+
+    /// <summary>
+    /// What is left of the current move, from where the creature is now.
+    /// </summary>
+    /// <remarks>
+    /// For a player who arrives part-way through. Sending the original move would make the client
+    /// interpolate from where the creature started, snapping it backwards before it walks on.
+    /// </remarks>
+    public CreatureMove? RemainingMove => IsMoving
+        ? new CreatureMove(Position, CurrentMove.Destination, CurrentMove.DurationMs - MoveElapsedMs)
+        : null;
+
+    /// <summary>
+    /// Advances the creature by one tick, returning a move to broadcast if a new one started.
+    /// </summary>
+    /// <param name="diffMs">
+    /// Gameplay milliseconds. Zero when the map is out of phase, which is three ticks in four — so
+    /// this must do nothing at all when it is zero, rather than treating it as "a very short tick".
+    /// </param>
+    /// <returns>
+    /// The move that just began, or null. Returning it rather than sending it keeps the creature
+    /// free of any knowledge of packets or of who can see it; the map owns both.
+    /// </returns>
+    public CreatureMove? Update(uint diffMs)
+    {
+        if (diffMs == 0)
+        {
+            return null;
+        }
+
+        if (IsMoving)
+        {
+            MoveElapsedMs += diffMs;
+            Position = CurrentMove.At(MoveElapsedMs);
+
+            // Still going: the client is interpolating the same move and needs nothing further.
+            if (IsMoving)
+            {
+                return null;
+            }
+        }
+
+        if (!Motion.TryGetDestination(this, diffMs, out Position destination))
+        {
+            return null;
+        }
+
+        // The move starts from where the creature actually is, not from where the generator thinks
+        // it should be. Upstream overwrites its path's first point with the unit's real position for
+        // this reason — anything else makes the creature snap before it walks.
+        CreatureMove? move = CreatureMove.Create(Position, destination, Speeds.Walk);
+
+        if (move is null)
+        {
+            return null;
+        }
+
+        CurrentMove = move.Value;
+        MoveElapsedMs = 0;
+        SplineId++;
+
+        return CurrentMove;
+    }
 
     /// <summary>
     /// Builds a creature from its spawn row, its template, its model and the base stats for the
@@ -88,6 +187,9 @@ public sealed class Creature : Unit
             PhaseMask = spawn.PhaseMask,
             MapId = spawn.MapId,
             Position = spawn.Position,
+            HomePosition = spawn.Position,
+            WanderDistance = spawn.WanderDistance,
+            Motion = BuildMotionMaster(spawn),
         };
 
         creature.Name = template.Name;
@@ -153,6 +255,34 @@ public sealed class Creature : Unit
         byte high = Math.Max(template.MinLevel, template.MaxLevel);
 
         return low == high ? low : (byte)pick(low, high);
+    }
+
+    /// <summary>
+    /// Builds the motion master for a spawn's movement type.
+    /// </summary>
+    /// <remarks>
+    /// A random-movement row with no wander distance would walk on the spot forever, so it falls
+    /// back to idle — upstream does the same in <c>InitEntry</c>. Waypoint and the rarer types are
+    /// idle for now, which leaves those creatures standing rather than moving wrongly.
+    /// </remarks>
+    private static MotionMaster BuildMotionMaster(CreatureSpawn spawn)
+    {
+        MovementGeneratorType type = (MovementGeneratorType)spawn.MovementType;
+
+        if (type == MovementGeneratorType.Random && spawn.WanderDistance <= 0f)
+        {
+            type = MovementGeneratorType.Idle;
+        }
+
+        MotionMaster motion = new(type);
+
+        motion.Initialize(type switch
+        {
+            MovementGeneratorType.Random => new RandomMovementGenerator(spawn.WanderDistance),
+            _ => IdleMovementGenerator.Instance,
+        });
+
+        return motion;
     }
 
     /// <summary>Weapons-drawn sheath state, <c>SHEATH_STATE_MELEE</c>.</summary>

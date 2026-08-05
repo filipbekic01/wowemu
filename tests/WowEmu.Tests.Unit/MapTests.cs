@@ -3,6 +3,7 @@ using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Game;
 using WowEmu.Game.Maps;
+using WowEmu.Game.Movement;
 using WowEmu.Protocol;
 
 namespace WowEmu.Tests.Unit;
@@ -254,6 +255,9 @@ public sealed class MapVisibilityTests
 
         public List<ObjectGuid> Moved { get; } = [];
 
+        /// <summary>Creature moves this client was told to start interpolating.</summary>
+        public List<(ObjectGuid Mover, CreatureMove Move)> MonsterMoves { get; } = [];
+
         /// <summary>How many times a tick's worth of updates was flushed.</summary>
         public int Flushes { get; private set; }
 
@@ -267,6 +271,9 @@ public sealed class MapVisibilityTests
         public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
 
         public void FlushUpdates() => Flushes++;
+
+        public void QueueMonsterMove(ObjectGuid mover, CreatureMove move, uint splineId) =>
+            MonsterMoves.Add((mover, move));
 
         public void DrainMapPackets(uint diff)
         {

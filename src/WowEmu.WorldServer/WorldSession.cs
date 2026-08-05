@@ -6,6 +6,7 @@ using WowEmu.Core;
 using WowEmu.Data.Db;
 using WowEmu.Game;
 using WowEmu.Game.Maps;
+using WowEmu.Game.Movement;
 using WowEmu.Network;
 using WowEmu.Protocol;
 
@@ -66,6 +67,7 @@ public sealed class WorldSession(
     private readonly byte[] _authSeed = RandomNumberGenerator.GetBytes(4);
     private readonly InboundPackets _inbound = new();
 
+    private readonly List<(ObjectGuid Mover, CreatureMove Move, uint SplineId)> _pendingMonsterMoves = [];
     private UpdateData _pendingUpdates = new();
     private TickScheduler? _scheduler;
     private AuthAccount? _account;
@@ -826,23 +828,46 @@ public sealed class WorldSession(
     /// </remarks>
     public void FlushUpdates()
     {
-        if (_pendingUpdates.BlockCount == 0)
+        if (_pendingUpdates.BlockCount > 0)
         {
-            return;
+            byte[] payload = _pendingUpdates.BuildPayload();
+            _pendingUpdates = new UpdateData();
+
+            bool compressed = UpdateData.TryCompress(payload, out byte[] body);
+
+            ServerPacket packet = new(
+                compressed ? Opcode.SMSG_COMPRESSED_UPDATE_OBJECT : Opcode.SMSG_UPDATE_OBJECT,
+                body.Length);
+            packet.Body.WriteBytes(body);
+
+            connection.Send(packet);
         }
 
-        byte[] payload = _pendingUpdates.BuildPayload();
-        _pendingUpdates = new UpdateData();
+        // After the update packet, never before: a move for an object the client has not been told
+        // about is silently dropped, and the creature then appears frozen until its next move.
+        foreach ((ObjectGuid mover, CreatureMove move, uint splineId) in _pendingMonsterMoves)
+        {
+            ServerPacket packet = new(Opcode.SMSG_MONSTER_MOVE, 64);
 
-        bool compressed = UpdateData.TryCompress(payload, out byte[] body);
+            MonsterMove.Write(
+                packet.Body, mover, move.Start, move.Destination, splineId, move.DurationMs);
 
-        ServerPacket packet = new(
-            compressed ? Opcode.SMSG_COMPRESSED_UPDATE_OBJECT : Opcode.SMSG_UPDATE_OBJECT,
-            body.Length);
-        packet.Body.WriteBytes(body);
+            connection.Send(packet);
+        }
 
-        connection.Send(packet);
+        _pendingMonsterMoves.Clear();
     }
+
+    /// <summary>
+    /// Tells this client that a creature has started walking somewhere.
+    /// </summary>
+    /// <remarks>
+    /// <c>SMSG_MONSTER_MOVE</c> is its own opcode and cannot travel inside an update packet, so it
+    /// is held until the flush and sent immediately after — which is what keeps it behind the create
+    /// block for the same creature.
+    /// </remarks>
+    public void QueueMonsterMove(ObjectGuid mover, CreatureMove move, uint splineId) =>
+        _pendingMonsterMoves.Add((mover, move, splineId));
 
     /// <summary>Relays another player's movement to this client.</summary>
     public void SendMovement(Opcode opcode, ObjectGuid mover, MovementInfo movement)

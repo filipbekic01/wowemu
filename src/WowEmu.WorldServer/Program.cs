@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Game;
@@ -68,7 +69,8 @@ builder.Services.AddSingleton<IGridObjectLoader>(services => new CompositeGridLo
 builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<TerrainManager>(),
     services.GetRequiredService<IGridObjectLoader>(),
-    new MapUpdater(startupOptions.MapUpdateThreads)));
+    new MapUpdater(startupOptions.MapUpdateThreads),
+    services.GetRequiredService<ILogger<Map>>()));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in

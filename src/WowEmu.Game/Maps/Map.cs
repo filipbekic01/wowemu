@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using WowEmu.Core;
 using WowEmu.Data.Client;
 using WowEmu.Protocol;
@@ -31,6 +32,16 @@ public interface IPlayerConnection
 
     /// <summary>Relays another player's movement. Immediate — movement is not batched.</summary>
     void SendMovement(Opcode opcode, ObjectGuid mover, MovementInfo movement);
+
+    /// <summary>
+    /// Notes that a creature has started walking somewhere, to go out at the next flush.
+    /// </summary>
+    /// <remarks>
+    /// Queued rather than sent, so that it cannot overtake the create block for the same creature.
+    /// A client told to move an object it has not been told about yet simply drops the message, and
+    /// the creature then stands still until its next move — for up to ten seconds.
+    /// </remarks>
+    void QueueMonsterMove(ObjectGuid mover, Movement.CreatureMove move, uint splineId);
 
     /// <summary>Runs the packets this session queued for its map's worker.</summary>
     void DrainMapPackets(uint diff);
@@ -69,12 +80,16 @@ public interface IGridObjectLoader
 /// reason it is safe upstream. Adding a lock here would not make anything safer; it would hide the
 /// day that ordering breaks.
 /// </remarks>
-public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridObjects = null)
+public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridObjects = null, ILogger? logger = null)
 {
     private readonly Dictionary<CellCoord, List<WorldObject>> _cells = [];
     private readonly Dictionary<ObjectGuid, WorldObject> _objects = [];
     private readonly Dictionary<ObjectGuid, Player> _players = [];
     private readonly HashSet<GridCoord> _loadedGrids = [];
+
+    // Creatures that can move, kept separately so a tick does not walk every object on the
+    // continent to find the few thousand that are going somewhere.
+    private readonly List<Creature> _creatures = [];
 
     public uint MapId { get; } = mapId;
 
@@ -101,6 +116,9 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
 
     /// <summary>How many grids have had their spawns loaded.</summary>
     public int LoadedGridCount => _loadedGrids.Count;
+
+    /// <summary>How many creatures are on this map.</summary>
+    public int CreatureCount => _creatures.Count;
 
     /// <summary>Every player currently on the map.</summary>
     public IReadOnlyList<Player> Players => [.. _players.Values];
@@ -143,12 +161,74 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
             player.Connection?.DrainMapPackets(sessionDiff);
         }
 
+        UpdateCreatures(gameplayDiff);
+
         // Last, and unconditional. A player whose map is out of phase still had things happen to it
         // during the session pass, and holding those until the next full update would show as a
         // visible stutter every fourth tick.
         foreach (Player player in Players)
         {
             player.Connection?.FlushUpdates();
+        }
+    }
+
+    /// <summary>
+    /// Walks every creature that is going somewhere.
+    /// </summary>
+    /// <remarks>
+    /// Does nothing on a session-only pass, because <paramref name="gameplayDiff"/> is zero there
+    /// and a creature must not advance on a tick that was not meant to move the world.
+    /// <para>
+    /// A creature that moves has to be re-filed into its new cell, exactly as a player does — a
+    /// creature that wanders out of the cell it is indexed under stays visible to people who have
+    /// walked away from it and invisible to people who have walked up to it.
+    /// </para>
+    /// </remarks>
+    private void UpdateCreatures(uint gameplayDiff)
+    {
+        if (gameplayDiff == 0 || _creatures.Count == 0)
+        {
+            return;
+        }
+
+        foreach (Creature creature in _creatures)
+        {
+            CellCoord before = creature.Cell;
+            Movement.CreatureMove? started = creature.Update(gameplayDiff);
+
+            CellCoord after = MapCoordinates.CellFor(creature.Position.X, creature.Position.Y);
+
+            if (after != before)
+            {
+                CellAt(before).Remove(creature);
+                creature.Cell = after;
+                CellAt(after).Add(creature);
+            }
+
+            if (started is null)
+            {
+                continue;
+            }
+
+            // Only the start of a move goes on the wire. The client interpolates the rest itself,
+            // which is the entire point of sending a duration — a packet per tick would be both
+            // enormous and jerkier than what the client already draws.
+            List<Player> watchers = PlayersWhoSeeCore(creature.Guid);
+
+            foreach (Player watcher in watchers)
+            {
+                watcher.Connection?.QueueMonsterMove(creature.Guid, started.Value, creature.SplineId);
+            }
+
+            if (logger is not null)
+            {
+                // Measured into a local: the analyzer objects to work inside a log call, and a
+                // square root per creature per move is not free at this scale.
+                float distance = started.Value.Start.GetExactDist2d(started.Value.Destination);
+
+                Log.CreatureMoveStarted(
+                    logger, creature.Name, distance, started.Value.DurationMs, watchers.Count);
+            }
         }
     }
 
@@ -321,12 +401,22 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
 
         _objects[worldObject.Guid] = worldObject;
         CellAt(worldObject.Cell).Add(worldObject);
+
+        if (worldObject is Creature creature)
+        {
+            _creatures.Add(creature);
+        }
     }
 
     private void Unfile(WorldObject worldObject)
     {
         _objects.Remove(worldObject.Guid);
         CellFor(worldObject).Remove(worldObject);
+
+        if (worldObject is Creature creature)
+        {
+            _creatures.Remove(creature);
+        }
     }
 
     private List<WorldObject> FindInRangeCore(Position position, float radius, WorldObject? exclude)
@@ -379,6 +469,13 @@ public sealed class Map(uint mapId, TerrainMap terrain, IGridObjectLoader? gridO
         }
 
         viewer.Connection?.QueueCreate(target);
+
+        // A creature that is already walking when someone arrives needs the rest of its move, or it
+        // stands frozen at the point the create block put it until it next decides to go somewhere.
+        if (target is Creature { RemainingMove: { } remaining } moving)
+        {
+            viewer.Connection?.QueueMonsterMove(moving.Guid, remaining, moving.SplineId);
+        }
     }
 
     private static void SendDestroy(Player viewer, ObjectGuid objectGuid) =>

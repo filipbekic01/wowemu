@@ -26,6 +26,11 @@ internal static partial class Log
     public static partial void GameObjectGridLoaded(
         ILogger logger, uint mapId, int gridX, int gridY, int loaded, int skipped);
 
+    [LoggerMessage(EventId = 3004, Level = LogLevel.Debug,
+        Message = "'{Name}' walking {Distance:F1} yd over {DurationMs} ms, seen by {Watchers}")]
+    public static partial void CreatureMoveStarted(
+        ILogger logger, string name, float distance, uint durationMs, int watchers);
+
     [LoggerMessage(EventId = 3003, Level = LogLevel.Debug,
         Message = "Gameobject spawn {SpawnId} skipped: no gameobject_template row for entry {Entry}")]
     public static partial void GameObjectSpawnMissingTemplate(ILogger logger, uint spawnId, uint entry);

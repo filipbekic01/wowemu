@@ -2,16 +2,17 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** Gameobjects spawn alongside creatures — doors, benches, chests and mailboxes are in the
-world and the create block's rotation and low-guid branches are written. Next: creature movement,
-which is the first thing that needs the tick, and the last item M4 is waiting on.
+**Now:** Creatures wander. 77,138 spawns have a wander radius, and the ones near a player walk
+around it on the map tick with `SMSG_MONSTER_MOVE` telling the client to interpolate. That is the
+last big piece M4 named; what is left of it is swimming (blocked on liquid data) and returning home
+after combat (blocked on there being combat).
 
 | Milestone | Meaning | State |
 |---|---|---|
 | M1 | Client logs in and sees the realm list | ✅ done, verified with a retail client |
 | M2 | Client reaches character selection | ✅ done — create, list and delete all work |
 | M3 | Character enters the world and renders | ✅ done — confirmed with a retail client |
-| M4 | Movement | ⬜ Phase 7 |
+| M4 | Movement | 🔵 players move, creatures wander; swimming and home-return still open |
 
 ---
 
@@ -184,6 +185,28 @@ which is the first thing that needs the tick, and the last item M4 is waiting on
 
 ## Phase 7 — Movement 🔵 → **M4**
 
+**Creature movement**
+
+- [x] `MotionMaster` as a slot stack, with `Idle` and `Random`
+- [x] `RandomMovementGenerator` — uniform over the disc, anchored to the spawn point so a creature
+      cannot random-walk away over an hour
+- [x] Straight-line moves advanced on the map tick, re-filed into their cells as they go
+- [x] `SMSG_MONSTER_MOVE`, including the point count that is derived from a padded spline and is
+      therefore 1 for a two-point move, not 2
+- [x] A creature already walking when you arrive is sent the remainder of its move
+- [x] Moves are queued behind the create block for the same creature, never ahead of it
+- [ ] `HomeMovementGenerator` — nothing can pull a creature away from home yet, so nothing needs it
+- [ ] `WaypointMovementGenerator` — 12,000-odd spawns ask for it and currently stand still
+- [ ] Real splines: Catmull-Rom, cyclic paths, parabolic arcs, facing targets. A straight line is
+      all the generators produce, and a two-point spline *is* a line — this becomes real at flight
+      paths and scripted patrols.
+- [ ] Terrain height is not consulted when picking a destination, for the same reason movement
+      validation does not check it: without vmaps a creature indoors or on a bridge gets dropped
+      through the floor
+- [ ] Creature movement does not update `UNIT_FIELD_BYTES_1` stand state or emit walk/run flags
+
+**Player movement**
+
 - [x] 27 movement opcodes → one handler, routed by the generated opcode table
 - [x] `MovementInfo` read/write, round-trip tested
 - [x] Server tracks the player's position (accepted on trust)
@@ -269,8 +292,9 @@ play, which is exactly why they are written down.
 
 **Creatures**
 
-- [ ] They do nothing. No AI, no threat, no movement generator, no respawn, no loot — a creature
-      stands where its row puts it and can be looked at. That is what M4 asks for and no more.
+- [ ] No AI, no threat, no respawn, no loot. They wander and can be looked at; nothing else.
+- [ ] Movement ignores collision entirely — a creature walks through walls, trees and each other,
+      because there are no vmaps and no pathfinding (Phase 8).
 - [ ] Health uses no per-rank rate. Upstream multiplies by `Rate.Creature.*.HP` from the config;
       all five default to 1.0 and there is no config system for them, so they are omitted rather
       than hard-coded to a number that would look deliberate.

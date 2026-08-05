@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using WowEmu.Data.Client;
 
 namespace WowEmu.Game.Maps;
@@ -27,7 +28,8 @@ public enum MapKind
 public sealed class MapManager(
     TerrainManager terrain,
     IGridObjectLoader? gridObjects = null,
-    MapUpdater? updater = null) : IDisposable
+    MapUpdater? updater = null,
+    ILogger<Map>? logger = null) : IDisposable
 {
     /// <summary>
     /// The four phases. Three update a category of map; the fourth is a pause.
@@ -56,7 +58,7 @@ public sealed class MapManager(
     {
         if (!_maps.TryGetValue(mapId, out Map? map))
         {
-            map = new Map(mapId, terrain.GetMap(mapId), gridObjects);
+            map = new Map(mapId, terrain.GetMap(mapId), gridObjects, logger);
             _maps[mapId] = map;
         }
 

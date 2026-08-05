@@ -49,6 +49,7 @@ SMSG_INSTANCE_DIFFICULTY = 0x33B
 SMSG_LOGIN_SETTIMESPEED = 0x042
 SMSG_UPDATE_OBJECT = 0x0A9
 SMSG_COMPRESSED_UPDATE_OBJECT = 0x1F6
+SMSG_MONSTER_MOVE = 0x0DD
 SMSG_TIME_SYNC_REQ = 0x390
 CMSG_LOGOUT_REQUEST = 0x04B
 SMSG_LOGOUT_RESPONSE = 0x04C
@@ -239,12 +240,13 @@ class WorldClient:
         """Reads until the wanted opcode, stepping over packets the server pushes on its own.
 
         Once the world has creatures in it, entering it produces a create block per creature in
-        range, and they arrive whenever the map gets round to them -- including in the middle of a
-        request and its reply. A real client handles them at any time, so the gate has to as well.
-        Skipping is disabled when the wanted opcode is itself an update, so the checks that read a
-        create block still read the one they meant to.
+        range, and once they wander it produces a monster-move whenever one sets off. Both arrive
+        whenever the map gets round to them -- including in the middle of a request and its reply. A
+        real client handles them at any time, so the gate has to as well. Skipping is disabled when
+        the wanted opcode is itself one of these, so the checks that read a create block still read
+        the one they meant to.
         """
-        skippable = {SMSG_UPDATE_OBJECT, SMSG_COMPRESSED_UPDATE_OBJECT} - {wanted}
+        skippable = {SMSG_UPDATE_OBJECT, SMSG_COMPRESSED_UPDATE_OBJECT, SMSG_MONSTER_MOVE} - {wanted}
 
         if not skip_unsolicited:
             skippable = set()

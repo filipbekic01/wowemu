@@ -481,7 +481,9 @@ public sealed class CreatureTests
         CurrentMana: 0,
         NpcFlags: 0,
         UnitFlags: 0,
-        DynamicFlags: 0);
+        DynamicFlags: 0,
+        WanderDistance: 0f,
+        MovementType: 0);
 
     private static CreatureTemplate Template() => new(
         Entry: SampleEntry,
