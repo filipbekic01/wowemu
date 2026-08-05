@@ -223,6 +223,115 @@ public static class QuestPackets
         WriteReputationBlock(writer);
     }
 
+    /// <summary>
+    /// Writes <c>SMSG_QUEST_QUERY_RESPONSE</c> — everything the client needs to draw a quest.
+    /// </summary>
+    /// <remarks>
+    /// <b>Without this the quest log is empty.</b> The details window carries enough to decide
+    /// whether to accept, but the log entry needs the structured objectives — which creature, how
+    /// many, which item — and the client will not draw a row for a quest it has no data for. It
+    /// asks for anything missing from its own <c>QuestCache.wdb</c>, which after a cache wipe is
+    /// every quest in the game.
+    /// <para>
+    /// Unlike the details and offer packets, the reward arrays here are written in <b>full</b> —
+    /// all four rewards and all six choices, gaps included — because there is no count in front of
+    /// them. The client reads a fixed number.
+    /// </para>
+    /// </remarks>
+    public static void WriteQueryResponse(PacketWriter writer, QuestTemplate quest)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(quest);
+
+        writer.WriteUInt32(quest.Id);
+        writer.WriteUInt32(quest.Method);
+
+        // Signed on the way in and written as a word: -1 means "the player's level", and the
+        // client understands it.
+        writer.WriteUInt32(unchecked((uint)quest.Level));
+        writer.WriteUInt32(quest.MinLevel);
+
+        // Which tab of the log it files under. Negative is a sort id rather than a zone.
+        writer.WriteUInt32(unchecked((uint)quest.SortId));
+
+        writer.WriteUInt32(quest.Type);
+        writer.WriteUInt32(quest.SuggestedPlayers);
+
+        // Two reputation objectives, neither implemented.
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+
+        writer.WriteUInt32(quest.NextQuestIdChain);
+        writer.WriteUInt32(quest.RewardXpDifficulty);
+
+        writer.WriteUInt32(quest.RewardMoney);
+        writer.WriteUInt32(quest.RewardMoneyMaxLevel);
+        writer.WriteUInt32(quest.RewardSpell);
+        writer.WriteUInt32(unchecked((uint)quest.RewardSpellCast));
+
+        writer.WriteUInt32(0);          // honour
+        writer.WriteSingle(0f);         // honour multiplier
+        writer.WriteUInt32(quest.SourceItemId);
+
+        // Only the low sixteen bits. The rest are server-side flags the client has no use for.
+        writer.WriteUInt32(quest.Flags & 0xFFFF);
+
+        writer.WriteUInt32(0);          // title
+        writer.WriteUInt32(0);          // players to slay
+        writer.WriteUInt32(0);          // bonus talents
+        writer.WriteUInt32(0);          // arena points
+        writer.WriteUInt32(0);          // review reputation mask
+
+        for (int i = 0; i < QuestConstants.MaxRewards; i++)
+        {
+            writer.WriteUInt32(quest.Rewards[i].ItemId);
+            writer.WriteUInt32(quest.Rewards[i].Count);
+        }
+
+        for (int i = 0; i < QuestConstants.MaxRewardChoices; i++)
+        {
+            writer.WriteUInt32(quest.RewardChoices[i].ItemId);
+            writer.WriteUInt32(quest.RewardChoices[i].Count);
+        }
+
+        WriteReputationBlock(writer);
+
+        // Point of interest — the map marker. Not read from the table yet.
+        writer.WriteUInt32(0);
+        writer.WriteSingle(0f);
+        writer.WriteSingle(0f);
+        writer.WriteUInt32(0);
+
+        // The order is title, objectives, details — not the order the columns are in, and not the
+        // order the details packet uses.
+        writer.WriteCString(quest.LogTitle);
+        writer.WriteCString(quest.LogDescription);
+        writer.WriteCString(quest.QuestDescription);
+        writer.WriteCString(quest.AreaDescription);
+        writer.WriteCString(quest.CompletedText);
+
+        for (int i = 0; i < QuestConstants.MaxObjectives; i++)
+        {
+            writer.WriteUInt32(quest.Objectives[i].WireEntry);
+            writer.WriteUInt32(quest.Objectives[i].Count);
+            writer.WriteUInt32(quest.SourceItems[i]);
+            writer.WriteUInt32(0);      // source count
+        }
+
+        for (int i = 0; i < QuestConstants.MaxItemObjectives; i++)
+        {
+            writer.WriteUInt32(quest.RequiredItems[i].ItemId);
+            writer.WriteUInt32(quest.RequiredItems[i].Count);
+        }
+
+        for (int i = 0; i < QuestConstants.MaxObjectives; i++)
+        {
+            writer.WriteCString(quest.ObjectiveText[i]);
+        }
+    }
+
     /// <summary>Writes <c>SMSG_QUESTGIVER_QUEST_COMPLETE</c> — the reward actually paid.</summary>
     public static void WriteComplete(PacketWriter writer, uint questId, uint experience, uint money)
     {

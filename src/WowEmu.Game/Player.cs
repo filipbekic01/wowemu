@@ -263,6 +263,8 @@ public sealed class Player : Unit
         fields.SetByte(UpdateFields.PLAYER_BYTES_2, 3, 0x01);
 
         fields.SetUInt32(UpdateFields.UNIT_FIELD_LEVEL, character.Level);
+        fields.SetUInt32(UpdateFields.PLAYER_XP, character.Experience);
+        fields.SetUInt32(UpdateFields.PLAYER_FIELD_COINAGE, character.Money);
         fields.SetUInt32(UpdateFields.UNIT_FIELD_FACTIONTEMPLATE, race.FactionId);
 
         uint displayId = character.Gender == 0 ? race.MaleDisplayId : race.FemaleDisplayId;

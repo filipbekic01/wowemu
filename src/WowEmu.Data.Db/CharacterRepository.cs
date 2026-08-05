@@ -24,7 +24,9 @@ public sealed record CharacterSummary(
     float PositionZ,
     uint GuildId,
     uint PlayerFlags,
-    ushort AtLoginFlags);
+    ushort AtLoginFlags,
+    uint Money = 0,
+    uint Experience = 0);
 
 /// <summary>Reads and writes the realm's characters.</summary>
 public interface ICharacterRepository
@@ -45,9 +47,13 @@ public interface ICharacterRepository
     Task<uint?> CreateAsync(CharacterEntity character, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Saves where a character is, so logging back in resumes there.
+    /// Saves where a character is and what it has, so logging back in resumes there.
     /// </summary>
-    Task SavePositionAsync(
+    /// <remarks>
+    /// Money and experience ride along with the position rather than having their own call: they
+    /// are written at exactly the same moments, and two calls is two chances for one to be missed.
+    /// </remarks>
+    Task SaveProgressAsync(
         uint characterId,
         uint mapId,
         uint zoneId,
@@ -55,6 +61,9 @@ public interface ICharacterRepository
         float y,
         float z,
         float orientation,
+        uint money,
+        uint experience,
+        byte level,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -98,7 +107,9 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
                 character.PositionZ,
                 character.GuildId,
                 character.PlayerFlags,
-                character.AtLoginFlags))
+                character.AtLoginFlags,
+                character.Money,
+                character.Experience))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
@@ -146,7 +157,7 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
         return character.Id;
     }
 
-    public async Task SavePositionAsync(
+    public async Task SaveProgressAsync(
         uint characterId,
         uint mapId,
         uint zoneId,
@@ -154,6 +165,9 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
         float y,
         float z,
         float orientation,
+        uint money,
+        uint experience,
+        byte level,
         CancellationToken cancellationToken = default)
     {
         await using CharactersDbContext context = await contextFactory
@@ -174,6 +188,9 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
         character.PositionY = y;
         character.PositionZ = z;
         character.Orientation = orientation;
+        character.Money = money;
+        character.Experience = experience;
+        character.Level = level;
         character.LastLoginAt = DateTime.UtcNow;
 
         // The character has now been in the world, so it is no longer a first login — the client

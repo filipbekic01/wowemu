@@ -56,7 +56,7 @@
       "name": "Progression",
       "meaning": "Complete the first quests of a starting zone",
       "state": "progress",
-      "note": "Death, items, bags, loot, quests, gossip and vendors all work, each verified end to end by a headless gate. Trainers are what is left, and they need a spellbook first."
+      "note": "Death, items, bags, loot, quests, gossip and vendors all work, and survive a logout. Four headless gates cover the milestone; the M6 world gate found that money and experience were never persisted at all. Not yet confirmed against a real client, and trainers still need a spellbook."
     },
     {
       "id": "M7",
@@ -1759,11 +1759,17 @@
             },
             {
               "done": false,
-              "text": "SMSG_QUEST_QUERY_RESPONSE, so a client with no cached quest text sees nothing"
+              "text": "gameobject_queststarter / _questender — only creatures give quests"
             },
             {
-              "done": false,
-              "text": "gameobject_queststarter / _questender — only creatures give quests"
+              "done": true,
+              "text": "SMSG_QUEST_QUERY_RESPONSE — WITHOUT IT THE QUEST LOG IS EMPTY",
+              "note": "Found against a real client, which no gate could have caught. The details window is enough to accept a quest; the LOG entry needs the structured objectives, and the client will not draw a row for a quest whose data it has no copy of. Its reward arrays are written in FULL — there is no count in front of them, unlike every other quest packet."
+            },
+            {
+              "done": true,
+              "text": "AreaDescription is the EndText column in the vendored dump",
+              "note": "The third time the two reference trees have diverged on a column name, after creature_template_model and game_graveyard."
             }
           ]
         },
@@ -1879,6 +1885,44 @@
             {
               "done": false,
               "text": ".commands framework"
+            }
+          ]
+        },
+        {
+          "title": "Verifying it",
+          "items": [
+            {
+              "done": true,
+              "text": "tools/harness/m6_quest.py — take a quest from one NPC, hand it to another, get paid"
+            },
+            {
+              "done": true,
+              "text": "tools/harness/m6_vendor.py — open a vendor, be refused when broke, sell, buy"
+            },
+            {
+              "done": true,
+              "text": "tools/harness/m6_world.py — the whole milestone across a LOGOUT",
+              "note": "The one thing the other gates cannot reach. Every M6 system writes rows on the way out and rebuilds on the way in, and a save that quietly writes nothing looks exactly like one that works — until the next login."
+            },
+            {
+              "done": true,
+              "text": "MONEY AND EXPERIENCE WERE NEVER PERSISTED AT ALL",
+              "note": "Found by the world gate on its first run: the characters table had no column for either. Everything else about the purse worked — it just emptied every time the player logged out. Nothing else would have caught it; the unit tests test the field, and the field was right."
+            },
+            {
+              "done": true,
+              "text": "Database round-trip tests for the inventory and the quest log",
+              "note": "Against the real schema, with a character id far above anything real. A gate can log out and back in but cannot see the rows — and the failure that duplicates items is a stale row, which only shows from the database side."
+            },
+            {
+              "done": true,
+              "text": "A HANDED-IN QUEST LEAVES THE LOG AND KEEPS ITS ROW, verified across a relogin",
+              "note": "The row is what stops it being offered again. Dropping it lets a player repeat every quest in the game by logging out."
+            },
+            {
+              "done": false,
+              "text": "Verify against a real 3.3.5a client",
+              "note": "The half no gate can automate. A packet can be perfectly self-consistent and still be laid out in a way the client reads differently."
             }
           ]
         }
@@ -2240,7 +2284,6 @@
         "QUEST CHAINS ARE NOT ENFORCED. PrevQuestId, NextQuestId and ExclusiveGroup are read into the template and nothing checks them, so a chain's second quest is offered before its first.",
         "No timed quests, no area-trigger objectives, no escorts and no event objectives. Only creature kills and carried items count.",
         "Reputation and skill requirements pass, and reputation, spell and title rewards are not paid.",
-        "SMSG_QUEST_QUERY_RESPONSE is not answered, so a client whose quest cache is empty has no way to learn a quest's text.",
         "Only creatures give quests — gameobject_queststarter and _questender are not read.",
         "Daily and weekly quests do not reset; a repeatable one can be taken again immediately."
       ]
@@ -2254,6 +2297,13 @@
         "Items with an extended cost — honour, arena points, tokens — are listed and refused, because the cost is a row in a DBC nothing reads.",
         "No buyback, no repair, and no reputation discount on prices.",
         "Only the first of an npc_text row's eight text slots is read, and only the male variant. The conditions system that picks between a menu's several texts is not implemented, so the first is always used."
+      ]
+    },
+    {
+      "category": "Persistence",
+      "items": [
+        "Everything is saved on logout and on a dropped connection, never periodically. A server crash loses the whole session — position, bags, quests, money and experience alike.",
+        "Confirming against a real 3.3.5a client is only just starting, and the first thing it found was an empty quest log — SMSG_QUEST_QUERY_RESPONSE was never answered. Five headless gates prove the server is self-consistent; none of them can prove the client agrees."
       ]
     }
   ],

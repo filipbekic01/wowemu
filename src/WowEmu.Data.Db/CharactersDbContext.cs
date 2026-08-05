@@ -66,6 +66,18 @@ public sealed class CharacterEntity
     public uint PlayerFlags { get; set; }
 
     /// <summary>
+    /// Copper. One column, because silver and gold are only how the client draws it.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the inventory even though both are wealth: money is a field on the character,
+    /// not a row in a bag, and a character with no items still has a purse.
+    /// </remarks>
+    public uint Money { get; set; }
+
+    /// <summary>How much experience the character has towards its next level.</summary>
+    public uint Experience { get; set; }
+
+    /// <summary>
     /// Pending at-login actions: first login, forced rename, customize. The client renders the
     /// character differently for several of these, so it is in the list packet.
     /// </summary>
@@ -130,6 +142,8 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
             entity.Property(character => character.PositionZ).HasColumnName("position_z");
             entity.Property(character => character.Orientation).HasColumnName("orientation");
             entity.Property(character => character.PlayerFlags).HasColumnName("player_flags");
+            entity.Property(character => character.Money).HasColumnName("money");
+            entity.Property(character => character.Experience).HasColumnName("xp");
             entity.Property(character => character.AtLoginFlags).HasColumnName("at_login_flags");
             entity.Property(character => character.GuildId).HasColumnName("guild_id");
             entity.Property(character => character.CreatedAt).HasColumnName("created_at");

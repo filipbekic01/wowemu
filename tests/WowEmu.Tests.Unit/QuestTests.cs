@@ -55,9 +55,12 @@ internal static class QuestFixture
             RewardChoices: Pad(rewardChoices, QuestConstants.MaxRewardChoices),
             Objectives: PadObjectives(objectives),
             RequiredItems: Pad(requiredItems, QuestConstants.MaxItemObjectives),
+            SourceItems: new uint[QuestConstants.MaxObjectives],
             LogTitle: title,
             LogDescription: "Do the thing.",
             QuestDescription: "Somebody should do the thing.",
+            AreaDescription: "Where the thing is.",
+            CompletedText: "The thing is done.",
             OfferRewardText: "You did the thing.",
             RequestItemsText: "Have you done the thing?",
             ObjectiveText: ["", "", "", ""]);
@@ -733,6 +736,90 @@ public sealed class QuestPacketTests
         Assert.Equal(victim.Value, guid);
 
         Assert.Equal(0, reader.Remaining);
+    }
+
+    /// <summary>
+    /// The query response's objectives read back, with a gameobject's high bit intact.
+    /// </summary>
+    /// <remarks>
+    /// This packet is what makes the quest log draw a row at all: the details window is enough to
+    /// accept a quest, and the client will not list one it has no structured data for.
+    /// </remarks>
+    [Fact]
+    public void TheQueryResponse_CarriesTheStructuredObjectives()
+    {
+        QuestTemplate quest = QuestFixture.Build(
+            id: 33,
+            title: "Wolves Across the Border",
+            objectives: [new QuestObjective(299, 5), new QuestObjective(-1732, 1)],
+            requiredItems: [new QuestItem(50432, 8)]);
+
+        PacketWriter writer = new();
+        QuestPackets.WriteQueryResponse(writer, quest);
+
+        PacketReader reader = new(writer.WrittenSpan.ToArray());
+
+        Assert.True(reader.TryReadUInt32(out uint questId));
+        Assert.Equal(33u, questId);
+
+        // Everything between the id and the five strings, counted out rather than guessed:
+        // 26 scalar words (the id included), the reward and choice arrays as pairs, three
+        // reputation blocks of five, and four point-of-interest words.
+        const int ScalarWords = 26;
+        const int RewardWords = (QuestConstants.MaxRewards + QuestConstants.MaxRewardChoices) * 2;
+        const int ReputationWords = QuestConstants.MaxReputations * 3;
+        const int PoiWords = 4;
+
+        reader.Skip((ScalarWords - 1 + RewardWords + ReputationWords + PoiWords) * 4);
+
+        Assert.True(reader.TryReadCString(out string? title));
+        Assert.Equal("Wolves Across the Border", title);
+
+        // Objectives then details — not the column order, and not the details packet's order.
+        Assert.True(reader.TryReadCString(out string? objectives));
+        Assert.Equal("Do the thing.", objectives);
+
+        Assert.True(reader.TryReadCString(out string? details));
+        Assert.Equal("Somebody should do the thing.", details);
+
+        Assert.True(reader.TryReadCString(out string? area));
+        Assert.Equal("Where the thing is.", area);
+
+        Assert.True(reader.TryReadCString(out string? completed));
+        Assert.Equal("The thing is done.", completed);
+
+        Assert.True(reader.TryReadUInt32(out uint firstEntry));
+        Assert.Equal(299u, firstEntry);
+
+        Assert.True(reader.TryReadUInt32(out uint firstCount));
+        Assert.Equal(5u, firstCount);
+
+        reader.Skip(4 + 4);          // source item and its count
+
+        // The gameobject objective keeps its high bit rather than arriving as a negative.
+        Assert.True(reader.TryReadUInt32(out uint secondEntry));
+        Assert.Equal(1732u | 0x80000000u, secondEntry);
+    }
+
+    /// <summary>
+    /// All four rewards and all six choices are written, gaps included.
+    /// </summary>
+    /// <remarks>
+    /// Unlike the details and offer packets, there is no count in front of them — the client reads
+    /// a fixed number, so skipping the empty slots shifts everything after.
+    /// </remarks>
+    [Fact]
+    public void TheQueryResponse_WritesEveryRewardSlot()
+    {
+        PacketWriter empty = new();
+        QuestPackets.WriteQueryResponse(empty, QuestFixture.Build());
+
+        PacketWriter full = new();
+        QuestPackets.WriteQueryResponse(full, QuestFixture.Build(
+            rewards: [new QuestItem(25, 1)],
+            rewardChoices: [new QuestItem(80, 1), new QuestItem(81, 1)]));
+
+        Assert.Equal(empty.WrittenSpan.Length, full.WrittenSpan.Length);
     }
 
     /// <summary>The completion packet carries the experience and money actually paid.</summary>

@@ -55,6 +55,8 @@ SMSG_QUESTGIVER_OFFER_REWARD = 0x18D
 CMSG_QUESTGIVER_CHOOSE_REWARD = 0x18E
 SMSG_QUESTGIVER_QUEST_COMPLETE = 0x191
 SMSG_QUESTUPDATE_COMPLETE = 0x198
+CMSG_QUEST_QUERY = 0x05C
+SMSG_QUEST_QUERY_RESPONSE = 0x05D
 
 SMSG_UPDATE_OBJECT = 0x0A9
 SMSG_COMPRESSED_UPDATE_OBJECT = 0x1F6
@@ -251,6 +253,31 @@ def run(client, character, start):
         fail(f"the server said quest {completed} completed, not {QUEST_ID}")
 
     print(f"  accepted, and it is complete already (no objectives)")
+
+    # ---- what the client does next, and what the quest log is drawn from
+    #
+    # The details window is enough to accept a quest. The LOG entry is not: the client will not
+    # draw a row for a quest whose structured data it has no copy of, and asks for anything missing
+    # from its own cache. With no answer the quest is held server-side and invisible.
+    client.send(CMSG_QUEST_QUERY, struct.pack("<I", QUEST_ID))
+
+    payload = await_opcode(client, SMSG_QUEST_QUERY_RESPONSE, "SMSG_QUEST_QUERY_RESPONSE")
+
+    queried = struct.unpack("<I", payload[:4])[0]
+
+    if queried != QUEST_ID:
+        fail(f"the query answered for quest {queried}, not {QUEST_ID}")
+
+    # 26 scalar words, the reward and choice pairs, three reputation blocks of five, and four
+    # point-of-interest words -- then the five strings.
+    cursor = (26 + ((4 + 6) * 2) + (5 * 3) + 4) * 4
+
+    queried_title, cursor = read_cstring(payload, cursor)
+
+    if queried_title != QUEST_TITLE:
+        fail(f"the query says the quest is called '{queried_title}', expected '{QUEST_TITLE}'")
+
+    print(f"  the client can draw it: query returned '{queried_title}' ({len(payload)} bytes)")
 
     # ---- the ender should now be showing a question mark, and the starter should not
     if quest_giver_status(client, eagan) != STATUS_REWARD:

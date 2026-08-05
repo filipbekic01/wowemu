@@ -353,6 +353,10 @@ public sealed class WorldSession(
                 HandleLootRelease(payload);
                 return;
 
+            case Opcode.CMSG_QUEST_QUERY:
+                HandleQuestQuery(payload);
+                return;
+
             case Opcode.CMSG_QUESTGIVER_STATUS_QUERY:
                 HandleQuestGiverStatusQuery(payload);
                 return;
@@ -1890,6 +1894,35 @@ public sealed class WorldSession(
     }
 
     /// <summary>
+    /// Answers <c>CMSG_QUEST_QUERY</c> — what is this quest?
+    /// </summary>
+    /// <remarks>
+    /// <b>Without this the quest log stays empty.</b> The details window is enough to accept a
+    /// quest, but the log entry needs the structured objectives, and the client will not draw a row
+    /// for a quest it has no data for. It asks about anything missing from its own cache, which
+    /// after a cache wipe is every quest in the game.
+    /// </remarks>
+    private void HandleQuestQuery(ReadOnlyMemory<byte> payload)
+    {
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt32(out uint questId))
+        {
+            return;
+        }
+
+        if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
+        {
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_QUEST_QUERY_RESPONSE, 512);
+        QuestPackets.WriteQueryResponse(packet.Body, quest);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>
     /// Answers "what mark goes over this NPC's head?". <c>CMSG_QUESTGIVER_STATUS_QUERY</c>.
     /// </summary>
     /// <remarks>
@@ -3152,7 +3185,7 @@ public sealed class WorldSession(
             return;
         }
 
-        await characters.SavePositionAsync(
+        await characters.SaveProgressAsync(
             player.Guid.Counter,
             player.MapId,
             player.ZoneId,
@@ -3160,6 +3193,9 @@ public sealed class WorldSession(
             player.Position.Y,
             player.Position.Z,
             player.Position.Orientation,
+            player.Money,
+            player.Xp,
+            player.Level,
             cancellationToken).ConfigureAwait(true);
 
         await inventory

@@ -169,9 +169,31 @@ public sealed record QuestTemplate(
     QuestItem[] RewardChoices,
     QuestObjective[] Objectives,
     QuestItem[] RequiredItems,
+
+    /// <summary>
+    /// Items that drop only while the quest is held, one per creature objective.
+    /// </summary>
+    /// <remarks>
+    /// <c>ItemDrop</c> in the C++. The client draws no line for them; they exist so the query
+    /// response can tell it which drops to expect.
+    /// </remarks>
+    uint[] SourceItems,
     string LogTitle,
     string LogDescription,
     string QuestDescription,
+
+    /// <summary>
+    /// The line shown at the top of the quest's objectives panel.
+    /// </summary>
+    /// <remarks>
+    /// <b>The column is <c>EndText</c> in the vendored dump and <c>AreaDescription</c> in the
+    /// current C++.</b> The same divergence as <c>creature_template_model</c> — read the C++ for
+    /// behaviour and the dump for column names.
+    /// </remarks>
+    string AreaDescription,
+
+    /// <summary>Shown once every objective is met. <c>QuestCompletionLog</c>.</summary>
+    string CompletedText,
     string OfferRewardText,
     string RequestItemsText,
     string[] ObjectiveText)
@@ -345,7 +367,10 @@ public sealed class QuestStore
                RequiredItemId4, RequiredItemId5, RequiredItemId6,
                RequiredItemCount1, RequiredItemCount2, RequiredItemCount3,
                RequiredItemCount4, RequiredItemCount5, RequiredItemCount6,
+               RequiredSourceItemId1, RequiredSourceItemId2,
+               RequiredSourceItemId3, RequiredSourceItemId4,
                IFNULL(LogTitle, ''), IFNULL(LogDescription, ''), IFNULL(QuestDescription, ''),
+               IFNULL(EndText, ''), IFNULL(QuestCompletionLog, ''),
                IFNULL(OfferRewardText, ''), IFNULL(RequestItemsText, ''),
                IFNULL(ObjectiveText1, ''), IFNULL(ObjectiveText2, ''),
                IFNULL(ObjectiveText3, ''), IFNULL(ObjectiveText4, '')
@@ -382,11 +407,18 @@ public sealed class QuestStore
             required[i] = new QuestItem(reader.GetUInt32(50 + i), reader.GetUInt16(56 + i));
         }
 
+        uint[] sourceItems = new uint[QuestConstants.MaxObjectives];
+
+        for (int i = 0; i < sourceItems.Length; i++)
+        {
+            sourceItems[i] = reader.GetUInt32(62 + i);
+        }
+
         string[] objectiveText = new string[QuestConstants.MaxObjectives];
 
         for (int i = 0; i < objectiveText.Length; i++)
         {
-            objectiveText[i] = reader.GetString(67 + i);
+            objectiveText[i] = reader.GetString(73 + i);
         }
 
         return new QuestTemplate(
@@ -416,11 +448,14 @@ public sealed class QuestStore
             RewardChoices: choices,
             Objectives: objectives,
             RequiredItems: required,
-            LogTitle: reader.GetString(62),
-            LogDescription: reader.GetString(63),
-            QuestDescription: reader.GetString(64),
-            OfferRewardText: reader.GetString(65),
-            RequestItemsText: reader.GetString(66),
+            SourceItems: sourceItems,
+            LogTitle: reader.GetString(66),
+            LogDescription: reader.GetString(67),
+            QuestDescription: reader.GetString(68),
+            AreaDescription: reader.GetString(69),
+            CompletedText: reader.GetString(70),
+            OfferRewardText: reader.GetString(71),
+            RequestItemsText: reader.GetString(72),
             ObjectiveText: objectiveText);
     }
 }
