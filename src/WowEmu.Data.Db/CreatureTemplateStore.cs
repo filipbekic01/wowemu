@@ -53,7 +53,16 @@ public sealed record CreatureTemplate(
     uint RangeAttackTime,
     uint AttackPower,
     uint RangedAttackPower,
-    uint FlagsExtra)
+    uint FlagsExtra,
+
+    /// <summary>Row in <c>creature_loot_template</c>. <b>Zero means it drops nothing.</b></summary>
+    /// <remarks>
+    /// Usually the same as <see cref="Entry"/>, and often not — several entries share one list, and
+    /// assuming the entry is the loot id gives a third of the game the wrong drops.
+    /// </remarks>
+    uint LootId,
+    uint MinGold,
+    uint MaxGold)
 {
     /// <summary>
     /// Picks one of the up-to-four display ids the entry may use.
@@ -159,7 +168,8 @@ public sealed class CreatureTemplateStore : ICreatureModelSource
                        `rank`, unit_class, unit_flags, unit_flags2, dynamicflags, type, type_flags,
                        family, Health_mod, Mana_mod, Armor_mod, MovementType, RegenHealth,
                        mindmg, maxdmg, dmg_multiplier, baseattacktime, rangeattacktime,
-                       attackpower, rangedattackpower, flags_extra
+                       attackpower, rangedattackpower, flags_extra,
+                       lootid, mingold, maxgold
                 FROM creature_template
                 """;
 
@@ -207,7 +217,10 @@ public sealed class CreatureTemplateStore : ICreatureModelSource
                     RangeAttackTime: reader.GetUInt32(32),
                     AttackPower: reader.GetUInt32(33),
                     RangedAttackPower: reader.GetUInt16(34),
-                    FlagsExtra: reader.GetUInt32(35));
+                    FlagsExtra: reader.GetUInt32(35),
+                    LootId: reader.GetUInt32(36),
+                    MinGold: reader.GetUInt32(37),
+                    MaxGold: reader.GetUInt32(38));
 
                 _templates[template.Entry] = template;
             }

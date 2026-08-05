@@ -30,6 +30,30 @@ public sealed class Creature : Unit
     /// </remarks>
     public uint SpawnId { get; private init; }
 
+    /// <summary>
+    /// Row in <c>creature_loot_template</c>. <b>Zero means it drops nothing.</b>
+    /// </summary>
+    /// <remarks>
+    /// Usually the same as <see cref="Entry"/>, and often not — several entries share one list, so
+    /// assuming the entry is the loot id gives a large part of the game the wrong drops.
+    /// </remarks>
+    public uint LootId { get; private init; }
+
+    /// <summary>The copper range the corpse carries, before it is rolled.</summary>
+    public uint MinGold { get; private init; }
+
+    /// <inheritdoc cref="MinGold"/>
+    public uint MaxGold { get; private init; }
+
+    /// <summary>
+    /// What this corpse is holding, or null if it was never worth looting.
+    /// </summary>
+    /// <remarks>
+    /// Rolled once, when the creature dies, rather than at spawn: rolling at spawn would decide
+    /// 145,946 piles the moment a continent loads, and most of them would never be seen.
+    /// </remarks>
+    public Loot? Loot { get; set; }
+
     /// <summary>The <c>creature_template</c> entry.</summary>
     public uint Entry { get; private init; }
 
@@ -476,6 +500,9 @@ public sealed class Creature : Unit
             Rank = template.Rank,
             CreatureType = template.CreatureType,
             Expansion = template.Expansion,
+            LootId = template.LootId,
+            MinGold = template.MinGold,
+            MaxGold = template.MaxGold,
             CorpseDelayMs = CorpseDelayMsFor(template.Rank),
             RespawnDelayMs = spawn.RespawnDelaySeconds * 1000,
             MapId = spawn.MapId,

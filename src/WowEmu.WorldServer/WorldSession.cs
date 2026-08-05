@@ -337,6 +337,22 @@ public sealed class WorldSession(
                 HandleDestroyItem(payload);
                 return;
 
+            case Opcode.CMSG_LOOT:
+                HandleLoot(payload);
+                return;
+
+            case Opcode.CMSG_AUTOSTORE_LOOT_ITEM:
+                HandleAutostoreLootItem(payload);
+                return;
+
+            case Opcode.CMSG_LOOT_MONEY:
+                HandleLootMoney();
+                return;
+
+            case Opcode.CMSG_LOOT_RELEASE:
+                HandleLootRelease(payload);
+                return;
+
             default:
                 // Every movement opcode routes to one handler, exactly as upstream does — the
                 // opcode says what the client thinks it is doing, but the payload is identical.
@@ -1194,6 +1210,140 @@ public sealed class WorldSession(
             _knownItems.Remove(removed.Guid);
             _pendingUpdates.AddOutOfRange(removed.Guid);
         }
+    }
+
+    /// <summary>Opens a corpse. <c>CMSG_LOOT</c>.</summary>
+    /// <remarks>
+    /// A dead player cannot loot, which the client also enforces — but the client is not the
+    /// authority, and a corpse run past a fresh kill would otherwise empty it.
+    /// </remarks>
+    private void HandleLoot(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null || !_player.IsAlive)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid))
+        {
+            return;
+        }
+
+        _map.OpenLoot(_player, new ObjectGuid(rawGuid));
+    }
+
+    /// <summary>Takes one slot out of the open window. <c>CMSG_AUTOSTORE_LOOT_ITEM</c>.</summary>
+    /// <remarks>
+    /// One byte, and no guid: the client does not say what it is looting from, so the server has to
+    /// remember which window it opened.
+    /// </remarks>
+    private void HandleAutostoreLootItem(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt8(out byte slot))
+        {
+            return;
+        }
+
+        _map.TakeLoot(_player, slot);
+    }
+
+    /// <summary>Takes the money. <c>CMSG_LOOT_MONEY</c>, which carries no body at all.</summary>
+    private void HandleLootMoney()
+    {
+        if (_player is not null && _map is not null)
+        {
+            _map.TakeLootMoney(_player);
+        }
+    }
+
+    /// <summary>Closes the window. <c>CMSG_LOOT_RELEASE</c>.</summary>
+    private void HandleLootRelease(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        // The guid is read and not used: the client names what it is closing, and the server
+        // already knows. Reading it keeps the parse honest about the packet's shape.
+        PacketReader reader = new(payload.Span);
+        reader.TryReadUInt64(out _);
+
+        _map.ReleaseLoot(_player);
+    }
+
+    /// <summary>Tells this client what a corpse is holding.</summary>
+    public void SendLootWindow(ObjectGuid target, byte lootType, uint gold, IReadOnlyList<LootSlot> slots)
+    {
+        ArgumentNullException.ThrowIfNull(slots);
+
+        ServerPacket packet = new(Opcode.SMSG_LOOT_RESPONSE, 32 + (slots.Count * 24));
+        LootResponse.Write(packet.Body, target, lootType, gold, slots);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Tells this client the window could not be opened.</summary>
+    public void SendLootError(ObjectGuid target, LootError reason)
+    {
+        ServerPacket packet = new(Opcode.SMSG_LOOT_RESPONSE, 10);
+        LootResponse.WriteError(packet.Body, target, (byte)reason);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Tells this client one slot has been taken.</summary>
+    public void SendLootRemoved(byte slot)
+    {
+        ServerPacket packet = new(Opcode.SMSG_LOOT_REMOVED, 1);
+        LootResponse.WriteRemoved(packet.Body, slot);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>
+    /// Tells this client the money is gone from the window, and how much it got.
+    /// </summary>
+    /// <remarks>
+    /// Two packets. <c>SMSG_LOOT_CLEAR_MONEY</c> empties the window's coin line and carries no
+    /// body; the notify is the chat message. Sending only the notify leaves the coins drawn.
+    /// </remarks>
+    public void SendLootMoneyTaken(uint copper)
+    {
+        ServerPacket cleared = new(Opcode.SMSG_LOOT_CLEAR_MONEY, 0);
+        connection.Send(cleared);
+
+        ServerPacket notify = new(Opcode.SMSG_LOOT_MONEY_NOTIFY, 5);
+        LootResponse.WriteMoneyNotify(notify.Body, copper);
+
+        connection.Send(notify);
+    }
+
+    /// <summary>Tells this client the window is closed.</summary>
+    public void SendLootReleased(ObjectGuid target)
+    {
+        ServerPacket packet = new(Opcode.SMSG_LOOT_RELEASE_RESPONSE, 9);
+        LootResponse.WriteRelease(packet.Body, target);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Tells this client an item has arrived in its bags.</summary>
+    public void SendItemPushed(in ItemPushResult push)
+    {
+        ServerPacket packet = new(Opcode.SMSG_ITEM_PUSH_RESULT, 48);
+        ItemPushResultPacket.Write(packet.Body, push);
+
+        connection.Send(packet);
     }
 
     /// <summary>Runs one move and reports whatever went wrong.</summary>

@@ -38,6 +38,11 @@ builder.Services.AddSingleton<CreatureStatsStore>();
 builder.Services.AddSingleton<CreatureSpawnStore>();
 builder.Services.AddSingleton<GameObjectTemplateStore>();
 builder.Services.AddSingleton<ItemTemplateStore>();
+
+// Two stores of the same shape, kept apart because a reference row points into the second one and
+// a creature row must never resolve against itself.
+builder.Services.AddKeyedSingleton("creature_loot", (_, _) => new LootStore("creature_loot_template"));
+builder.Services.AddKeyedSingleton("reference_loot", (_, _) => new LootStore("reference_loot_template"));
 builder.Services.AddSingleton<GameObjectSpawnStore>();
 builder.Services.AddSingleton<PlayerXpStore>();
 builder.Services.AddSingleton<GraveyardStore>();
@@ -104,7 +109,11 @@ builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<PlayerStatsStore>(),
     services.GetRequiredService<GraveyardStore>(),
     services.GetRequiredService<DbcStores>().WorldSafeLocs,
-    services.GetRequiredService<SpellStores>()));
+    services.GetRequiredService<SpellStores>(),
+    services.GetRequiredService<ItemTemplateStore>(),
+    services.GetRequiredKeyedService<LootStore>("creature_loot"),
+    services.GetRequiredKeyedService<LootStore>("reference_loot"),
+    services.GetRequiredService<ItemGuidGenerator>().Next));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in

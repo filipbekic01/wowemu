@@ -366,6 +366,30 @@ public sealed class MapGridLoadingTests
         {
         }
 
+        public void SendLootWindow(ObjectGuid target, byte lootType, uint gold, IReadOnlyList<LootSlot> slots)
+        {
+        }
+
+        public void SendLootError(ObjectGuid target, LootError reason)
+        {
+        }
+
+        public void SendLootRemoved(byte slot)
+        {
+        }
+
+        public void SendLootMoneyTaken(uint copper)
+        {
+        }
+
+        public void SendLootReleased(ObjectGuid target)
+        {
+        }
+
+        public void SendItemPushed(in ItemPushResult push)
+        {
+        }
+
         public void DrainMapPackets(uint diff)
         {
         }

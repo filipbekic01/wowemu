@@ -186,6 +186,30 @@ public interface IPlayerConnection
         uint overflow,
         uint schoolMask);
 
+    /// <summary>
+    /// Tells this client what a corpse is holding, so it draws the loot window.
+    /// </summary>
+    /// <param name="slots">
+    /// Only the slots still there. A taken slot is left out and keeps its number, so the count and
+    /// the highest number disagree — that is correct.
+    /// </param>
+    void SendLootWindow(ObjectGuid target, byte lootType, uint gold, IReadOnlyList<LootSlot> slots);
+
+    /// <summary>Tells this client the window could not be opened, and why.</summary>
+    void SendLootError(ObjectGuid target, LootError reason);
+
+    /// <summary>Tells this client one slot has been taken, by anyone.</summary>
+    void SendLootRemoved(byte slot);
+
+    /// <summary>Tells this client the money is gone from the window.</summary>
+    void SendLootMoneyTaken(uint copper);
+
+    /// <summary>Tells this client the window is closed.</summary>
+    void SendLootReleased(ObjectGuid target);
+
+    /// <summary>Tells this client an item has arrived in its bags.</summary>
+    void SendItemPushed(in ItemPushResult push);
+
     /// <summary>Runs the packets this session queued for its map's worker.</summary>
     void DrainMapPackets(uint diff);
 }
@@ -275,6 +299,18 @@ public sealed class Map(
     /// <summary>Every spell, so an aura can resolve its own duration.</summary>
     public SpellStores? Spells { get => _spells; init => _spells = value; }
 
+    /// <summary>What creatures drop, and the shared lists those point at.</summary>
+    public LootStore? CreatureLoot { get => _creatureLoot; init => _creatureLoot = value; }
+
+    /// <inheritdoc cref="CreatureLoot"/>
+    public LootStore? LootReferences { get => _lootReferences; init => _lootReferences = value; }
+
+    /// <summary>Every item, so a loot roll can resolve stack sizes and display ids.</summary>
+    public ItemTemplateStore? Items { get => _items; init => _items = value; }
+
+    /// <summary>Hands out guids for items the map creates — looted ones, and quest rewards.</summary>
+    public Func<uint>? NextItemGuid { get => _itemGuids; init => _itemGuids = value; }
+
     /// <summary>Which graveyards a zone offers. Without it a ghost stays where it fell.</summary>
     public GraveyardStore? Graveyards { get => _graveyards; init => _graveyards = value; }
 
@@ -287,6 +323,10 @@ public sealed class Map(
     private readonly PlayerXpStore? _xpTable;
     private readonly PlayerStatsStore? _playerStats;
     private readonly SpellStores? _spells;
+    private readonly LootStore? _creatureLoot;
+    private readonly LootStore? _lootReferences;
+    private readonly ItemTemplateStore? _items;
+    private readonly Func<uint>? _itemGuids;
     private readonly GraveyardStore? _graveyards;
     private readonly DbcStore<WorldSafeLocsEntry>? _worldSafeLocs;
 
@@ -498,8 +538,10 @@ public sealed class Map(
         }
 
         // Experience before the threat list is cleared: whoever the creature hated is who gets paid,
-        // and Kill() forgets all of it.
+        // and Kill() forgets all of it. The loot's owner comes from the same list, so it is decided
+        // here too.
         AwardExperience(creature);
+        RollLoot(creature);
 
         creature.Kill();
 
@@ -1255,6 +1297,269 @@ public sealed class Map(
             self.Connection?.QueueSpellDamage(
                 target.Guid, caster.Guid, spell.Id, hit, targetHealthBeforeHit);
         }
+    }
+
+    /// <summary>How close a player has to be to interact with something. <c>INTERACTION_DISTANCE</c>.</summary>
+    public const float InteractionDistance = 5.5f;
+
+    /// <summary>
+    /// Opens a corpse's loot window for a player.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Player::SendLoot</c>, less the group permissions. Every refusal answers on the
+    /// same opcode rather than going quiet: the client has already drawn the window frame and
+    /// leaves it up, empty and unclosable, if nothing comes back.
+    /// </remarks>
+    public void OpenLoot(Player player, ObjectGuid target)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        if (Find(target) is not Creature creature)
+        {
+            player.Connection?.SendLootError(target, LootError.PlayerNotFound);
+            return;
+        }
+
+        // Alive means it is being pickpocketed, which needs a rogue and a stealth check.
+        if (creature.IsAlive || creature.Loot is null)
+        {
+            player.Connection?.SendLootError(target, LootError.NoLoot);
+            return;
+        }
+
+        if (!creature.Loot.Owner.IsEmpty && creature.Loot.Owner != player.Guid)
+        {
+            player.Connection?.SendLootError(target, LootError.DidNotKill);
+            return;
+        }
+
+        if (player.Position.GetExactDist2dSq(creature.Position)
+            > InteractionDistance * InteractionDistance)
+        {
+            player.Connection?.SendLootError(target, LootError.TooFar);
+            return;
+        }
+
+        player.LootTarget = target;
+
+        player.Connection?.SendLootWindow(
+            target, LootType.Corpse, creature.Loot.Gold, VisibleSlots(creature.Loot));
+    }
+
+    /// <summary>
+    /// Takes one slot out of the open loot window and puts it in the player's bags.
+    /// </summary>
+    /// <remarks>
+    /// <b>The item is only marked taken once it is actually stored.</b> Marking first and storing
+    /// second loses the item when the bags are full — the slot is gone from the window and nothing
+    /// is holding it.
+    /// </remarks>
+    public void TakeLoot(Player player, byte slot)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        if (_items is null || _itemGuids is null || FindOpenLoot(player) is not (Creature creature, Loot loot))
+        {
+            return;
+        }
+
+        if (loot.At(slot) is not { IsLooted: false } entry)
+        {
+            player.Connection?.SendLootError(player.LootTarget, LootError.NoLoot);
+            return;
+        }
+
+        if (!_items.TryGet(entry.ItemId, out ItemTemplate? template) || template is null)
+        {
+            return;
+        }
+
+        InventoryResult stored = player.Inventory.Store(
+            template, entry.Count, _itemGuids, out IReadOnlyList<Item> affected);
+
+        if (stored != InventoryResult.Ok)
+        {
+            player.Connection?.SendLootError(player.LootTarget, LootError.NoLoot);
+            return;
+        }
+
+        loot.Take(slot);
+        player.Connection?.SendLootRemoved(slot);
+
+        foreach (Item item in affected)
+        {
+            ItemPosition? where = player.Inventory.PositionOf(item);
+
+            player.Connection?.SendItemPushed(new ItemPushResult(
+                Player: player.Guid,
+                FromNpc: false,
+                Created: false,
+                ShowInChat: true,
+                Bag: where?.Bag ?? InventorySlots.Backpack,
+
+                // A stack that merged into an existing one reports -1 rather than a slot: the
+                // client flashes the named square, and flashing the wrong one is worse than none.
+                Slot: item.Count == entry.Count ? where?.Slot ?? 0 : ItemPushResultPacket.MergedIntoStack,
+                Entry: entry.ItemId,
+                Count: entry.Count,
+                TotalOfEntry: player.Inventory.CountOf(entry.ItemId)));
+        }
+
+        ClearIfEmpty(creature, loot);
+    }
+
+    /// <summary>Takes the money out of the open loot window.</summary>
+    public void TakeLootMoney(Player player)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        if (FindOpenLoot(player) is not (Creature creature, Loot loot) || loot.Gold == 0)
+        {
+            return;
+        }
+
+        uint copper = loot.Gold;
+        loot.Gold = 0;
+
+        player.Money += copper;
+        player.Connection?.SendLootMoneyTaken(copper);
+
+        ClearIfEmpty(creature, loot);
+    }
+
+    /// <summary>Closes the loot window.</summary>
+    /// <remarks>
+    /// The corpse stops sparkling if nothing is left. It is not despawned here — the corpse delay
+    /// owns that, and a looted corpse still lies there for the rest of it.
+    /// </remarks>
+    public void ReleaseLoot(Player player)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        ObjectGuid target = player.LootTarget;
+
+        player.LootTarget = ObjectGuid.Empty;
+        player.Connection?.SendLootReleased(target);
+
+        if (Find(target) is Creature creature && creature.Loot is { } loot)
+        {
+            ClearIfEmpty(creature, loot);
+        }
+    }
+
+    /// <summary>The corpse a player has open, if it is still there and still theirs.</summary>
+    private (Creature Creature, Loot Loot)? FindOpenLoot(Player player)
+    {
+        if (player.LootTarget.IsEmpty || Find(player.LootTarget) is not Creature creature)
+        {
+            return null;
+        }
+
+        if (creature.Loot is not { } loot || (!loot.Owner.IsEmpty && loot.Owner != player.Guid))
+        {
+            return null;
+        }
+
+        return (creature, loot);
+    }
+
+    /// <summary>Stops a corpse sparkling once there is nothing left in it.</summary>
+    private static void ClearIfEmpty(Creature creature, Loot loot)
+    {
+        if (!loot.IsEmpty)
+        {
+            return;
+        }
+
+        creature.Loot = null;
+        creature.DynamicFlags &= ~UnitDynamicFlags.Lootable;
+    }
+
+    /// <summary>The slots still worth drawing, in their original numbering.</summary>
+    private static List<LootSlot> VisibleSlots(Loot loot)
+    {
+        List<LootSlot> slots = [];
+
+        foreach (LootItem item in loot.Items)
+        {
+            if (item.IsLooted)
+            {
+                continue;
+            }
+
+            slots.Add(new LootSlot(
+                Slot: item.Index,
+                ItemId: item.ItemId,
+                Count: item.Count,
+                DisplayId: item.DisplayId,
+                SlotType: LootSlotType.AllowLoot));
+        }
+
+        return slots;
+    }
+
+    /// <summary>
+    /// Decides what a corpse is holding, and who may open it.
+    /// </summary>
+    /// <remarks>
+    /// Called from <see cref="Kill(Creature)"/>, before the threat list is cleared — the owner is
+    /// whoever was at the top of it, and after <c>Kill()</c> there is nobody to ask.
+    /// <para>
+    /// <b>An empty pile is not marked lootable.</b> The dynamic flag is what makes the corpse
+    /// sparkle, and a sparkling corpse that opens an empty window is worse than one that does not
+    /// sparkle at all.
+    /// </para>
+    /// </remarks>
+    private void RollLoot(Creature creature)
+    {
+        if (_creatureLoot is null || _lootReferences is null || _items is null)
+        {
+            return;
+        }
+
+        // Zero is not "the same as the entry": several entries share one list, and a template with
+        // no loot id drops nothing at all.
+        uint lootId = creature.LootId;
+
+        Loot loot = new()
+        {
+            Owner = TopOfThreatList(creature),
+            Gold = LootRoll.RollMoney(creature.MinGold, creature.MaxGold, GameRandom.Urand),
+        };
+
+        if (lootId != 0 && _creatureLoot.TryGet(lootId, out LootTemplate? template) && template is not null)
+        {
+            LootRoll.Fill(
+                loot,
+                template,
+                _lootReferences,
+                _items,
+                () => GameRandom.Urand(0, 9999) / 100f,
+                count => (int)GameRandom.Urand(0, (uint)count - 1),
+                GameRandom.Urand);
+        }
+
+        if (loot.IsEmpty)
+        {
+            return;
+        }
+
+        creature.Loot = loot;
+        creature.DynamicFlags |= UnitDynamicFlags.Lootable;
+    }
+
+    /// <summary>Whoever hated the creature most, which is who its corpse belongs to.</summary>
+    private static ObjectGuid TopOfThreatList(Creature creature)
+    {
+        foreach (ThreatEntry entry in creature.Threat.Sorted)
+        {
+            if (entry.Target is Player player)
+            {
+                return player.Guid;
+            }
+        }
+
+        return ObjectGuid.Empty;
     }
 
     /// <summary>

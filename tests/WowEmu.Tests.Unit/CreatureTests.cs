@@ -522,7 +522,10 @@ public sealed class CreatureTests
         RangeAttackTime: 2000,
         AttackPower: 14,
         RangedAttackPower: 0,
-        FlagsExtra: 0);
+        FlagsExtra: 0,
+        LootId: 0,
+        MinGold: 0,
+        MaxGold: 0);
 
     private static CreatureModelInfo Model() =>
         new(SampleDisplayId, SampleBoundingRadius, SampleCombatReach, SampleGender, 0);

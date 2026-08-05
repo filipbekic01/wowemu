@@ -631,9 +631,19 @@ internal static class MapCombatFixture
         float distance = 2f,
         PlayerXpStore? experience = null,
         PlayerStatsStore? playerStats = null,
-        SpellStores? spells = null)
+        SpellStores? spells = null,
+        ItemTemplateStore? items = null,
+        LootStore? creatureLoot = null,
+        LootStore? lootReferences = null,
+        uint lootId = 0,
+        uint minGold = 0,
+        uint maxGold = 0)
     {
-        Creature victim = CreatureFixture.Build(position: new Position(distance, 0f, 0f, 0f));
+        Creature victim = CreatureFixture.Build(
+            position: new Position(distance, 0f, 0f, 0f),
+            lootId: lootId,
+            minGold: minGold,
+            maxGold: maxGold);
 
         // Creatures reach a map through the grid loader, not through Add — the same path the real
         // server uses, so the victim ends up filed in a cell and findable by a range query.
@@ -642,6 +652,10 @@ internal static class MapCombatFixture
             ExperienceTable = experience,
             PlayerStats = playerStats,
             Spells = spells,
+            Items = items,
+            CreatureLoot = creatureLoot,
+            LootReferences = lootReferences,
+            NextItemGuid = InventoryFixture.NextGuid,
         };
 
         CharacterSummary summary = new(1, "Fighter", 1, 1, 0, 0, 0, 0, 0, 0, 1, 12, 0, 0f, 0f, 0f, 0, 0, 0);
@@ -803,6 +817,38 @@ internal static class MapCombatFixture
             uint overflow,
             uint schoolMask) =>
             AuraTicks.Add((target, spellId, auraType, amount, overflow));
+
+        /// <summary>Loot windows this client was shown.</summary>
+        public List<(ObjectGuid Target, uint Gold, IReadOnlyList<LootSlot> Slots)> LootWindows { get; } = [];
+
+        /// <summary>Loot refusals this client was told about.</summary>
+        public List<LootError> LootErrors { get; } = [];
+
+        /// <summary>Slots this client was told are gone.</summary>
+        public List<byte> LootRemoved { get; } = [];
+
+        /// <summary>Money this client picked up.</summary>
+        public List<uint> LootMoney { get; } = [];
+
+        /// <summary>Windows this client was told are closed.</summary>
+        public List<ObjectGuid> LootReleases { get; } = [];
+
+        /// <summary>Items this client was told arrived in its bags.</summary>
+        public List<ItemPushResult> ItemsPushed { get; } = [];
+
+        public void SendLootWindow(
+            ObjectGuid target, byte lootType, uint gold, IReadOnlyList<LootSlot> slots) =>
+            LootWindows.Add((target, gold, slots));
+
+        public void SendLootError(ObjectGuid target, LootError reason) => LootErrors.Add(reason);
+
+        public void SendLootRemoved(byte slot) => LootRemoved.Add(slot);
+
+        public void SendLootMoneyTaken(uint copper) => LootMoney.Add(copper);
+
+        public void SendLootReleased(ObjectGuid target) => LootReleases.Add(target);
+
+        public void SendItemPushed(in ItemPushResult push) => ItemsPushed.Add(push);
 
         public void DrainMapPackets(uint diff)
         {

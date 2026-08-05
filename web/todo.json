@@ -1306,7 +1306,7 @@
       "title": "Progression systems",
       "state": "progress",
       "milestone": "M6",
-      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands. Death, items and the bags that hold them are done; loot is next.",
+      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands. Death, items, bags and loot are done; quests are next.",
       "groups": [
         {
           "title": "Death and release",
@@ -1552,12 +1552,107 @@
           ]
         },
         {
-          "title": "Still to come",
+          "title": "Loot",
           "items": [
             {
-              "done": false,
-              "text": "Loot (*_loot_template)"
+              "done": true,
+              "text": "creature_loot_template (336,755 rows) and reference_loot_template (14,188) vendored"
             },
+            {
+              "done": true,
+              "text": "MINCOUNTORREF IS A COUNT WHEN POSITIVE AND A REFERENCE ID WHEN NEGATIVE",
+              "note": "Read as a count regardless, every shared drop list becomes a request for a negative number of items — which, unsigned, is four billion."
+            },
+            {
+              "done": true,
+              "text": "A NEGATIVE CHANCE IS A QUEST DROP, and the chance is its absolute value",
+              "note": "There is no separate flag. Reading the sign as part of the chance makes every quest item in the game impossible."
+            },
+            {
+              "done": true,
+              "text": "lootid is NOT the creature entry",
+              "note": "Usually the same, often not — several entries share one list, and zero means it drops nothing at all."
+            },
+            {
+              "done": true,
+              "text": "A GROUP MEMBER WITH A CHANCE OF ZERO IS EQUAL-CHANCED, NOT IMPOSSIBLE",
+              "note": "Most groups in the table are entirely zero-chance members. Treating zero as 0% means those groups never drop anything."
+            },
+            {
+              "done": true,
+              "text": "A group's explicit chances share ONE roll, subtracting as it walks",
+              "note": "Rolling each member separately lets one group drop two items, which is the one thing a group exists to prevent."
+            },
+            {
+              "done": true,
+              "text": "maxcount on a REFERENCE row is how many rolls, not a stack size"
+            },
+            {
+              "done": true,
+              "text": "A stack larger than the item allows is split across slots",
+              "note": "A loot slot holds one stack. Handing over 30 linen in one slot makes an illegal stack the moment it is picked up."
+            },
+            {
+              "done": true,
+              "text": "The money roll's third branch: a range wider than 32,700 is rolled in units of 256",
+              "note": "Nothing in a starting zone reaches it, which is why it is easy to drop and never notice. The answer is always a multiple of 256."
+            },
+            {
+              "done": true,
+              "text": "UNIT_DYNFLAG_LOOTABLE is what makes a corpse sparkle — without it the client never sends CMSG_LOOT",
+              "note": "An empty pile is deliberately NOT flagged: a sparkling corpse that opens an empty window is worse than one that does not sparkle."
+            },
+            {
+              "done": true,
+              "text": "SMSG_LOOT_RESPONSE — the count is of the SLOTS WRITTEN, not the pile's size",
+              "note": "A taken slot is left out and keeps its number, so the count and the highest number disagree. The client sends the number back, so renumbering makes the next click land on the wrong item."
+            },
+            {
+              "done": true,
+              "text": "A refusal is the same opcode with a loot type of zero",
+              "note": "The client has already drawn the window frame; silence leaves it up, empty and unclosable."
+            },
+            {
+              "done": true,
+              "text": "CMSG_AUTOSTORE_LOOT_ITEM carries a slot and NO GUID — the server remembers which window is open"
+            },
+            {
+              "done": true,
+              "text": "THE SLOT IS MARKED TAKEN ONLY AFTER THE ITEM IS STORED",
+              "note": "Marking first loses the item when the bags are full: gone from the window and nothing holding it."
+            },
+            {
+              "done": true,
+              "text": "Money goes in the purse and the window is cleared with two packets, not one",
+              "note": "SMSG_LOOT_CLEAR_MONEY empties the coin line; the notify is only the chat message. Sending the notify alone leaves the coins drawn."
+            },
+            {
+              "done": true,
+              "text": "Rolled every loot template under 3,000 and every reference resolves",
+              "note": "Verified live through the M5 gate: a Diseased Young Wolf dropped a Diseased Wolf Pelt, which went into the bags."
+            },
+            {
+              "done": false,
+              "text": "Groups, round-robin, need/greed rolls, master looter and free-for-all"
+            },
+            {
+              "done": false,
+              "text": "Quest drops are flagged and shown to everyone",
+              "note": "Nobody has any quests, so filtering them would hide every one of them."
+            },
+            {
+              "done": false,
+              "text": "Skinning, pickpocketing, fishing, disenchanting and gameobject loot"
+            },
+            {
+              "done": false,
+              "text": "Item and gameobject loot templates, and the conditions system that gates rows"
+            }
+          ]
+        },
+        {
+          "title": "Still to come",
+          "items": [
             {
               "done": false,
               "text": "Quests — accept, objective, complete, reward"
@@ -1924,13 +2019,24 @@
         "SMSG_ITEM_PUSH_RESULT is written and tested but nothing sends it yet — the \"you received\" toast arrives with loot.",
         "Values blocks go only to the owner. Other players see neither equipment nor health change, because the dirty mask does not know which fields are private."
       ]
+    },
+    {
+      "category": "Loot",
+      "items": [
+        "No groups, so no round-robin, no need/greed rolls, no master looter and no free-for-all. Whoever is top of the threat list owns the corpse outright.",
+        "QUEST DROPS ARE ROLLED AND SHOWN TO EVERYONE. The flag is read and nothing filters on it, because nobody has any quests to filter against.",
+        "Only creature corpses. Skinning, pickpocketing, fishing, disenchanting, gameobject and item loot all exist in the client and none of them are answered.",
+        "The conditions system is not read, so a row gated on reputation or a quest state drops unconditionally.",
+        "Drop rates are taken at face value — upstream scales them per item quality from its configuration, and all those rates are 1.0 by default.",
+        "A looted corpse is not despawned early. The corpse delay owns that, so an emptied corpse lies there for the rest of it."
+      ]
     }
   ],
   "remember": [
     "Session handlers that await resume on the tick, but nothing ENFORCES it: a future handler that writes ConfigureAwait(false) would silently resume on the thread pool and touch a Player from outside its loop. TickScheduler.AssertOwnerThread exists for exactly this and is not yet wired in.",
     "THE TWO REFERENCE TREES ARE AT DIFFERENT POINTS IN AZEROTHCORE'S HISTORY, and creature spawning is the first place it bites. The C++ reads creature models from a creature_template_model table; the vendored database still has modelid1..4. Ours follows the DATA. Read the C++ for behaviour, but check the dump before trusting a column name.",
     "Both reference trees (azerothcore-wotlk, database-wotlk) have no git root — updating means re-cloning.",
-    "sql/world/ is now ~42 MB: item_template (14 MB), creature (12 MB), creature_template (7.6 MB), gameobject (7 MB). The vendoring rule says a fresh clone must be able to start, and that is the price.",
+    "sql/world/ is now ~51 MB: item_template (14 MB), creature (12 MB), creature_loot_template (9 MB), creature_template (7.6 MB), gameobject (7 MB). The vendoring rule says a fresh clone must be able to start, and that is the price.",
     "data/ is 3 GB of extracted client data and is not committed; a fresh clone needs the extractors run again.",
     "sql/world/ redistributes AGPL-3.0 content from AzerothCore's database. Deliberate — but it is a licence obligation worth being aware of."
   ],

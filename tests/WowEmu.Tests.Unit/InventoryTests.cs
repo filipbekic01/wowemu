@@ -12,12 +12,22 @@ namespace WowEmu.Tests.Unit;
 internal static class InventoryFixture
 {
     private static uint _nextItemGuid;
+    private static int _nextCharacterId;
 
-    /// <summary>A level-1 human warrior, alive, with nothing.</summary>
+    /// <summary>
+    /// A level-1 human warrior, alive, with nothing.
+    /// </summary>
+    /// <remarks>
+    /// Every one gets its own character id, and that is not cosmetic: two fixture players sharing
+    /// a guid are the same player to anything that compares them — loot ownership, threat, a
+    /// visible set. A test about a <i>second</i> player would silently be about the first.
+    /// </remarks>
     public static Player Player(byte level = 1, byte race = 1, byte characterClass = 1)
     {
+        uint id = (uint)Interlocked.Increment(ref _nextCharacterId);
+
         CharacterSummary summary = new(
-            1, "Carrier", race, characterClass, 0, 0, 0, 0, 0, 0, level, 12, 0, 0f, 0f, 0f, 0, 0, 0);
+            id, "Carrier", race, characterClass, 0, 0, 0, 0, 0, 0, level, 12, 0, 0f, 0f, 0f, 0, 0, 0);
 
         ChrRacesEntry races = new(race, 0, 1, 49, 50, 7, 0, 0, "Human", 0);
         ChrClassesEntry classes = new(characterClass, 1, "Warrior", 4, 0);

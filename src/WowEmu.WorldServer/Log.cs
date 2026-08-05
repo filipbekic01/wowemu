@@ -158,6 +158,11 @@ internal static partial class Log
         Message = "'{Name}' started attacking '{Target}' — {Address}")]
     public static partial void AttackStarted(ILogger logger, string name, string target, string address);
 
+    [LoggerMessage(EventId = 2331, Level = LogLevel.Information,
+        Message = "Loaded {Rows} creature loot rows across {Ids} ids, {RefRows} reference rows across {RefIds}")]
+    public static partial void LootTemplatesLoaded(
+        ILogger logger, int rows, int ids, int refRows, int refIds);
+
     [LoggerMessage(EventId = 2330, Level = LogLevel.Information,
         Message = "Item guids continue from {Highest}")]
     public static partial void ItemGuidsSeeded(ILogger logger, uint highest);

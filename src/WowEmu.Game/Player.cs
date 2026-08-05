@@ -34,6 +34,30 @@ public sealed class Player : Unit
     public Inventory Inventory { get; }
 
     /// <summary>
+    /// The corpse whose loot window is open, or empty.
+    /// </summary>
+    /// <remarks>
+    /// <c>PLAYER_LOOT_TARGET_GUID</c> upstream, and a plain field here — the client never reads it,
+    /// and it exists so the server can answer "take slot 3" without the client naming what it is
+    /// taking from. The client does not send that, which is why it has to be remembered.
+    /// </remarks>
+    public ObjectGuid LootTarget { get; set; }
+
+    /// <summary>
+    /// How much copper the character is carrying.
+    /// </summary>
+    /// <remarks>
+    /// One field, in copper — silver and gold are only how the client draws it. The client's own
+    /// ceiling is 214,748 gold, and upstream refuses anything that would exceed it rather than
+    /// wrapping; nothing here can generate that much yet.
+    /// </remarks>
+    public uint Money
+    {
+        get => Fields.GetUInt32(UpdateFields.PLAYER_FIELD_COINAGE);
+        set => Fields.SetUInt32(UpdateFields.PLAYER_FIELD_COINAGE, value);
+    }
+
+    /// <summary>
     /// The five attributes before anything is worn.
     /// </summary>
     /// <remarks>

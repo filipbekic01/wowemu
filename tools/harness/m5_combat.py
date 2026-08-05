@@ -43,6 +43,16 @@ SMSG_ATTACKSWING_NOTINRANGE = 0x145
 SMSG_ATTACKSWING_BADFACING = 0x146
 SMSG_ATTACKERSTATEUPDATE = 0x14A
 SMSG_LOG_XPGAIN = 0x1D0
+CMSG_LOOT = 0x15D
+CMSG_LOOT_MONEY = 0x15E
+CMSG_LOOT_RELEASE = 0x15F
+CMSG_AUTOSTORE_LOOT_ITEM = 0x108
+SMSG_LOOT_RESPONSE = 0x160
+SMSG_LOOT_RELEASE_RESPONSE = 0x161
+SMSG_LOOT_REMOVED = 0x162
+SMSG_LOOT_MONEY_NOTIFY = 0x163
+SMSG_LOOT_CLEAR_MONEY = 0x165
+SMSG_ITEM_PUSH_RESULT = 0x166
 SMSG_LEVELUP_INFO = 0x1D4
 SMSG_DESTROY_OBJECT = 0x0AA
 
@@ -349,6 +359,88 @@ def cleanup(client, guid):
         print("  note: cleanup did not complete — the next run may start beside a wolf")
 
 
+def await_opcode(client, wanted, name):
+    """Reads until `wanted`, stepping over anything else.
+
+    Looting happens straight after a fight, so the stream is still carrying combat-log tails,
+    attack stops and creature movement. `WorldClient.expect` only steps over the two update
+    opcodes; here anything that is not what was asked for is noise.
+    """
+    for _ in range(256):
+        opcode, payload = client.recv()
+
+        if opcode == wanted:
+            return payload
+
+    fail(f"expected {name} (0x{wanted:03X}) and it never arrived")
+
+
+def loot_the_corpse(client, target):
+    """Opens the corpse, takes everything, and closes the window.
+
+    Everything here is optional in the sense that a wolf can legitimately drop nothing -- so an
+    empty window is a pass. What is not optional is that the window opens: a corpse that refuses to
+    open means either the lootable flag never went on or the ownership check is wrong.
+    """
+    client.send(CMSG_LOOT, struct.pack("<Q", target))
+
+    payload = await_opcode(client, SMSG_LOOT_RESPONSE, "SMSG_LOOT_RESPONSE")
+
+    guid, loot_type = struct.unpack("<QB", payload[:9])
+
+    if loot_type == 0:
+        # A loot type of zero is a refusal, and the byte after it says why.
+        fail(f"the corpse refused to open: error {payload[9]}")
+
+    if guid != target:
+        fail(f"the window is for 0x{guid:016X}, not the wolf")
+
+    gold, count = struct.unpack("<IB", payload[9:14])
+    cursor = 14
+    slots = []
+
+    # Each slot is slot, item, count, display, suffix, property, slot type -- 22 bytes.
+    for _ in range(count):
+        slot, item_id, item_count, _display = struct.unpack("<BIII", payload[cursor:cursor + 13])
+        cursor += 22
+        slots.append((slot, item_id, item_count))
+
+    print(f"  loot window: {gold} copper, {count} item slot(s)")
+
+    if gold > 0:
+        client.send(CMSG_LOOT_MONEY)
+        await_opcode(client, SMSG_LOOT_CLEAR_MONEY, "SMSG_LOOT_CLEAR_MONEY")
+
+        notify = await_opcode(client, SMSG_LOOT_MONEY_NOTIFY, "SMSG_LOOT_MONEY_NOTIFY")
+        taken = struct.unpack("<I", notify[:4])[0]
+
+        if taken != gold:
+            fail(f"the window showed {gold} copper and the notify said {taken}")
+
+        print(f"  took {taken} copper")
+
+    for slot, item_id, item_count in slots:
+        client.send(CMSG_AUTOSTORE_LOOT_ITEM, struct.pack("<B", slot))
+
+        removed = await_opcode(client, SMSG_LOOT_REMOVED, "SMSG_LOOT_REMOVED")
+
+        if removed[0] != slot:
+            fail(f"asked for slot {slot} and slot {removed[0]} was removed")
+
+        push = await_opcode(client, SMSG_ITEM_PUSH_RESULT, "SMSG_ITEM_PUSH_RESULT")
+        pushed_entry = struct.unpack("<I", push[25:29])[0]
+
+        if pushed_entry != item_id:
+            fail(f"looted item {item_id} and the push said {pushed_entry}")
+
+        print(f"  took slot {slot}: {item_count} x item {item_id}")
+
+    client.send(CMSG_LOOT_RELEASE, struct.pack("<Q", target))
+    await_opcode(client, SMSG_LOOT_RELEASE_RESPONSE, "SMSG_LOOT_RELEASE_RESPONSE")
+
+    print("  loot window closed")
+
+
 def main():
     parser = argparse.ArgumentParser(description="M5 gate: kill something and gain experience.")
     parser.add_argument("host", nargs="?", default="127.0.0.1")
@@ -510,6 +602,8 @@ def main():
             print(f"  levelled up {levels} time(s)")
 
         client.send(CMSG_ATTACKSTOP)
+
+        loot_the_corpse(client, target)
 
     except (ConnectionRefusedError, socket.timeout, TimeoutError, OSError) as error:
         fail(f"{error} — are both servers running?")

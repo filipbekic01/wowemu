@@ -182,6 +182,19 @@ internal static class WorldStartup
                 "with: tools/db/import-world.sh");
         }
 
+        LootStore creatureLoot = services.GetRequiredKeyedService<LootStore>("creature_loot");
+        LootStore lootReferences = services.GetRequiredKeyedService<LootStore>("reference_loot");
+
+        await creatureLoot.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await lootReferences.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        if (creatureLoot.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "creature_loot_template is empty — nothing in the world would drop anything. " +
+                "Import it with: tools/db/import-world.sh");
+        }
+
         // Measured into a local rather than inline: the analyzer objects to work inside a log call,
         // and the elapsed time has to be taken at the same point whether or not anyone is listening.
         double elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -196,5 +209,7 @@ internal static class WorldStartup
 
         Log.GameObjectContentLoaded(logger, objectTemplates.Count, objectSpawns.Count, objectSpawns.MapCount);
         Log.ItemTemplatesLoaded(logger, items.Count);
+        Log.LootTemplatesLoaded(
+            logger, creatureLoot.RowCount, creatureLoot.Count, lootReferences.RowCount, lootReferences.Count);
     }
 }

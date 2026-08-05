@@ -37,7 +37,11 @@ public sealed class MapManager(
     PlayerStatsStore? playerStats = null,
     GraveyardStore? graveyards = null,
     DbcStore<WorldSafeLocsEntry>? worldSafeLocs = null,
-    SpellStores? spells = null) : IDisposable
+    SpellStores? spells = null,
+    ItemTemplateStore? items = null,
+    LootStore? creatureLoot = null,
+    LootStore? lootReferences = null,
+    Func<uint>? nextItemGuid = null) : IDisposable
 {
     /// <summary>
     /// The four phases. Three update a category of map; the fourth is a pause.
@@ -74,6 +78,10 @@ public sealed class MapManager(
                 Graveyards = graveyards,
                 WorldSafeLocs = worldSafeLocs,
                 Spells = spells,
+                Items = items,
+                CreatureLoot = creatureLoot,
+                LootReferences = lootReferences,
+                NextItemGuid = nextItemGuid,
             };
             _maps[mapId] = map;
         }
