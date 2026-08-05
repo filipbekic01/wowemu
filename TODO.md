@@ -2,10 +2,11 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** Creatures wander. 77,138 spawns have a wander radius, and the ones near a player walk
-around it on the map tick with `SMSG_MONSTER_MOVE` telling the client to interpolate. That is the
-last big piece M4 named; what is left of it is swimming (blocked on liquid data) and returning home
-after combat (blocked on there being combat).
+**Now:** Phase 8's first task is answered. The Detour spike says **fork DotRecast and change three
+constants** — our tiles use 64-bit polyrefs with a 12/21/31 split, DotRecast has the right reference
+width but stock's 16/28/20, and its encoder is static so passing our params does not reconfigure it.
+See PLAN.md §3.4.1.1. Next: the fork plus a reader for AzerothCore's raw tile layout, and then a real
+path compared against the C++ server.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -223,10 +224,25 @@ after combat (blocked on there being combat).
 - [ ] Fall damage
 - [ ] Transport movement (both directions refuse rather than guess)
 
-## Phase 8+ ⬜
+## Phase 8 — Collision + pathfinding 🔵
 
-See [PLAN.md](PLAN.md) §6. Collision and pathfinding (vmaps/mmaps are already extracted), combat,
-spells, progression, AI.
+- [x] **Detour compatibility spike** (PLAN §3.4.1, and the phase's mandated first task).
+      Answer: outcome 2 — fork DotRecast, change three constants. Recorded in PLAN.md §3.4.1.1.
+- [x] `.mmap` and `.mmtile` headers parsed and verified against 40 real tiles
+- [ ] Fork DotRecast; change `DtDetour.DT_SALT_BITS/TILE_BITS/POLY_BITS` to 12/21/31
+- [ ] A `DtMeshData` reader for AzerothCore's raw layout — DotRecast reads recast4j's own
+      serialisation, not the C++ struct blob, so this is needed whichever Detour we use
+- [ ] Load a real tile, run a path, compare against the C++ server's `.mmap path` — the phase's
+      actual exit criterion, and still unproven
+- [ ] VMAPs: `.vmtree`/`.vmtile`, BIH traversal, `IsInLineOfSight`
+- [ ] `PathGenerator`, the (y, z, x) Detour coordinate swizzle, `findSmoothPath`
+- [ ] Custom cost function: `dist * (1 + slopeDegrees/100) * areaCost`, and the
+      `DT_SLOPE_TOO_STEEP` status bit
+- [ ] Height and liquid checks in movement validation, which have been waiting on vmaps since Phase 7
+
+## Phase 9+ ⬜
+
+See [PLAN.md](PLAN.md) §6. Combat, spells, progression, AI.
 
 ---
 

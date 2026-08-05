@@ -170,6 +170,34 @@ run a path, compare against the C++ server's `.mmap path` output. Three outcomes
    per `Map` behind a `SafeHandle` (**it is not thread-safe**), `[SuppressGCTransition]` on the hot
    query calls.
 
+#### 3.4.1.1 Spike result: **outcome 2** — fork DotRecast, change three constants
+
+Measured against our own extracted data (`NavMeshFile`, `NavMeshSpikeTests`), not against the C++
+headers — the two reference checkouts are at different points in AzerothCore's history, so "the C++
+defines `DT_POLYREF64`" and "our tiles were built with it" are different claims.
+
+| Question | Answer | How it was established |
+|---|---|---|
+| Do our tiles use 64-bit polyrefs? | **Yes** | `DT_POLYREF64` takes `sizeof(dtLink)` 12 → 16. Tile `0002239.mmtile` is 107,380 bytes; the 64-bit layout predicts exactly that, the 32-bit layout predicts 96,600. True for all 40 tiles sampled. |
+| What is the bit split? | **12/21/31** | `mmaps_generator` writes `maxPolys = 1 << DT_POLY_BITS`. `000.mmap` holds `0x80000000` — `1 << 31`, which overflows the signed `int` Detour declares, so the field legitimately reads negative. Stock would hold 1,048,576. |
+| Is DotRecast's reference width compatible? | **Yes** | C# has no `#ifdef`; `DtNavMesh.GetPolyRefBase` returns `Int64` unconditionally. |
+| Is DotRecast's split compatible? | **No** | `DtDetour.DT_SALT_BITS/TILE_BITS/POLY_BITS` are stock 16/28/20, and `DtDetour.EncodePolyId` is **static** — it reads the constants, not the mesh params, so passing our `maxPolys` does not reconfigure it. |
+
+The failure mode is exactly what risk #2 predicts. A reference meaning *(salt 1, tile 5, poly 3)* in
+our data decodes under stock DotRecast as *(salt 16, tile 10240, poly 3)* — a valid-looking triple
+pointing at the wrong tile, with no error raised anywhere.
+
+**Consequences for Phase 8:**
+
+- Fork DotRecast (zlib) and change the three constants in `DtDetour`. That is the whole fix for the
+  reference layout.
+- **Separately**, DotRecast reads recast4j's own serialisation format, not AzerothCore's raw
+  `dtMeshHeader` + struct blob. A `DtMeshData` reader for the C++ layout is needed whichever Detour
+  we use. `NavMeshFile` already parses the header half of it.
+- Still unproven: an actual path. The spike settled *which* Detour to get; comparing a real
+  `.mmap path` against the C++ server needs the fork and the reader first, and remains Phase 8's
+  exit criterion.
+
 Either way `mmaps_generator` stays a native binary — we are not regenerating navmeshes.
 
 ### 3.5 Prior art exists and should be read
