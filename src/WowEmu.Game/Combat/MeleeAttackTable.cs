@@ -46,7 +46,12 @@ public readonly record struct MeleeAttack(
     bool VictimIsPlayer,
     bool AttackerIsPlayerControlled,
     bool AttackerIsBehindVictim,
-    WeaponAttackType AttackType);
+    WeaponAttackType AttackType,
+    bool VictimCanDodge = true,
+    bool VictimCanParry = true,
+    bool VictimCanBlock = true,
+    bool AttackerCanCrush = true,
+    bool AttackerCanCrit = true);
 
 /// <summary>
 /// Which of the eight things happens when a melee swing lands.
@@ -67,6 +72,19 @@ public readonly record struct MeleeAttack(
 /// The structure is reproduced rather than tidied. Upstream mutates <c>tmp</c> inside the branch
 /// conditions — <c>(tmp -= skillBonus) &gt; 0</c> — which is harmless only because each block
 /// reassigns <c>tmp</c> first, and rewriting it into something cleaner is how that stops being true.
+/// </para>
+/// <para>
+/// <b>What this deliberately leaves out.</b> Upstream returns <see cref="MeleeHitOutcome.Evade"/>
+/// before rolling anything when the victim is a creature that is evading; the enum member exists,
+/// but the check needs creature evade state and belongs to the caller once there is any. The chance
+/// figures themselves — the aura modifiers, expertise, and the "cannot dodge while casting or
+/// stunned" rules that upstream applies inline — are the caller's to compute too, which is what
+/// makes this a pure function of its inputs.
+/// </para>
+/// <para>
+/// Upstream also excludes a <i>pet</i> victim from glancing blows alongside a player one. Pets do
+/// not exist here yet, so only the player half is modelled; the condition needs widening when they
+/// arrive.
 /// </para>
 /// </remarks>
 public static class MeleeAttackTable
@@ -111,7 +129,7 @@ public static class MeleeAttackTable
 
         // Only a *player* victim loses its dodge to an attack from behind. A creature dodges from
         // any direction, which is not an oversight — it is what makes tanking a boss survivable.
-        if (!(attack.VictimIsPlayer && attack.AttackerIsBehindVictim))
+        if (!(attack.VictimIsPlayer && attack.AttackerIsBehindVictim) && attack.VictimCanDodge)
         {
             tmp = attack.DodgeChance;
 
@@ -124,18 +142,24 @@ public static class MeleeAttackTable
         // Parry and block, unlike dodge, are lost by *anyone* attacked from behind.
         if (!attack.AttackerIsBehindVictim)
         {
-            tmp = attack.ParryChance;
-
-            if (tmp > 0 && (tmp -= skillBonus) > 0 && rolled < (sum += tmp))
+            if (attack.VictimCanParry)
             {
-                return MeleeHitOutcome.Parry;
+                tmp = attack.ParryChance;
+
+                if (tmp > 0 && (tmp -= skillBonus) > 0 && rolled < (sum += tmp))
+                {
+                    return MeleeHitOutcome.Parry;
+                }
             }
 
-            tmp = attack.BlockChance;
-
-            if (tmp > 0 && (tmp -= skillBonus) > 0 && rolled < (sum += tmp))
+            if (attack.VictimCanBlock)
             {
-                return MeleeHitOutcome.Block;
+                tmp = attack.BlockChance;
+
+                if (tmp > 0 && (tmp -= skillBonus) > 0 && rolled < (sum += tmp))
+                {
+                    return MeleeHitOutcome.Block;
+                }
             }
         }
 
@@ -159,7 +183,8 @@ public static class MeleeAttackTable
 
         // Crushing: only something not driven by a player, and only four levels up or more.
         if (attack.AttackerLevel >= attack.VictimLevel + CrushingLevelGap
-            && !attack.AttackerIsPlayerControlled)
+            && !attack.AttackerIsPlayerControlled
+            && attack.AttackerCanCrush)
         {
             // Defence above the victim's own cap has no effect.
             tmp = Math.Min(attack.VictimDefenseSkill, attack.VictimMaxSkill);
@@ -181,7 +206,13 @@ public static class MeleeAttackTable
 
         if (tmp > 0 && rolled < (sum += tmp))
         {
-            return MeleeHitOutcome.Crit;
+            // The no-crit flag is tested *after* the roll lands in the crit range, not before it.
+            // A creature that cannot crit therefore takes a normal hit — it does not get the crit
+            // range redistributed to something else, because crit is the last outcome anyway.
+            if (attack.AttackerCanCrit)
+            {
+                return MeleeHitOutcome.Crit;
+            }
         }
 
         return MeleeHitOutcome.Normal;

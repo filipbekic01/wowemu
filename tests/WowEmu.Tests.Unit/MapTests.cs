@@ -2,6 +2,7 @@ using WowEmu.Core;
 using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Game;
+using WowEmu.Game.Combat;
 using WowEmu.Game.Maps;
 using WowEmu.Game.Movement;
 using WowEmu.Protocol;
@@ -225,6 +226,59 @@ public sealed class MapVisibilityTests
         Assert.Equal([second], found);
     }
 
+    /// <summary>
+    /// A swing reaches everyone who can see either end of it, and exactly once each.
+    /// </summary>
+    /// <remarks>
+    /// The two watcher sets overlap heavily — anyone standing near a fight sees both fighters — so
+    /// concatenating them instead of unioning them sends the common case twice, and the client draws
+    /// two damage numbers for one hit.
+    /// </remarks>
+    [Fact]
+    public void ASwing_ReachesBothSidesWatchersExactlyOnce()
+    {
+        Map map = NewMap();
+
+        (Player attacker, RecordingConnection attackerLink) = NewPlayer(1, 0f, 0f);
+        (Player victim, RecordingConnection victimLink) = NewPlayer(2, 5f, 0f);
+        (Player bystander, RecordingConnection bystanderLink) = NewPlayer(3, 10f, 0f);
+
+        map.Add(attacker);
+        map.Add(victim);
+        map.Add(bystander);
+
+        MeleeDamageInfo info = MeleeDamage.Apply(MeleeHitOutcome.Normal, 42, 60, 60);
+
+        map.BroadcastMeleeSwing(attacker, victim, info, victimHealthBeforeHit: 500);
+
+        // The bystander can see both fighters, and gets one swing rather than two.
+        Assert.Single(bystanderLink.Swings);
+        Assert.Equal((attacker.Guid, victim.Guid, info), bystanderLink.Swings[0]);
+
+        // Each fighter can see the other, so each is told too.
+        Assert.Single(attackerLink.Swings);
+        Assert.Single(victimLink.Swings);
+    }
+
+    /// <summary>Someone too far away to see either fighter hears nothing.</summary>
+    [Fact]
+    public void ASwing_DoesNotReachSomeoneOutOfRange()
+    {
+        Map map = NewMap();
+
+        (Player attacker, _) = NewPlayer(1, 0f, 0f);
+        (Player victim, _) = NewPlayer(2, 5f, 0f);
+        (Player distant, RecordingConnection distantLink) = NewPlayer(3, 500f, 500f);
+
+        map.Add(attacker);
+        map.Add(victim);
+        map.Add(distant);
+
+        map.BroadcastMeleeSwing(attacker, victim, MeleeDamage.Apply(MeleeHitOutcome.Normal, 42, 60, 60), 500);
+
+        Assert.Empty(distantLink.Swings);
+    }
+
     private static CancellationToken TestToken => CancellationToken.None;
 
     private static Map NewMap() => new(0, new TerrainMap(0, Path.GetTempPath()));
@@ -258,6 +312,9 @@ public sealed class MapVisibilityTests
         /// <summary>Creature moves this client was told to start interpolating.</summary>
         public List<(ObjectGuid Mover, CreatureMove Move)> MonsterMoves { get; } = [];
 
+        /// <summary>Melee swings this client was told about.</summary>
+        public List<(ObjectGuid Attacker, ObjectGuid Target, MeleeDamageInfo Info)> Swings { get; } = [];
+
         /// <summary>How many times a tick's worth of updates was flushed.</summary>
         public int Flushes { get; private set; }
 
@@ -274,6 +331,21 @@ public sealed class MapVisibilityTests
 
         public void QueueMonsterMove(ObjectGuid mover, CreatureMove move, uint splineId) =>
             MonsterMoves.Add((mover, move));
+
+        public void QueueMeleeSwing(
+            ObjectGuid attacker, ObjectGuid target, MeleeDamageInfo info, uint targetHealthBeforeHit) =>
+            Swings.Add((attacker, target, info));
+
+        /// <summary>Attack starts and stops this client was told about.</summary>
+        public List<(ObjectGuid Victim, bool Attacking)> AttackStates { get; } = [];
+
+        /// <summary>Swing failures this client was told about, including the clearing None.</summary>
+        public List<SwingError> SwingErrors { get; } = [];
+
+        public void SendAttackState(ObjectGuid attacker, ObjectGuid? victim, bool attacking, bool victimIsDead) =>
+            AttackStates.Add((victim ?? ObjectGuid.Empty, attacking));
+
+        public void SendSwingError(SwingError reason) => SwingErrors.Add(reason);
 
         public void DrainMapPackets(uint diff)
         {

@@ -242,13 +242,17 @@ public sealed class CreatureUpdateTests
         CreatureMove? first = RunUntilMove(creature);
         Assert.NotNull(first);
 
-        // Finish it.
-        creature.Update(first.Value.DurationMs);
-        Assert.False(creature.IsMoving);
+        // Finish it. The same tick may also start the next move: the wander wait is advanced by the
+        // same diff, and a long walk covers it. That is not a special case to guard against — it is
+        // what happens whenever a creature walks for longer than it then waits.
+        CreatureMove? second = creature.Update(first.Value.DurationMs);
+
+        Assert.Equal(first.Value.Destination.X, creature.Position.X, 0.001f);
+        Assert.Equal(first.Value.Destination.Y, creature.Position.Y, 0.001f);
 
         Position arrived = creature.Position;
 
-        CreatureMove? second = RunUntilMove(creature);
+        second ??= RunUntilMove(creature);
         Assert.NotNull(second);
 
         Assert.Equal(arrived.X, second.Value.Start.X, 0.001f);
@@ -451,7 +455,12 @@ public sealed class MonsterMoveTests
 /// <summary>Builds creatures for the movement tests without a database.</summary>
 internal static class CreatureFixture
 {
-    public static Creature Build(float wanderDistance = 0f, byte movementType = 0)
+    public static Creature Build(
+        float wanderDistance = 0f,
+        byte movementType = 0,
+        byte rank = 0,
+        byte creatureType = 1,
+        uint flagsExtra = 0)
     {
         StubModels models = new();
         models.Add(new CreatureModelInfo(4481, 0.372f, 1.5f, 0, 0));
@@ -488,12 +497,12 @@ internal static class CreatureFixture
             SpeedWalk: 1.0f,
             SpeedRun: 1.14286f,
             Scale: 1.0f,
-            Rank: 0,
+            Rank: rank,
             UnitClass: 1,
             UnitFlags: 0,
             UnitFlags2: 2048,
             DynamicFlags: 0,
-            CreatureType: 1,
+            CreatureType: creatureType,
             TypeFlags: 0,
             Family: 0,
             HealthModifier: 1.0f,
@@ -507,7 +516,8 @@ internal static class CreatureFixture
             BaseAttackTime: 2000,
             RangeAttackTime: 2000,
             AttackPower: 14,
-            RangedAttackPower: 0);
+            RangedAttackPower: 0,
+            FlagsExtra: flagsExtra);
 
         CreatureBaseStats stats = new(100, 200, 300, 50, 60, 20, 5, 1.5f, 2f, 3f);
 

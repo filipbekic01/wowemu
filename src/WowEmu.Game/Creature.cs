@@ -1,5 +1,6 @@
 using WowEmu.Core;
 using WowEmu.Data.Db;
+using WowEmu.Game.Combat;
 using WowEmu.Game.Movement;
 using WowEmu.Protocol;
 
@@ -34,6 +35,53 @@ public sealed class Creature : Unit
 
     /// <summary>Which phases can see it. Everything is phase 1 until phasing exists.</summary>
     public uint PhaseMask { get; private init; }
+
+    /// <summary>
+    /// The entry's exceptions to the general rules — <c>creature_template.flags_extra</c>.
+    /// </summary>
+    /// <remarks>
+    /// Server-side only; the client is never told. Combat consults it for the five bits named in
+    /// <see cref="CreatureFlagsExtra"/>, which is how a target dummy is made unable to dodge without
+    /// the attack table growing a special case for it.
+    /// </remarks>
+    public CreatureFlagsExtra FlagsExtra { get; private init; }
+
+    /// <summary>
+    /// Normal, elite, rare elite, world boss or rare — <c>creature_template.rank</c>.
+    /// </summary>
+    /// <remarks>
+    /// Server-side; the client infers the silver or gold portrait border from other data. Combat
+    /// reads it because a world boss dodges and parries far more than anything else.
+    /// </remarks>
+    public byte Rank { get; private init; }
+
+    /// <summary>Beast, humanoid, undead and so on — <c>creature_template.type</c>.</summary>
+    /// <remarks>Parry turns on this: only a humanoid has anything to parry with.</remarks>
+    public byte CreatureType { get; private init; }
+
+    /// <summary>Whether this is a world boss, which has its own dodge and parry values.</summary>
+    public bool IsWorldBoss => Rank == MeleeChances.WorldBossRank;
+
+    /// <inheritdoc/>
+    public override float DodgeChance => MeleeChances.CreatureDodge(IsWorldBoss);
+
+    /// <inheritdoc/>
+    public override float ParryChance => MeleeChances.CreatureParry(IsWorldBoss, CreatureType);
+
+    /// <inheritdoc/>
+    public override bool CanDodge => !FlagsExtra.HasFlag(CreatureFlagsExtra.NoDodge);
+
+    /// <inheritdoc/>
+    public override bool CanParry => !FlagsExtra.HasFlag(CreatureFlagsExtra.NoParry);
+
+    /// <inheritdoc/>
+    public override bool CanBlock => !FlagsExtra.HasFlag(CreatureFlagsExtra.NoBlock);
+
+    /// <inheritdoc/>
+    public override bool CanCrush => !FlagsExtra.HasFlag(CreatureFlagsExtra.NoCrushingBlows);
+
+    /// <inheritdoc/>
+    public override bool CanCrit => !FlagsExtra.HasFlag(CreatureFlagsExtra.NoCrit);
 
     /// <summary>
     /// Where the spawn row put it, which is what it wanders around and returns to.
@@ -185,6 +233,9 @@ public sealed class Creature : Unit
             SpawnId = spawn.SpawnId,
             Entry = spawn.Entry,
             PhaseMask = spawn.PhaseMask,
+            FlagsExtra = (CreatureFlagsExtra)template.FlagsExtra,
+            Rank = template.Rank,
+            CreatureType = template.CreatureType,
             MapId = spawn.MapId,
             Position = spawn.Position,
             HomePosition = spawn.Position,

@@ -38,6 +38,37 @@ public sealed class Player : Unit
     /// </remarks>
     public HashSet<ObjectGuid> VisibleObjects { get; } = [];
 
+    // ------------------------------------------------------------------ combat inputs
+    //
+    // A player's defences are on the character sheet, so they are read back out of the update fields
+    // the client is already shown rather than recomputed. Whatever the tooltip says is what the
+    // attack table rolls against, by construction — the two cannot disagree.
+
+    /// <inheritdoc/>
+    public override bool IsPlayerControlled => true;
+
+    /// <inheritdoc/>
+    public override float DodgeChance => Fields.GetFloat(UpdateFields.PLAYER_DODGE_PERCENTAGE);
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// Parry needs a weapon and a class that can do it; without equipment the sheet reads zero, which
+    /// is the right answer rather than a missing one.
+    /// </remarks>
+    public override float ParryChance => Fields.GetFloat(UpdateFields.PLAYER_PARRY_PERCENTAGE);
+
+    /// <inheritdoc/>
+    /// <remarks>Zero without a shield, which is every player until equipment exists.</remarks>
+    public override float BlockChance => Fields.GetFloat(UpdateFields.PLAYER_BLOCK_PERCENTAGE);
+
+    /// <inheritdoc/>
+    public override float CritChanceFor(WeaponAttackType attackType) => attackType switch
+    {
+        WeaponAttackType.OffAttack => Fields.GetFloat(UpdateFields.PLAYER_OFFHAND_CRIT_PERCENTAGE),
+        WeaponAttackType.RangedAttack => Fields.GetFloat(UpdateFields.PLAYER_RANGED_CRIT_PERCENTAGE),
+        _ => Fields.GetFloat(UpdateFields.PLAYER_CRIT_PERCENTAGE),
+    };
+
     /// <summary>
     /// Builds a player from everything that describes it: the saved row, the race's client data,
     /// and the level's base stats.

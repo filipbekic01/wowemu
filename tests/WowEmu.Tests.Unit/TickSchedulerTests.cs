@@ -70,7 +70,15 @@ public sealed class TickSchedulerTests
         });
 
         // Drain repeatedly, the way a tick loop would, until the continuation has come back.
-        for (int tick = 0; tick < 100 && !finished; tick++)
+        //
+        // Bounded by a deadline rather than an iteration count. The continuation has to make a round
+        // trip through the thread pool, and under a full-suite run the pool is contended enough that
+        // a hundred one-millisecond ticks is not reliably long enough — which fails as "the
+        // scheduler is broken" when the scheduler is fine. Ten seconds is far longer than the round
+        // trip ever takes and still fails promptly if the continuation genuinely never arrives.
+        DateTime deadline = DateTime.UtcNow.AddSeconds(10);
+
+        while (!finished && DateTime.UtcNow < deadline)
         {
             scheduler.Drain();
             Thread.Sleep(1);

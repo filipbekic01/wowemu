@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using WowEmu.Core;
 using WowEmu.Data.Client;
+using WowEmu.Game.Combat;
 using WowEmu.Protocol;
 
 namespace WowEmu.Game.Maps;
@@ -42,6 +43,44 @@ public interface IPlayerConnection
     /// the creature then stands still until its next move — for up to ten seconds.
     /// </remarks>
     void QueueMonsterMove(ObjectGuid mover, Movement.CreatureMove move, uint splineId);
+
+    /// <summary>
+    /// Relays one melee swing, for the combat log and the floating damage number.
+    /// </summary>
+    /// <remarks>
+    /// Queued rather than sent, for the same reason a monster move is: a swing that reaches the
+    /// client before the create block for the attacker is dropped, and the fight starts invisibly.
+    /// <para>
+    /// The game layer hands over its own <see cref="Combat.MeleeDamageInfo"/> and lets the session
+    /// encode it. Passing a wire-shaped record instead would put the packet's conditional layout —
+    /// which trailer follows which flag — into the layer that decided the damage.
+    /// </para>
+    /// </remarks>
+    /// <param name="targetHealthBeforeHit">
+    /// The victim's health before the swing lands, which is what the overkill figure is measured
+    /// against. Reading it after applying the damage reports every killing blow as pure overkill.
+    /// </param>
+    void QueueMeleeSwing(
+        ObjectGuid attacker,
+        ObjectGuid target,
+        Combat.MeleeDamageInfo info,
+        uint targetHealthBeforeHit);
+
+    /// <summary>Tells this client to start or stop drawing an attack animation.</summary>
+    /// <remarks>
+    /// Immediate rather than queued. The animation is the client's own feedback that its attack
+    /// command was heard, and holding it until the flush makes the click feel unacknowledged.
+    /// </remarks>
+    void SendAttackState(ObjectGuid attacker, ObjectGuid? victim, bool attacking, bool victimIsDead);
+
+    /// <summary>
+    /// Tells this client why its swing did not land.
+    /// </summary>
+    /// <remarks>
+    /// Sent once per run of failures rather than per tick — the swing is retried every 100 ms, and a
+    /// client told ten times a second that it is out of range prints the message ten times a second.
+    /// </remarks>
+    void SendSwingError(Combat.SwingError reason);
 
     /// <summary>Runs the packets this session queued for its map's worker.</summary>
     void DrainMapPackets(uint diff);
@@ -184,6 +223,7 @@ public sealed class Map(
         }
 
         UpdateCreatures(gameplayDiff);
+        UpdateCombat(gameplayDiff);
 
         // Last, and unconditional. A player whose map is out of phase still had things happen to it
         // during the session pass, and holding those until the next full update would show as a
@@ -478,6 +518,90 @@ public sealed class Map(
     /// Materialised rather than lazy: callers remove from the visible sets while iterating, and a
     /// deferred LINQ query over <c>_players</c> would be enumerating the collection it is mutating.
     /// </remarks>
+    /// <summary>
+    /// Advances every attacking unit's swing timers and lands the swings that come due.
+    /// </summary>
+    /// <remarks>
+    /// Does nothing on a session-only pass, for the same reason creatures do not move on one: a
+    /// zero diff is a tick this map was not meant to advance on, and counting it as a very short one
+    /// would make every weapon swing four times as fast.
+    /// <para>
+    /// Damage is applied here rather than inside the combat code, so that the one place a unit's
+    /// health changes is the one place death can be noticed.
+    /// </para>
+    /// </remarks>
+    private void UpdateCombat(uint gameplayDiff)
+    {
+        if (gameplayDiff == 0)
+        {
+            return;
+        }
+
+        // Materialised: a swing can kill something, and removing it mid-iteration would throw.
+        foreach (Player player in Players)
+        {
+            player.UpdateAttackTimers(gameplayDiff);
+
+            SwingResult swing = MeleeSwing.Advance(player, WeaponAttackType.BaseAttack, GameRandom.Urand);
+
+            if (swing.Swung && player.Victim is { } victim)
+            {
+                ApplySwing(player, victim, swing.Damage);
+
+                // Clears the client's suppression, so the next failure is reported again rather
+                // than swallowed as a repeat of one from before the fight got going.
+                player.Connection?.SendSwingError(SwingError.None);
+            }
+            else if (swing.Error != SwingError.None)
+            {
+                player.Connection?.SendSwingError(swing.Error);
+            }
+        }
+    }
+
+    /// <summary>Applies one landed swing and tells everyone who can see it.</summary>
+    /// <remarks>
+    /// The victim's health is read <i>before</i> the damage is taken off, because that is what the
+    /// packet's overkill figure is measured against — see <c>SMSG_ATTACKERSTATEUPDATE</c>.
+    /// </remarks>
+    private void ApplySwing(Unit attacker, Unit victim, Combat.MeleeDamageInfo damage)
+    {
+        uint healthBefore = victim.Health;
+
+        BroadcastMeleeSwing(attacker, victim, damage, healthBefore);
+
+        victim.Health = damage.Damage >= healthBefore ? 0 : healthBefore - damage.Damage;
+    }
+
+    /// <summary>
+    /// Tells everyone who can see the fight about one swing.
+    /// </summary>
+    /// <remarks>
+    /// Both ends are broadcast to, not just the attacker's watchers: a player being hit by something
+    /// they cannot see still needs the combat log entry, and someone watching only the victim still
+    /// needs the damage number. The two sets are unioned rather than concatenated, or anyone who can
+    /// see both — which is nearly everyone in the fight — gets the swing twice.
+    /// </remarks>
+    public void BroadcastMeleeSwing(
+        Unit attacker,
+        Unit victim,
+        Combat.MeleeDamageInfo info,
+        uint victimHealthBeforeHit)
+    {
+        ArgumentNullException.ThrowIfNull(attacker);
+        ArgumentNullException.ThrowIfNull(victim);
+
+        HashSet<ObjectGuid> notified = [];
+
+        foreach (Player watcher in PlayersWhoSeeCore(attacker.Guid).Concat(PlayersWhoSeeCore(victim.Guid)))
+        {
+            if (notified.Add(watcher.Guid))
+            {
+                watcher.Connection?.QueueMeleeSwing(attacker.Guid, victim.Guid, info, victimHealthBeforeHit);
+            }
+        }
+    }
+
     private List<Player> PlayersWhoSeeCore(ObjectGuid objectGuid) =>
         [.. _players.Values.Where(player => player.VisibleObjects.Contains(objectGuid))];
 

@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using WowEmu.Core;
 using WowEmu.Data.Db;
 using WowEmu.Game;
+using WowEmu.Game.Combat;
 using WowEmu.Game.Maps;
 using WowEmu.Game.Movement;
 using WowEmu.Network;
@@ -68,6 +69,10 @@ public sealed class WorldSession(
     private readonly InboundPackets _inbound = new();
 
     private readonly List<(ObjectGuid Mover, CreatureMove Move, uint SplineId)> _pendingMonsterMoves = [];
+    private readonly List<AttackerState> _pendingMeleeSwings = [];
+
+    /// <summary>The last swing failure told to this client, so a run of them is only reported once.</summary>
+    private SwingError _lastSwingError;
     private UpdateData _pendingUpdates = new();
     private TickScheduler? _scheduler;
     private AuthAccount? _account;
@@ -273,6 +278,14 @@ public sealed class WorldSession(
 
             case Opcode.CMSG_LOGOUT_CANCEL:
                 HandleLogoutCancel();
+                return;
+
+            case Opcode.CMSG_ATTACKSWING:
+                HandleAttackSwing(payload);
+                return;
+
+            case Opcode.CMSG_ATTACKSTOP:
+                HandleAttackStop();
                 return;
 
             default:
@@ -691,6 +704,68 @@ public sealed class WorldSession(
     /// honest players standing on bridges. See <see cref="MovementValidator"/>.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Starts auto-attacking whatever the client clicked.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>WorldSession::HandleAttackSwingOpcode</c>.
+    /// <para>
+    /// Every rejection answers with a stop rather than with silence. The client has already started
+    /// its own attack animation by the time this arrives — that is why it sent the packet — so
+    /// ignoring an invalid target leaves it swinging at nothing indefinitely.
+    /// </para>
+    /// </remarks>
+    private void HandleAttackSwing(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong raw))
+        {
+            return;
+        }
+
+        // A full guid, not a packed one: this is one of the handful of opcodes that sends them whole.
+        ObjectGuid targetGuid = new(raw);
+
+        if (_map.Find(targetGuid) is not Unit target || !target.IsAlive || ReferenceEquals(target, _player))
+        {
+            SendAttackState(_player.Guid, targetGuid.IsEmpty ? null : targetGuid, attacking: false, victimIsDead: false);
+            return;
+        }
+
+        if (!_player.Attack(target))
+        {
+            // Nothing changed — already attacking this one. Re-sending the start would restart the
+            // animation from the beginning, which reads as a stutter every time the client re-asks.
+            return;
+        }
+
+        SendAttackState(_player.Guid, target.Guid, attacking: true, victimIsDead: false);
+
+        Log.AttackStarted(logger, _player.Name, target.Name, connection.RemoteAddress);
+    }
+
+    /// <summary>Stops auto-attacking.</summary>
+    private void HandleAttackStop()
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        ObjectGuid? victim = _player.Victim?.Guid;
+        bool victimIsDead = _player.Victim is { IsAlive: false };
+
+        _player.AttackStop();
+
+        SendAttackState(_player.Guid, victim, attacking: false, victimIsDead: victimIsDead);
+    }
+
     private void HandleMovement(Opcode opcode, ReadOnlyMemory<byte> payload)
     {
         if (_player is null || _map is null)
@@ -859,6 +934,18 @@ public sealed class WorldSession(
         }
 
         _pendingMonsterMoves.Clear();
+
+        // Swings go last, for the same reason moves do — a swing naming a creature the client has
+        // not been told about draws nothing, and the fight starts with an invisible attacker.
+        foreach (AttackerState swing in _pendingMeleeSwings)
+        {
+            ServerPacket packet = new(Opcode.SMSG_ATTACKERSTATEUPDATE, 96);
+            AttackerStateUpdate.Write(packet.Body, swing);
+
+            connection.Send(packet);
+        }
+
+        _pendingMeleeSwings.Clear();
     }
 
     /// <summary>
@@ -871,6 +958,83 @@ public sealed class WorldSession(
     /// </remarks>
     public void QueueMonsterMove(ObjectGuid mover, CreatureMove move, uint splineId) =>
         _pendingMonsterMoves.Add((mover, move, splineId));
+
+    /// <summary>Tells this client about one melee swing.</summary>
+    /// <remarks>
+    /// The one place the game layer's <see cref="MeleeDamageInfo"/> becomes wire bytes. The hit-info
+    /// bits pass straight through, which is what makes the packet's conditional trailers line up
+    /// with the flags the combat code actually set.
+    /// </remarks>
+    public void QueueMeleeSwing(
+        ObjectGuid attacker, ObjectGuid target, MeleeDamageInfo info, uint targetHealthBeforeHit) =>
+        _pendingMeleeSwings.Add(new AttackerState(
+            HitInfo: (uint)info.HitInfo,
+            Attacker: attacker,
+            Target: target,
+            Damage: info.Damage,
+            TargetHealth: targetHealthBeforeHit,
+            VictimState: (byte)info.VictimState,
+            Blocked: info.BlockedAmount));
+
+    /// <summary>Tells this client to start or stop drawing an attack animation.</summary>
+    /// <remarks>
+    /// The two opcodes disagree about guid encoding — start sends them whole, stop packs them. That
+    /// is upstream's inconsistency, reproduced rather than tidied, because the client reads each one
+    /// the way it was written.
+    /// </remarks>
+    public void SendAttackState(ObjectGuid attacker, ObjectGuid? victim, bool attacking, bool victimIsDead)
+    {
+        if (attacking)
+        {
+            if (victim is not { } target)
+            {
+                return;
+            }
+
+            ServerPacket start = new(Opcode.SMSG_ATTACKSTART, 16);
+            AttackerStateUpdate.WriteAttackStart(start.Body, attacker, target);
+
+            connection.Send(start);
+            return;
+        }
+
+        ServerPacket stop = new(Opcode.SMSG_ATTACKSTOP, 24);
+        AttackerStateUpdate.WriteAttackStop(stop.Body, attacker, victim, victimIsDead);
+
+        connection.Send(stop);
+    }
+
+    /// <summary>Tells this client why its swing did not land.</summary>
+    /// <remarks>
+    /// Both packets are bodiless — the opcode is the whole message. Suppressed to one per run of
+    /// failures by <see cref="_lastSwingError"/>, because the swing retries every 100 ms and the
+    /// client prints the message every time it is told.
+    /// </remarks>
+    public void SendSwingError(SwingError reason)
+    {
+        if (reason == _lastSwingError)
+        {
+            return;
+        }
+
+        _lastSwingError = reason;
+
+        // `None` is how a landed swing clears the suppression, so the next failure is reported
+        // again. Nothing goes on the wire for it — there is no "your swing worked" packet.
+        if (reason == SwingError.None)
+        {
+            return;
+        }
+
+        Opcode opcode = reason switch
+        {
+            SwingError.NotInRange => Opcode.SMSG_ATTACKSWING_NOTINRANGE,
+            SwingError.BadFacing => Opcode.SMSG_ATTACKSWING_BADFACING,
+            _ => Opcode.SMSG_ATTACKSWING_NOTINRANGE,
+        };
+
+        connection.Send(new ServerPacket(opcode, 0));
+    }
 
     /// <summary>Relays another player's movement to this client.</summary>
     public void SendMovement(Opcode opcode, ObjectGuid mover, MovementInfo movement)

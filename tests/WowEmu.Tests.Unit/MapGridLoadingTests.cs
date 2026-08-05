@@ -2,6 +2,7 @@ using WowEmu.Core;
 using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Game;
+using WowEmu.Game.Combat;
 using WowEmu.Game.Maps;
 using WowEmu.Game.Movement;
 using WowEmu.Protocol;
@@ -256,6 +257,9 @@ public sealed class MapGridLoadingTests
         /// <summary>Creature moves this client was told to start interpolating.</summary>
         public List<(ObjectGuid Mover, CreatureMove Move)> MonsterMoves { get; } = [];
 
+        /// <summary>Melee swings this client was told about.</summary>
+        public List<(ObjectGuid Attacker, ObjectGuid Target, MeleeDamageInfo Info)> Swings { get; } = [];
+
         /// <summary>How many times a tick's worth of updates was flushed.</summary>
         public int Flushes { get; private set; }
 
@@ -272,6 +276,21 @@ public sealed class MapGridLoadingTests
 
         public void QueueMonsterMove(ObjectGuid mover, CreatureMove move, uint splineId) =>
             MonsterMoves.Add((mover, move));
+
+        public void QueueMeleeSwing(
+            ObjectGuid attacker, ObjectGuid target, MeleeDamageInfo info, uint targetHealthBeforeHit) =>
+            Swings.Add((attacker, target, info));
+
+        /// <summary>Attack starts and stops this client was told about.</summary>
+        public List<(ObjectGuid Victim, bool Attacking)> AttackStates { get; } = [];
+
+        /// <summary>Swing failures this client was told about, including the clearing None.</summary>
+        public List<SwingError> SwingErrors { get; } = [];
+
+        public void SendAttackState(ObjectGuid attacker, ObjectGuid? victim, bool attacking, bool victimIsDead) =>
+            AttackStates.Add((victim ?? ObjectGuid.Empty, attacking));
+
+        public void SendSwingError(SwingError reason) => SwingErrors.Add(reason);
 
         public void DrainMapPackets(uint diff)
         {

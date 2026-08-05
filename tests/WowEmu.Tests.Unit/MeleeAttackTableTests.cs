@@ -1,3 +1,4 @@
+using WowEmu.Data.Db;
 using WowEmu.Game;
 using WowEmu.Game.Combat;
 using Xunit.Abstractions;
@@ -314,6 +315,139 @@ public sealed class MeleeAttackTableTests(ITestOutputHelper output)
 
         // The excess is discarded, so the gap is still 320 - 300 = 20 points.
         Assert.Equal(MeleeHitOutcome.Crushing, MeleeAttackTable.Roll(attack, Rolls(0)));
+    }
+
+    // ------------------------------------------------------------------ per-creature exceptions
+
+    /// <summary>
+    /// A creature flagged as unable to dodge, parry or block skips that outcome entirely.
+    /// </summary>
+    /// <remarks>
+    /// These come from <c>flags_extra</c> and are how the data overrides the formula for specific
+    /// entries — a target dummy that dodged would be a bug in the encounter, not in the table.
+    /// </remarks>
+    [Fact]
+    public void ADefenceTheCreatureCannotUse_IsSkipped()
+    {
+        Assert.Equal(
+            MeleeHitOutcome.Normal,
+            MeleeAttackTable.Roll(Even(dodge: 5000) with { VictimCanDodge = false }, Rolls(0)));
+
+        Assert.Equal(
+            MeleeHitOutcome.Normal,
+            MeleeAttackTable.Roll(Even(parry: 5000) with { VictimCanParry = false }, Rolls(0)));
+
+        Assert.Equal(
+            MeleeHitOutcome.Normal,
+            MeleeAttackTable.Roll(Even(block: 5000) with { VictimCanBlock = false }, Rolls(0)));
+    }
+
+    /// <summary>
+    /// Skipping one defence does not shift the ones after it.
+    /// </summary>
+    /// <remarks>
+    /// The running sum is only advanced by outcomes that were actually tested, so a creature that
+    /// cannot parry gives its parry range to <i>block</i>, not to normal hits.
+    /// </remarks>
+    [Fact]
+    public void ASkippedDefence_YieldsItsRangeToTheNextOne()
+    {
+        MeleeAttack attack = Even(dodge: 1000, parry: 1000, block: 1000) with { VictimCanParry = false };
+
+        Assert.Equal(MeleeHitOutcome.Dodge, MeleeAttackTable.Roll(attack, Rolls(999)));
+
+        // Block takes 1000-1999, where parry would have been.
+        Assert.Equal(MeleeHitOutcome.Block, MeleeAttackTable.Roll(attack, Rolls(1000)));
+        Assert.Equal(MeleeHitOutcome.Block, MeleeAttackTable.Roll(attack, Rolls(1999)));
+        Assert.Equal(MeleeHitOutcome.Normal, MeleeAttackTable.Roll(attack, Rolls(2000)));
+    }
+
+    [Fact]
+    public void ACreatureThatCannotCrush_DoesNot()
+    {
+        MeleeAttack attack = Even(
+            attackerLevel: 64, victimLevel: 60,
+            victimIsPlayer: true, attackerIsPlayerControlled: false) with
+        {
+            AttackerCanCrush = false,
+        };
+
+        Assert.Equal(MeleeHitOutcome.Normal, MeleeAttackTable.Roll(attack, Rolls(0)));
+    }
+
+    /// <summary>
+    /// A creature that cannot crit takes a normal hit on a roll that landed in the crit range.
+    /// </summary>
+    /// <remarks>
+    /// Upstream tests the flag <i>after</i> the roll lands rather than before, so the crit range is
+    /// consumed and not redistributed. Crit is the last outcome, so the two readings agree here —
+    /// they would not if anything were ever added after it.
+    /// </remarks>
+    [Fact]
+    public void ACreatureThatCannotCrit_HitsNormallyInstead()
+    {
+        MeleeAttack attack = Even(crit: 5000, attackerIsPlayerControlled: false) with
+        {
+            AttackerCanCrit = false,
+        };
+
+        Assert.Equal(MeleeHitOutcome.Normal, MeleeAttackTable.Roll(attack, Rolls(0)));
+        Assert.Equal(MeleeHitOutcome.Crit, MeleeAttackTable.Roll(attack with { AttackerCanCrit = true }, Rolls(0)));
+    }
+
+    /// <summary>The flag values are the ones the world database stores.</summary>
+    [Theory]
+    [InlineData(CreatureFlagsExtra.NoParry, 0x00000004u)]
+    [InlineData(CreatureFlagsExtra.NoBlock, 0x00000010u)]
+    [InlineData(CreatureFlagsExtra.NoCrushingBlows, 0x00000020u)]
+    [InlineData(CreatureFlagsExtra.NoCrit, 0x00020000u)]
+    [InlineData(CreatureFlagsExtra.NoDodge, 0x00800000u)]
+    public void TheFlagBits_MatchTheColumn(CreatureFlagsExtra flag, uint expected) =>
+        Assert.Equal(expected, (uint)flag);
+
+    /// <summary>
+    /// The column really is loaded, and every combat bit is used by something in the dump.
+    /// </summary>
+    /// <remarks>
+    /// The failure this guards against is silent: a mistyped column name would throw, but a column
+    /// that loaded as zeros everywhere would leave the table looking correct while quietly letting
+    /// bosses crush and dummies dodge. Each of these bits is rare — a handful of entries apiece —
+    /// so the assertion is that they exist at all, not how many.
+    /// </remarks>
+    [RequiresWorldDatabaseFact]
+    public async Task TheCombatFlags_ReachUsFromTheDatabase()
+    {
+        CreatureTemplateStore templates = new();
+        await templates.LoadAsync(WorldDatabase.ConnectionString, CancellationToken.None);
+
+        Dictionary<CreatureFlagsExtra, (int Count, string Example)> found = [];
+
+        foreach (CreatureTemplate template in templates.All)
+        {
+            CreatureFlagsExtra flags = (CreatureFlagsExtra)template.FlagsExtra;
+
+            foreach (CreatureFlagsExtra bit in Enum.GetValues<CreatureFlagsExtra>())
+            {
+                if (bit != CreatureFlagsExtra.None && flags.HasFlag(bit))
+                {
+                    (int count, string example) = found.GetValueOrDefault(bit, (0, template.Name));
+                    found[bit] = (count + 1, example);
+                }
+            }
+        }
+
+        foreach (CreatureFlagsExtra bit in Enum.GetValues<CreatureFlagsExtra>())
+        {
+            if (bit == CreatureFlagsExtra.None)
+            {
+                continue;
+            }
+
+            Assert.True(found.ContainsKey(bit), $"no creature in the dump carries {bit}");
+
+            (int count, string example) = found[bit];
+            output.WriteLine($"  {bit,-16} {count,4} creatures, e.g. {example}");
+        }
     }
 
     // ------------------------------------------------------------------ distribution

@@ -154,6 +154,10 @@ internal static partial class Log
     public static partial void GameObjectContentLoaded(
         ILogger logger, int templates, int spawns, int maps);
 
+    [LoggerMessage(EventId = 2318, Level = LogLevel.Debug,
+        Message = "'{Name}' started attacking '{Target}' — {Address}")]
+    public static partial void AttackStarted(ILogger logger, string name, string target, string address);
+
     // ------------------------------------------------------------------ world tick
 
     [LoggerMessage(EventId = 2400, Level = LogLevel.Information,

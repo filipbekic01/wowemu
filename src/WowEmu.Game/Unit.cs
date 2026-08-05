@@ -1,4 +1,5 @@
 using WowEmu.Core;
+using WowEmu.Game.Combat;
 using WowEmu.Protocol;
 
 namespace WowEmu.Game;
@@ -248,6 +249,227 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
             : UnitFlags & ~(uint)Game.UnitFlags.InCombat;
     }
 
+    // ------------------------------------------------------------------ combat inputs
+    //
+    // The attack table asks for these, and a player and a creature answer them differently: a
+    // creature's are constants from its type and rank, a player's come from the character sheet. The
+    // defaults here are the creature answers, because Unit is what a creature is.
+
+    /// <summary>
+    /// Whether a player is driving this unit, directly or through a pet.
+    /// </summary>
+    /// <remarks>
+    /// Not the same as "is a player". Glancing blows and crushing blows both turn on this rather than
+    /// on the type, so that a hunter's pet fights by the player's rules and a mind-controlled player
+    /// fights by the creature's.
+    /// </remarks>
+    public virtual bool IsPlayerControlled => false;
+
+    /// <summary>The skill the unit swings with. A creature's is always its level cap.</summary>
+    public virtual int WeaponSkillValue => Level * 5;
+
+    /// <summary>The skill the unit defends with. A creature's is always its level cap.</summary>
+    public virtual int DefenseSkillValue => Level * 5;
+
+    /// <summary>The unit's chance to dodge, as a percentage.</summary>
+    public virtual float DodgeChance => MeleeChances.CreatureDodgeChance;
+
+    /// <summary>The unit's chance to parry, as a percentage.</summary>
+    public virtual float ParryChance => 0f;
+
+    /// <summary>The unit's chance to block, as a percentage.</summary>
+    public virtual float BlockChance => MeleeChances.CreatureBlockChance;
+
+    /// <summary>How much a blocked hit is reduced by. Zero without a shield.</summary>
+    public virtual uint ShieldBlockValue => 0;
+
+    /// <summary>The unit's base crit for a weapon, before the skill difference is applied.</summary>
+    public virtual float CritChanceFor(WeaponAttackType attackType) => MeleeChances.CreatureCritChance;
+
+    /// <summary>Whether the general dodge rule applies to this unit. <c>flags_extra</c> can revoke it.</summary>
+    public virtual bool CanDodge => true;
+
+    /// <inheritdoc cref="CanDodge"/>
+    public virtual bool CanParry => true;
+
+    /// <inheritdoc cref="CanDodge"/>
+    public virtual bool CanBlock => true;
+
+    /// <inheritdoc cref="CanDodge"/>
+    public virtual bool CanCrush => true;
+
+    /// <inheritdoc cref="CanDodge"/>
+    public virtual bool CanCrit => true;
+
+    // ------------------------------------------------------------------ auto-attack
+
+    /// <summary>Milliseconds until each weapon may swing again, indexed by <see cref="WeaponAttackType"/>.</summary>
+    /// <remarks>
+    /// Signed, and allowed to be negative between the tick that brings it below zero and the swing
+    /// that resets it. Clamping to zero instead loses the overshoot, and a slow weapon then drifts
+    /// later by up to a tick every swing.
+    /// </remarks>
+    private readonly int[] _attackTimers = new int[3];
+
+    /// <summary>Who this unit is attacking, if anyone.</summary>
+    /// <remarks>
+    /// Distinct from <see cref="Target"/>, which is what the client draws as selected. A player can
+    /// have something targeted without attacking it, and upstream keeps the two apart for exactly
+    /// that reason.
+    /// </remarks>
+    public Unit? Victim { get; private set; }
+
+    /// <summary>Whether the unit is swinging at <see cref="Victim"/>, as opposed to merely engaged.</summary>
+    /// <remarks><c>UNIT_STATE_MELEE_ATTACKING</c>.</remarks>
+    public bool IsMeleeAttacking { get; private set; }
+
+    /// <summary>Milliseconds until <paramref name="attackType"/> may swing.</summary>
+    public int GetAttackTimer(WeaponAttackType attackType) => _attackTimers[(int)attackType];
+
+    /// <summary>Sets the milliseconds until <paramref name="attackType"/> may swing.</summary>
+    public void SetAttackTimer(WeaponAttackType attackType, int milliseconds) =>
+        _attackTimers[(int)attackType] = milliseconds;
+
+    /// <summary>Whether a weapon is off cooldown.</summary>
+    public bool IsAttackReady(WeaponAttackType attackType = WeaponAttackType.BaseAttack) =>
+        _attackTimers[(int)attackType] <= 0;
+
+    /// <summary>
+    /// Starts the cooldown after a swing.
+    /// </summary>
+    /// <remarks>
+    /// <c>min(timer + speed, speed)</c>, not simply <c>speed</c>. The two differ only when the timer
+    /// is already negative — which is the normal case, because a tick overshoots — and taking the
+    /// minimum is what carries that overshoot into the next swing instead of discarding it. Assigning
+    /// the speed outright makes every weapon slower than its tooltip by half a tick on average.
+    /// </remarks>
+    public void ResetAttackTimer(WeaponAttackType attackType = WeaponAttackType.BaseAttack)
+    {
+        int speed = (int)GetAttackTime(attackType);
+
+        _attackTimers[(int)attackType] = Math.Min(_attackTimers[(int)attackType] + speed, speed);
+    }
+
+    /// <summary>Counts every weapon's cooldown down by one tick.</summary>
+    public void UpdateAttackTimers(uint diff)
+    {
+        for (int i = 0; i < _attackTimers.Length; i++)
+        {
+            if (_attackTimers[i] != 0)
+            {
+                _attackTimers[i] = _attackTimers[i] > 0 ? _attackTimers[i] - (int)diff : 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// How close this unit has to be to swing at <paramref name="target"/>.
+    /// </summary>
+    /// <remarks>
+    /// Both combat reaches plus 4/3 of a yard, floored at five. The floor is what lets two small
+    /// creatures fight each other at all — their reaches alone add up to well under it.
+    /// </remarks>
+    public float MeleeRangeTo(Unit target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+
+        return MathF.Max(CombatReach + target.CombatReach + (4f / 3f), UnitDefaults.NominalMeleeRange);
+    }
+
+    /// <summary>Whether <paramref name="target"/> is close enough to swing at.</summary>
+    /// <remarks>
+    /// Measured in three dimensions and compared squared, so no square root is taken — this runs per
+    /// weapon per attacking unit per tick.
+    /// </remarks>
+    public bool IsWithinMeleeRange(Unit target)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+
+        if (MapId != target.MapId)
+        {
+            return false;
+        }
+
+        float dx = Position.X - target.Position.X;
+        float dy = Position.Y - target.Position.Y;
+        float dz = Position.Z - target.Position.Z;
+
+        float range = MeleeRangeTo(target);
+
+        return (dx * dx) + (dy * dy) + (dz * dz) < range * range;
+    }
+
+    /// <summary>
+    /// Starts attacking a victim.
+    /// </summary>
+    /// <remarks>
+    /// Port of the parts of <c>Unit::Attack</c> that apply without auras, vehicles or pets. Returns
+    /// false when nothing changed, which the caller uses to decide whether to tell the client —
+    /// re-sending an attack start for a fight already in progress restarts the animation.
+    /// </remarks>
+    /// <returns>Whether the attack state changed.</returns>
+    public bool Attack(Unit victim, bool meleeAttack = true)
+    {
+        ArgumentNullException.ThrowIfNull(victim);
+
+        // Neither the dead nor the self-attacking.
+        if (ReferenceEquals(victim, this) || !IsAlive() || !victim.IsAlive || MapId != victim.MapId)
+        {
+            return false;
+        }
+
+        if (Victim is not null)
+        {
+            if (ReferenceEquals(Victim, victim))
+            {
+                // Already fighting this one. The only thing that can change is whether the swing is
+                // melee, which is how switching between a bow and a sword is expressed.
+                if (meleeAttack == IsMeleeAttacking)
+                {
+                    return false;
+                }
+
+                IsMeleeAttacking = meleeAttack;
+                return true;
+            }
+
+            // Switching victims mid-fight keeps the swing timers running, deliberately: swapping
+            // targets would otherwise reset the cooldown and be a free way to cancel a slow swing.
+            if (!meleeAttack)
+            {
+                IsMeleeAttacking = false;
+            }
+        }
+
+        Victim = victim;
+        Target = victim.Guid;
+
+        if (meleeAttack)
+        {
+            IsMeleeAttacking = true;
+        }
+
+        return true;
+
+        bool IsAlive() => DeathState == DeathState.Alive;
+    }
+
+    /// <summary>Stops attacking, if attacking anything.</summary>
+    /// <returns>Whether there was an attack to stop.</returns>
+    public bool AttackStop()
+    {
+        if (Victim is null)
+        {
+            return false;
+        }
+
+        Victim = null;
+        IsMeleeAttacking = false;
+        Target = ObjectGuid.Empty;
+
+        return true;
+    }
+
     /// <summary>Rolls a swing's damage between the unit's two bounds.</summary>
     /// <remarks>
     /// Inclusive of both ends, like upstream's <c>urand</c> — the attack table depends on that
@@ -261,6 +483,43 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
         uint high = (uint)MathF.Max(low, MathF.Floor(MaxDamage));
 
         return low == high ? low : pick(low, high);
+    }
+
+    /// <summary>
+    /// Swings at a victim: rolls the damage, mitigates it, rolls the table, applies the outcome.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Unit::CalculateMeleeDamage</c>'s shape. The order is the part that matters and it
+    /// is not the intuitive one — the raw hit is mitigated by armour <i>before</i> the attack table
+    /// is rolled, so a crit doubles a post-armour number. Rolling the outcome first and mitigating
+    /// the result reads more naturally and gives different numbers.
+    /// </remarks>
+    /// <param name="victim">Who is being hit.</param>
+    /// <param name="attackType">Which weapon.</param>
+    /// <param name="roll">The random source, for both the damage roll and the table roll.</param>
+    /// <param name="attackerIsBehindVictim">Whether the swing comes from behind.</param>
+    public MeleeDamageInfo CalculateMeleeDamage(
+        Unit victim,
+        WeaponAttackType attackType,
+        Func<uint, uint, uint> roll,
+        bool attackerIsBehindVictim = false)
+    {
+        ArgumentNullException.ThrowIfNull(victim);
+        ArgumentNullException.ThrowIfNull(roll);
+
+        uint raw = RollSwingDamage(roll);
+        uint mitigated = ArmorMitigation.Reduce(raw, victim.Armor, Level);
+
+        MeleeAttack attack = MeleeChances.For(this, victim, attackType, attackerIsBehindVictim);
+        MeleeHitOutcome outcome = MeleeAttackTable.Roll(attack, roll);
+
+        return MeleeDamage.Apply(
+            outcome,
+            mitigated,
+            Level,
+            victim.Level,
+            victim.ShieldBlockValue,
+            attackType == WeaponAttackType.OffAttack);
     }
 }
 
@@ -332,4 +591,29 @@ public static class UnitDefaults
 
     /// <summary>Base run speed, in yards per second. <c>creature_template.speed_run</c> scales it.</summary>
     public const float BaseRunSpeed = 7.0f;
+
+    /// <summary>
+    /// The shortest melee range any pair of units can have. <c>NOMINAL_MELEE_RANGE</c>.
+    /// </summary>
+    /// <remarks>
+    /// A floor rather than a constant: two rabbits have combat reaches adding to well under five
+    /// yards, and without the floor they could not reach each other at all.
+    /// </remarks>
+    public const float NominalMeleeRange = 5.0f;
+
+    /// <summary>
+    /// How long a swing waits so the client can draw it. <c>ATTACK_DISPLAY_DELAY</c>.
+    /// </summary>
+    /// <remarks>
+    /// Stops a main-hand and an off-hand swing landing on the same tick, where the client would draw
+    /// one animation and one number for two hits.
+    /// </remarks>
+    public const int AttackDisplayDelayMs = 200;
+
+    /// <summary>How long a swing is deferred when the target is out of range or behind the attacker.</summary>
+    /// <remarks>
+    /// Short on purpose: it is a retry interval, not a cooldown. The swing has not happened, so the
+    /// weapon's own timer must not be spent — the attacker just checks again shortly.
+    /// </remarks>
+    public const int SwingRetryDelayMs = 100;
 }

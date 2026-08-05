@@ -52,7 +52,8 @@ public sealed record CreatureTemplate(
     uint BaseAttackTime,
     uint RangeAttackTime,
     uint AttackPower,
-    uint RangedAttackPower)
+    uint RangedAttackPower,
+    uint FlagsExtra)
 {
     /// <summary>
     /// Picks one of the up-to-four display ids the entry may use.
@@ -158,7 +159,7 @@ public sealed class CreatureTemplateStore : ICreatureModelSource
                        `rank`, unit_class, unit_flags, unit_flags2, dynamicflags, type, type_flags,
                        family, Health_mod, Mana_mod, Armor_mod, MovementType, RegenHealth,
                        mindmg, maxdmg, dmg_multiplier, baseattacktime, rangeattacktime,
-                       attackpower, rangedattackpower
+                       attackpower, rangedattackpower, flags_extra
                 FROM creature_template
                 """;
 
@@ -205,7 +206,8 @@ public sealed class CreatureTemplateStore : ICreatureModelSource
                     BaseAttackTime: reader.GetUInt32(31),
                     RangeAttackTime: reader.GetUInt32(32),
                     AttackPower: reader.GetUInt32(33),
-                    RangedAttackPower: reader.GetUInt16(34));
+                    RangedAttackPower: reader.GetUInt16(34),
+                    FlagsExtra: reader.GetUInt32(35));
 
                 _templates[template.Entry] = template;
             }
@@ -235,6 +237,13 @@ public sealed class CreatureTemplateStore : ICreatureModelSource
 
     public bool TryGetTemplate(uint entry, out CreatureTemplate? template) =>
         _templates.TryGetValue(entry, out template);
+
+    /// <summary>Every loaded template, in no particular order.</summary>
+    /// <remarks>
+    /// For sweeps over the whole table — sanity checks and startup reports. Gameplay looks entries
+    /// up by key; nothing on a hot path should be walking 29,928 rows.
+    /// </remarks>
+    public IEnumerable<CreatureTemplate> All => _templates.Values;
 
     /// <inheritdoc/>
     public bool TryGetModel(uint displayId, out CreatureModelInfo model) =>
