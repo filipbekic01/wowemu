@@ -63,6 +63,30 @@ public sealed class Player : Unit
         ? BaseMana
         : GetMaxPower(powerType);
 
+    /// <summary>Experience accumulated towards the next level.</summary>
+    /// <remarks>
+    /// Reset to the <i>remainder</i> on levelling, not to zero — overshooting a level carries the
+    /// surplus forward rather than throwing it away.
+    /// </remarks>
+    public uint Xp
+    {
+        get => Fields.GetUInt32(UpdateFields.PLAYER_XP);
+        set => Fields.SetUInt32(UpdateFields.PLAYER_XP, value);
+    }
+
+    /// <summary>Experience needed to leave the current level, which the client draws the bar from.</summary>
+    public uint NextLevelXp
+    {
+        get => Fields.GetUInt32(UpdateFields.PLAYER_NEXT_LEVEL_XP);
+        set => Fields.SetUInt32(UpdateFields.PLAYER_NEXT_LEVEL_XP, value);
+    }
+
+    /// <summary>One of the five attributes: strength, agility, stamina, intellect, spirit.</summary>
+    public uint GetStat(int index) => Fields.GetUInt32(UpdateFields.UNIT_FIELD_STAT0 + index);
+
+    /// <inheritdoc cref="GetStat"/>
+    public void SetStat(int index, uint value) => Fields.SetUInt32(UpdateFields.UNIT_FIELD_STAT0 + index, value);
+
     /// <summary>The class's mana before any gear. <c>UNIT_FIELD_BASE_MANA</c>.</summary>
     public uint BaseMana
     {

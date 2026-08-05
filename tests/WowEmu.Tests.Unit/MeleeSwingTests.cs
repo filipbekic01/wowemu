@@ -627,13 +627,20 @@ public sealed class MapCombatTests
 /// <summary>Builds a map with one player already attacking one creature.</summary>
 internal static class MapCombatFixture
 {
-    public static (Map Map, Player Attacker, Creature Victim, Link Connection) Engaged(float distance = 2f)
+    public static (Map Map, Player Attacker, Creature Victim, Link Connection) Engaged(
+        float distance = 2f,
+        PlayerXpStore? experience = null,
+        PlayerStatsStore? playerStats = null)
     {
         Creature victim = CreatureFixture.Build(position: new Position(distance, 0f, 0f, 0f));
 
         // Creatures reach a map through the grid loader, not through Add — the same path the real
         // server uses, so the victim ends up filed in a cell and findable by a range query.
-        Map map = new(0, new TerrainMap(0, Path.GetTempPath()), new OneCreature(victim));
+        Map map = new(0, new TerrainMap(0, Path.GetTempPath()), new OneCreature(victim))
+        {
+            ExperienceTable = experience,
+            PlayerStats = playerStats,
+        };
 
         CharacterSummary summary = new(1, "Fighter", 1, 1, 0, 0, 0, 0, 0, 0, 1, 12, 0, 0f, 0f, 0f, 0, 0, 0);
         ChrRacesEntry race = new(1, 0, 1, 49, 50, 7, 0, 0, "Human", 0);
@@ -730,6 +737,21 @@ internal static class MapCombatFixture
 
         public void SendCastFailed(byte castCount, uint spellId, SpellCastResult result) =>
             CastFailures.Add(result);
+
+
+        /// <summary>Spell damage this client was told about.</summary>
+        public List<(ObjectGuid Target, uint SpellId, SpellHit Hit)> SpellDamage { get; } = [];
+
+        public void QueueSpellDamage(
+            ObjectGuid target, ObjectGuid caster, uint spellId, SpellHit hit, uint targetHealthBeforeHit) =>
+            SpellDamage.Add((target, spellId, hit));
+
+
+        /// <summary>Experience gains this client was told about.</summary>
+        public List<(uint Amount, IReadOnlyList<LevelUp> Levels)> ExperienceGains { get; } = [];
+
+        public void SendExperienceGain(ObjectGuid victim, uint amount, IReadOnlyList<LevelUp> levels) =>
+            ExperienceGains.Add((amount, levels));
 
         public void SendSwingError(SwingError reason) => SwingErrors.Add(reason);
 

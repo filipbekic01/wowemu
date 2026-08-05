@@ -59,6 +59,15 @@ public sealed class Creature : Unit
     /// <remarks>Parry turns on this: only a humanoid has anything to parry with.</remarks>
     public byte CreatureType { get; private init; }
 
+    /// <summary>
+    /// Which expansion's content this belongs to — <c>creature_template.exp</c>.
+    /// </summary>
+    /// <remarks>
+    /// Already used to pick a health and damage slot; experience reads it too, because the base
+    /// figure a kill pays is five times higher in Outland than in Azeroth.
+    /// </remarks>
+    public byte Expansion { get; private init; }
+
     /// <summary>Whether this is a world boss, which has its own dodge and parry values.</summary>
     public bool IsWorldBoss => Rank == MeleeChances.WorldBossRank;
 
@@ -466,6 +475,7 @@ public sealed class Creature : Unit
             FlagsExtra = (CreatureFlagsExtra)template.FlagsExtra,
             Rank = template.Rank,
             CreatureType = template.CreatureType,
+            Expansion = template.Expansion,
             CorpseDelayMs = CorpseDelayMsFor(template.Rank),
             RespawnDelayMs = spawn.RespawnDelaySeconds * 1000,
             MapId = spawn.MapId,

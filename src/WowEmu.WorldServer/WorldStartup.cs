@@ -58,6 +58,16 @@ internal static class WorldStartup
         PlayerStatsStore stats = services.GetRequiredService<PlayerStatsStore>();
         await stats.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
+        PlayerXpStore experience = services.GetRequiredService<PlayerXpStore>();
+        await experience.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        if (experience.Count == 0)
+        {
+            // Not fatal, but worth saying loudly: without it nobody gains a level, and the symptom
+            // is an experience bar that fills and stops rather than an error.
+            Log.ExperienceTableMissing(logger);
+        }
+
         if (stats.LevelStatCount == 0 || stats.ClassStatCount == 0)
         {
             throw new InvalidOperationException(
@@ -93,6 +103,8 @@ internal static class WorldStartup
 
         Log.SpellDataLoaded(
             logger, spells.Spells.Count, spells.CastTimes.Count, spells.Ranges.Count, spells.Durations.Count);
+
+        Log.ExperienceTableLoaded(logger, experience.Count, experience.MaxLevel);
     }
 
     /// <summary>

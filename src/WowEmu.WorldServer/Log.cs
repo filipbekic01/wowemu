@@ -158,6 +158,14 @@ internal static partial class Log
         Message = "'{Name}' started attacking '{Target}' — {Address}")]
     public static partial void AttackStarted(ILogger logger, string name, string target, string address);
 
+    [LoggerMessage(EventId = 2321, Level = LogLevel.Information,
+        Message = "Loaded {Rows} experience-per-level rows, to level {MaxLevel}")]
+    public static partial void ExperienceTableLoaded(ILogger logger, int rows, byte maxLevel);
+
+    [LoggerMessage(EventId = 2322, Level = LogLevel.Warning,
+        Message = "No rows in player_xp_for_level — nobody will gain a level")]
+    public static partial void ExperienceTableMissing(ILogger logger);
+
     [LoggerMessage(EventId = 2320, Level = LogLevel.Debug,
         Message = "'{Name}' cast {Spell} at {Target} — {Address}")]
     public static partial void SpellCast(

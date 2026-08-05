@@ -71,6 +71,7 @@ public sealed class WorldSession(
 
     private readonly List<(ObjectGuid Mover, CreatureMove Move, uint SplineId)> _pendingMonsterMoves = [];
     private readonly List<AttackerState> _pendingMeleeSwings = [];
+    private readonly List<SpellDamageLog> _pendingSpellDamage = [];
 
     /// <summary>The last swing failure told to this client, so a run of them is only reported once.</summary>
     private SwingError _lastSwingError;
@@ -1044,6 +1045,18 @@ public sealed class WorldSession(
         }
 
         _pendingMeleeSwings.Clear();
+
+        // After the swings, so that a fight's melee and spell log lines arrive in the order the
+        // tick produced them rather than grouped by kind.
+        foreach (SpellDamageLog damage in _pendingSpellDamage)
+        {
+            ServerPacket packet = new(Opcode.SMSG_SPELLNONMELEEDAMAGELOG, 64);
+            SpellDamageLogPacket.Write(packet.Body, damage);
+
+            connection.Send(packet);
+        }
+
+        _pendingSpellDamage.Clear();
     }
 
     /// <summary>
@@ -1101,6 +1114,53 @@ public sealed class WorldSession(
 
         connection.Send(stop);
     }
+
+    /// <summary>Tells this client it gained experience, and about any levels that came with it.</summary>
+    /// <remarks>
+    /// Immediate and in order: the experience log first, then a banner per level. Sending the banner
+    /// first shows a level-up with nothing having caused it.
+    /// </remarks>
+    public void SendExperienceGain(ObjectGuid victim, uint amount, IReadOnlyList<LevelUp> levels)
+    {
+        ArgumentNullException.ThrowIfNull(levels);
+
+        ServerPacket gain = new(Opcode.SMSG_LOG_XPGAIN, 24);
+        ExperiencePackets.WriteLogXpGain(gain.Body, victim, amount);
+
+        connection.Send(gain);
+
+        foreach (LevelUp level in levels)
+        {
+            ServerPacket banner = new(Opcode.SMSG_LEVELUP_INFO, 56);
+
+            // Only the mana slot is ever non-zero. Rage and energy do not grow with level, so a
+            // delta for them would animate a change that did not happen.
+            int[] powerDeltas = [level.ManaDelta, 0, 0, 0, 0, 0];
+
+            ExperiencePackets.WriteLevelUp(
+                banner.Body, level.NewLevel, level.HealthDelta, powerDeltas, level.StatDeltas);
+
+            connection.Send(banner);
+        }
+    }
+
+    /// <summary>Tells this client about one spell's damage.</summary>
+    /// <remarks>
+    /// The one place the game layer's <see cref="SpellHit"/> becomes wire bytes, mirroring how a
+    /// melee swing is encoded — the layer that decided the damage never names a field order.
+    /// </remarks>
+    public void QueueSpellDamage(
+        ObjectGuid target, ObjectGuid caster, uint spellId, SpellHit hit, uint targetHealthBeforeHit) =>
+        _pendingSpellDamage.Add(new SpellDamageLog(
+            Target: target,
+            Attacker: caster,
+            SpellId: spellId,
+            Damage: hit.Damage,
+            TargetHealth: targetHealthBeforeHit,
+            SchoolMask: hit.SchoolMask,
+            Resisted: hit.Resisted,
+            Blocked: hit.Blocked,
+            IsPhysical: hit.IsPhysical));
 
     /// <summary>Tells this client that a cast has started.</summary>
     /// <remarks>

@@ -38,6 +38,7 @@ builder.Services.AddSingleton<CreatureStatsStore>();
 builder.Services.AddSingleton<CreatureSpawnStore>();
 builder.Services.AddSingleton<GameObjectTemplateStore>();
 builder.Services.AddSingleton<GameObjectSpawnStore>();
+builder.Services.AddSingleton<PlayerXpStore>();
 
 // The DBC stores are read from disk once and never change, so they are built during registration
 // rather than in the startup pass — a missing data directory should fail before anything else runs.
@@ -87,7 +88,9 @@ builder.Services.AddSingleton(services => new MapManager(
     new MapUpdater(startupOptions.MapUpdateThreads),
     services.GetRequiredService<ILogger<Map>>(),
     services.GetRequiredService<VmapManager>(),
-    services.GetRequiredService<DbcStores>().FactionTemplates));
+    services.GetRequiredService<DbcStores>().FactionTemplates,
+    services.GetRequiredService<PlayerXpStore>(),
+    services.GetRequiredService<PlayerStatsStore>()));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in

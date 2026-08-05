@@ -385,11 +385,44 @@ are loaded but nothing casts yet.
       went into the mana field — a full mana bar and an empty rage bar on the same unit. Percentage
       costs now read `UNIT_FIELD_BASE_MANA`, which is what they are a percentage of
 
+**Spell effects**
+
+- [x] `SpellEffectInfo::CalcValue` — level clamped into the spell's own range then reduced by
+      `max(BaseLevel, SpellLevel)`, and a die roll over `[1, sides]`
+- [x] **A single die side adds exactly 1 and draws no random number.** Upstream has an explicit
+      `case 1`; folding it into `irand(1, 1)` gives the same answer and desynchronises the stream
+- [x] `SCHOOL_DAMAGE`, `HEAL`, and the three weapon-damage forms (`WEAPON_DAMAGE`,
+      `WEAPON_DAMAGE_NOSCHOOL`, `NORMALIZED_WEAPON_DMG`) — 4 of upstream's 164
+- [x] **A weapon-damage effect's value is a flat bonus on top of a swing**, not damage in its own
+      right; treating it as damage makes Heroic Strike hit for 11 instead of a swing plus 11
+- [x] Only physical spell damage goes through armour, and **armour is applied once at the end**
+      rather than per effect — it ceilings, so per-effect mitigation gains a point per effect
+- [x] `SMSG_SPELLNONMELEEDAMAGELOG`. **The target is written before the caster** — the opposite
+      order to `SMSG_ATTACKERSTATEUPDATE`, with nothing in either packet saying so
+- [x] Spell damage generates threat and notices a kill, through the same path a swing does
+
+**Experience and levelling**
+
+- [x] `player_xp_for_level` vendored — 79 rows. **Each row is the cost of leaving that level**, not
+      a running total; reading it as a total makes every level after the first cost far too much
+- [x] `Acore::XP::BaseGain` — two different curves either side of the player's level, with the
+      above-level one capped at four levels and the below-level one falling to zero at grey
+- [x] `GetGrayLevel` (three segments and a flat floor under 6) and `GetZeroDifference` (a nine-step
+      widening function) — neither derivable from the other
+- [x] The base figure comes from the **content**, not the creature's level: 45 classic, 235 Outland,
+      580 Northrend
+- [x] Elite pays double — and **rare is not elite**, despite ranking above world boss numerically
+- [x] Critters and anything flagged `NoExperience` pay nothing, or a field of rabbits is a strategy
+- [x] `GiveXP` as a **loop**, with the surplus carried forward — one kill can cross several levels
+- [x] Level-up recomputes health, mana and the five attributes, and **refills** health and mana
+- [x] `SMSG_LOG_XPGAIN`, whose **layout depends on whether there was a victim** — a kill carries two
+      extra fields a quest reward does not
+- [x] `SMSG_LEVELUP_INFO`, which carries **deltas rather than totals**, in fixed-size arrays
+- [x] Experience is paid **before** the threat list is cleared — `Creature.Kill` forgets everyone,
+      so paying afterwards pays nobody and looks like a kill that simply awards nothing
+
 **Still to do for M5**
 
-- [ ] Spell effect handlers — `SCHOOL_DAMAGE` and `WEAPON_DAMAGE` are all M5 needs
-- [ ] `SMSG_SPELLNONMELEEDAMAGELOG`
-- [ ] XP on kill, `SMSG_LOG_XPGAIN`, level-up and stat recalculation
 - [ ] Verify the whole of M5 against a real client
 
 ---
@@ -577,6 +610,14 @@ The threading model PLAN.md §4.2 calls the single most important constraint in 
 - `sql/world/` is now 19 MB, almost all of it `creature` (12 MB) and `creature_template` (7 MB).
   The vendoring rule says a fresh clone must be able to start, and that is the price. `item_template`
   and `gameobject` will roughly double it.
+- **Experience is paid in full to everyone on the threat list**, not split. Group splitting needs
+  groups; paying each participant the whole amount errs towards over-rewarding, which is visible,
+  rather than silently paying nobody.
+- **The content level for experience comes from the creature's template expansion, not its zone.**
+  Upstream uses the zone, so a classic creature standing in Outland pays classic rates here and
+  Outland rates there.
+- **There is no rested experience, no recruit-a-friend and no group rate.** All three are
+  multipliers on top of a figure that is computed correctly.
 - **Player death does nothing.** A creature can take a player to zero health and nothing happens —
   no corpse, no release, no resurrection sickness. Creatures fight back as of Phase 9, so this is
   now reachable in normal play rather than theoretical.
@@ -593,8 +634,14 @@ The threading model PLAN.md §4.2 calls the single most important constraint in 
 - **Nothing checks that a player knows the spell it casts.** There is no spellbook, so
   `CMSG_CAST_SPELL` is honoured for any id in `Spell.dbc` — `SPELL_FAILED_NOT_KNOWN` exists as a
   result and is only sent for ids the client data does not describe at all.
-- **A cast has no effects yet.** The pipeline sends `SMSG_SPELL_START` and `SMSG_SPELL_GO`, so a
-  cast is fully visible and does nothing — no damage, no auras, no `SMSG_SPELLNONMELEEDAMAGELOG`.
+- **Spells cannot miss, crit or be resisted.** Every cast that passes its checks lands in full:
+  there is no spell hit table, no spell crit, and no resistance — so `SMSG_SPELL_GO`'s miss list is
+  always empty and the damage log's absorb and resist fields are always zero.
+- **Auras do not exist**, so `APPLY_AURA` — the single most common effect in the file — does
+  nothing. Fireball's direct damage lands; its burn does not.
+- **A creature's spell damage is not rescaled by its level.** Upstream multiplies by the ratio of
+  the creature's base damage to the spell's for spells flagged to scale, which needs the creature
+  stats table threaded into the effect calculation.
 - **Nothing interrupts a cast.** Moving, taking damage and dying all leave the bar running; only
   `CMSG_CANCEL_CAST` ends one early.
 - Threat has no taunt, no redirection and no aura modifiers, and `MeleeChances` has no aura or

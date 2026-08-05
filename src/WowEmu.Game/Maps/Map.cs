@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using WowEmu.Core;
 using WowEmu.Data.Client;
+using WowEmu.Data.Db;
 using WowEmu.Game.Combat;
 using WowEmu.Protocol;
 
@@ -90,6 +91,20 @@ public interface IPlayerConnection
     void SendCastFailed(byte castCount, uint spellId, SpellCastResult result);
 
     /// <summary>
+    /// Relays one spell's damage, for the combat log and the floating number.
+    /// </summary>
+    /// <remarks>
+    /// Queued rather than sent, for the same reason a swing is: a damage log naming a caster the
+    /// client has not been told about draws nothing.
+    /// </remarks>
+    void QueueSpellDamage(
+        ObjectGuid target,
+        ObjectGuid caster,
+        uint spellId,
+        Combat.SpellHit hit,
+        uint targetHealthBeforeHit);
+
+    /// <summary>
     /// Tells this client why its swing did not land.
     /// </summary>
     /// <remarks>
@@ -97,6 +112,15 @@ public interface IPlayerConnection
     /// client told ten times a second that it is out of range prints the message ten times a second.
     /// </remarks>
     void SendSwingError(Combat.SwingError reason);
+
+    /// <summary>
+    /// Tells this client it gained experience, and about any levels that came with it.
+    /// </summary>
+    /// <remarks>
+    /// One call rather than two, because the order matters: the experience log has to reach the
+    /// client before the level-up banner or the banner appears with no reason for it.
+    /// </remarks>
+    void SendExperienceGain(ObjectGuid victim, uint amount, IReadOnlyList<Combat.LevelUp> levels);
 
     /// <summary>Runs the packets this session queued for its map's worker.</summary>
     void DrainMapPackets(uint diff);
@@ -177,6 +201,18 @@ public sealed class Map(
     /// game rule rather than as missing data.
     /// </remarks>
     public DbcStore<FactionTemplateEntry>? Factions { get; init; }
+
+    /// <summary>How much experience each level costs. Without it nothing gains experience.</summary>
+    public PlayerXpStore? ExperienceTable { get => _xpTable; init => _xpTable = value; }
+
+    /// <summary>Base stats per race, class and level — what a level-up recomputes from.</summary>
+    public PlayerStatsStore? PlayerStats { get => _playerStats; init => _playerStats = value; }
+
+    /// <summary>The server's experience multiplier. 1.0 is Blizzard's own rate.</summary>
+    public float ExperienceRate { get; init; } = 1.0f;
+
+    private readonly PlayerXpStore? _xpTable;
+    private readonly PlayerStatsStore? _playerStats;
 
     /// <summary>
     /// The surface under a point: the higher of terrain and any model standing there.
@@ -384,6 +420,10 @@ public sealed class Map(
         {
             return;
         }
+
+        // Experience before the threat list is cleared: whoever the creature hated is who gets paid,
+        // and Kill() forgets all of it.
+        AwardExperience(creature);
 
         creature.Kill();
 
@@ -868,6 +908,127 @@ public sealed class Map(
         foreach (Player watcher in PlayersWhoSeeCore(caster.Guid))
         {
             watcher.Connection?.SendSpellGo(caster.Guid, spell.Id, castCount, targetGuid, caster.Power);
+        }
+
+        // Effects after the impact packet, not before. The client draws the spell landing from
+        // SMSG_SPELL_GO, so a damage log that arrives first shows a number before its cause.
+        ApplySpellEffects(caster, target ?? caster, spell);
+    }
+
+    /// <summary>
+    /// Applies a spell's effects and tells everyone who can see it.
+    /// </summary>
+    /// <remarks>
+    /// Damage and healing both route through here so that death is noticed in one place, the same
+    /// way a melee swing does.
+    /// </remarks>
+    private void ApplySpellEffects(Player caster, Unit target, SpellEntry spell)
+    {
+        if (!target.IsAlive)
+        {
+            return;
+        }
+
+        SpellHit hit = SpellEffects.Apply(caster, target, spell, GameRandom.Urand);
+
+        if (!hit.IsAnything)
+        {
+            return;
+        }
+
+        if (hit.Healing > 0)
+        {
+            // Healing cannot overfill. Clamping at the maximum rather than letting it run over is
+            // what stops a heal on a full-health target showing as a gain.
+            target.Health = Math.Min(target.Health + hit.Healing, target.MaxHealth);
+        }
+
+        if (hit.Damage == 0)
+        {
+            return;
+        }
+
+        uint healthBefore = target.Health;
+
+        BroadcastSpellDamage(caster, target, spell, hit, healthBefore);
+
+        target.Health = hit.Damage >= healthBefore ? 0 : healthBefore - hit.Damage;
+
+        // Same as a swing: one point of threat per point of damage, and the kill is noticed where
+        // the health changed.
+        target.Threat.AddThreat(caster, hit.Damage);
+
+        if (target.Health == 0 && target is Creature killed)
+        {
+            Kill(killed);
+        }
+    }
+
+    /// <summary>Tells everyone who can see the fight about one spell's damage.</summary>
+    /// <remarks>
+    /// Both ends' watchers, unioned — the same reasoning as a melee swing. Someone watching only the
+    /// victim still needs the number.
+    /// </remarks>
+    private void BroadcastSpellDamage(
+        Unit caster, Unit target, SpellEntry spell, in SpellHit hit, uint targetHealthBeforeHit)
+    {
+        HashSet<ObjectGuid> notified = [];
+
+        foreach (Player watcher in PlayersWhoSeeCore(caster.Guid).Concat(PlayersWhoSeeCore(target.Guid)))
+        {
+            if (notified.Add(watcher.Guid))
+            {
+                watcher.Connection?.QueueSpellDamage(
+                    target.Guid, caster.Guid, spell.Id, hit, targetHealthBeforeHit);
+            }
+        }
+
+        // The caster sees its own spell land even when nobody, itself included, has it in a
+        // visible set — a player is not in its own.
+        if (caster is Player self && notified.Add(self.Guid))
+        {
+            self.Connection?.QueueSpellDamage(
+                target.Guid, caster.Guid, spell.Id, hit, targetHealthBeforeHit);
+        }
+    }
+
+    /// <summary>
+    /// Pays out experience for a kill.
+    /// </summary>
+    /// <remarks>
+    /// Everyone on the creature's threat list is paid in full, not a share. Group splitting needs
+    /// groups; until then paying each participant the whole amount is the honest simplification —
+    /// it errs towards over-rewarding, which is visible, rather than silently paying nobody.
+    /// <para>
+    /// The content level is taken from the creature's template expansion rather than from the zone.
+    /// Upstream uses the zone, so a classic creature standing in Outland pays classic rates here and
+    /// Outland rates there — recorded in TODO.md rather than papered over.
+    /// </para>
+    /// </remarks>
+    private void AwardExperience(Creature victim)
+    {
+        if (_xpTable is null || _playerStats is null)
+        {
+            return;
+        }
+
+        foreach (ThreatEntry entry in victim.Threat.Sorted)
+        {
+            if (entry.Target is not Player killer || !killer.IsAlive)
+            {
+                continue;
+            }
+
+            uint gain = ExperienceFormula.Gain(killer, victim, victim.Expansion, ExperienceRate);
+
+            if (gain == 0)
+            {
+                continue;
+            }
+
+            IReadOnlyList<LevelUp> levels = Experience.Give(killer, gain, _xpTable, _playerStats);
+
+            killer.Connection?.SendExperienceGain(victim.Guid, gain, levels);
         }
     }
 

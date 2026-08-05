@@ -419,3 +419,171 @@ public static class SpellCast
         writer.WriteSingle(position.Z);
     }
 }
+
+/// <summary>One spell's damage against one target, for the combat log.</summary>
+/// <param name="Target">Who was hit.</param>
+/// <param name="Attacker">Who cast it.</param>
+/// <param name="SpellId">What was cast.</param>
+/// <param name="Damage">Health lost, after mitigation.</param>
+/// <param name="TargetHealth">
+/// The target's health <b>before</b> the hit, which is what overkill is measured against.
+/// </param>
+/// <param name="SchoolMask">Which school, so the client colours the number.</param>
+/// <param name="Absorbed">How much a shield ate.</param>
+/// <param name="Resisted">How much resistance turned aside.</param>
+/// <param name="Blocked">How much was blocked.</param>
+/// <param name="IsPhysical">
+/// Changes which combat-log sentence the client prints — "hit for" against "suffers damage from" —
+/// rather than changing any number.
+/// </param>
+public readonly record struct SpellDamageLog(
+    ObjectGuid Target,
+    ObjectGuid Attacker,
+    uint SpellId,
+    uint Damage,
+    uint TargetHealth,
+    uint SchoolMask,
+    uint Absorbed = 0,
+    uint Resisted = 0,
+    uint Blocked = 0,
+    bool IsPhysical = false);
+
+/// <summary>
+/// Writes <c>SMSG_SPELLNONMELEEDAMAGELOG</c> — a spell's damage in the combat log.
+/// </summary>
+/// <remarks>
+/// Port of <c>Unit::SendSpellNonMeleeDamageLog</c>.
+/// <para>
+/// <b>The target comes first, then the attacker</b> — the opposite order to
+/// <c>SMSG_ATTACKERSTATEUPDATE</c>, which leads with the attacker. Two packets describing the same
+/// kind of event with the operands reversed, and nothing in either says so.
+/// </para>
+/// </remarks>
+public static class SpellDamageLogPacket
+{
+    /// <summary>Writes the packet body.</summary>
+    public static void Write(PacketWriter writer, in SpellDamageLog log)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WritePackedGuid(log.Target);
+        writer.WritePackedGuid(log.Attacker);
+        writer.WriteUInt32(log.SpellId);
+
+        writer.WriteUInt32(log.Damage);
+
+        // Never negative: a non-lethal hit overkills for nothing. Computed signed so it can be
+        // clamped rather than wrapping to four billion.
+        long overkill = (long)log.Damage - log.TargetHealth;
+        writer.WriteUInt32(overkill > 0 ? (uint)overkill : 0);
+
+        // A single byte, so only the low eight school bits survive. That is every real school —
+        // there are seven — but it means the field is not interchangeable with the uint32 school
+        // masks used elsewhere.
+        writer.WriteUInt8((byte)log.SchoolMask);
+
+        writer.WriteUInt32(log.Absorbed);
+        writer.WriteUInt32(log.Resisted);
+        writer.WriteUInt8(log.IsPhysical ? (byte)1 : (byte)0);
+
+        // Unused, and sent as zero by upstream on every path.
+        writer.WriteUInt8(0);
+
+        writer.WriteUInt32(log.Blocked);
+
+        // The hit-info word is written twice, then a byte of debug flags. Upstream sends all three
+        // unconditionally; the debug byte gates optional float blocks that no retail server sends,
+        // so a zero here is what keeps the packet ending where the client expects.
+        writer.WriteUInt32(0);
+        writer.WriteUInt32(0);
+        writer.WriteUInt8(0);
+    }
+}
+
+/// <summary>
+/// Writes <c>SMSG_LOG_XPGAIN</c> and <c>SMSG_LEVELUP_INFO</c>.
+/// </summary>
+/// <remarks>
+/// Port of <c>Player::SendLogXPGain</c> and <c>WorldPackets::Misc::LevelUpInfo::Write</c>.
+/// </remarks>
+public static class ExperiencePackets
+{
+    /// <summary>How many power deltas a level-up carries. One per power type.</summary>
+    public const int PowerDeltaCount = 6;
+
+    /// <summary>How many stat deltas a level-up carries — strength through spirit.</summary>
+    public const int StatDeltaCount = 5;
+
+    /// <summary>
+    /// Writes <c>SMSG_LOG_XPGAIN</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>The layout depends on whether there was a victim.</b> A kill carries two extra fields —
+    /// the unbonused amount and the group rate — that a quest reward does not, and the type byte is
+    /// what tells the client which shape it is reading. Sending the kill shape with an empty guid
+    /// makes the client read the trailing byte from the wrong place.
+    /// </remarks>
+    /// <param name="victim">Who died, or empty for experience from something other than a kill.</param>
+    /// <param name="amount">The experience gained, excluding any rested bonus.</param>
+    /// <param name="bonus">Rested bonus on top.</param>
+    public static void WriteLogXpGain(
+        PacketWriter writer, ObjectGuid victim, uint amount, uint bonus = 0)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        // A full guid, not a packed one.
+        writer.WriteUInt64(victim.Value);
+
+        writer.WriteUInt32(amount + bonus);
+
+        // 0 is a kill, 1 is anything else. The empty guid and this byte have to agree.
+        bool fromKill = !victim.IsEmpty;
+        writer.WriteUInt8(fromKill ? (byte)0 : (byte)1);
+
+        if (fromKill)
+        {
+            writer.WriteUInt32(amount);
+
+            // The group rate. 1 means no group bonus; upstream sends 1 unconditionally with a
+            // comment saying it cannot work out how to compute the real one.
+            writer.WriteSingle(1f);
+        }
+
+        // Whether the amount includes a recruit-a-friend bonus.
+        writer.WriteUInt8(0);
+    }
+
+    /// <summary>
+    /// Writes <c>SMSG_LEVELUP_INFO</c> — the numbers the client animates on the level-up banner.
+    /// </summary>
+    /// <remarks>
+    /// Every field is a <b>delta</b>, not a new total. Sending totals produces a banner claiming the
+    /// character gained its entire health pool, and the fields are unsigned on the wire so a
+    /// decrease wraps rather than showing negative.
+    /// </remarks>
+    /// <param name="powerDeltas">One per power type; only mana is ever non-zero.</param>
+    /// <param name="statDeltas">Strength, agility, stamina, intellect, spirit.</param>
+    public static void WriteLevelUp(
+        PacketWriter writer,
+        uint newLevel,
+        int healthDelta,
+        ReadOnlySpan<int> powerDeltas,
+        ReadOnlySpan<int> statDeltas)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WriteUInt32(newLevel);
+        writer.WriteUInt32((uint)healthDelta);
+
+        // Fixed counts, so a short span is padded rather than truncating the packet.
+        for (int i = 0; i < PowerDeltaCount; i++)
+        {
+            writer.WriteUInt32(i < powerDeltas.Length ? (uint)powerDeltas[i] : 0);
+        }
+
+        for (int i = 0; i < StatDeltaCount; i++)
+        {
+            writer.WriteUInt32(i < statDeltas.Length ? (uint)statDeltas[i] : 0);
+        }
+    }
+}

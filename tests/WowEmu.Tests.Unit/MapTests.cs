@@ -363,6 +363,21 @@ public sealed class MapVisibilityTests
         public void SendCastFailed(byte castCount, uint spellId, SpellCastResult result) =>
             CastFailures.Add(result);
 
+
+        /// <summary>Spell damage this client was told about.</summary>
+        public List<(ObjectGuid Target, uint SpellId, SpellHit Hit)> SpellDamage { get; } = [];
+
+        public void QueueSpellDamage(
+            ObjectGuid target, ObjectGuid caster, uint spellId, SpellHit hit, uint targetHealthBeforeHit) =>
+            SpellDamage.Add((target, spellId, hit));
+
+
+        /// <summary>Experience gains this client was told about.</summary>
+        public List<(uint Amount, IReadOnlyList<LevelUp> Levels)> ExperienceGains { get; } = [];
+
+        public void SendExperienceGain(ObjectGuid victim, uint amount, IReadOnlyList<LevelUp> levels) =>
+            ExperienceGains.Add((amount, levels));
+
         public void SendSwingError(SwingError reason) => SwingErrors.Add(reason);
 
         public void DrainMapPackets(uint diff)

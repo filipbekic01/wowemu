@@ -27,6 +27,13 @@ public enum CreatureFlagsExtra : uint
     /// <summary>Cannot land crushing blows.</summary>
     NoCrushingBlows = 0x00000020,
 
+    /// <summary>Killing it awards no experience.</summary>
+    /// <remarks>
+    /// Training dummies, event props, and anything else that can be killed repeatedly at no risk.
+    /// Ignoring the bit turns each of them into a levelling strategy.
+    /// </remarks>
+    NoExperience = 0x00000040,
+
     /// <summary>Cannot land critical strikes.</summary>
     NoCrit = 0x00020000,
 

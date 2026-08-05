@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using WowEmu.Data.Client;
+using WowEmu.Data.Db;
 
 namespace WowEmu.Game.Maps;
 
@@ -31,7 +32,9 @@ public sealed class MapManager(
     MapUpdater? updater = null,
     ILogger<Map>? logger = null,
     VmapManager? vmaps = null,
-    DbcStore<FactionTemplateEntry>? factions = null) : IDisposable
+    DbcStore<FactionTemplateEntry>? factions = null,
+    PlayerXpStore? experienceTable = null,
+    PlayerStatsStore? playerStats = null) : IDisposable
 {
     /// <summary>
     /// The four phases. Three update a category of map; the fourth is a pause.
@@ -63,6 +66,8 @@ public sealed class MapManager(
             map = new Map(mapId, terrain.GetMap(mapId), gridObjects, logger, vmaps?.GetMap(mapId))
             {
                 Factions = factions,
+                ExperienceTable = experienceTable,
+                PlayerStats = playerStats,
             };
             _maps[mapId] = map;
         }
