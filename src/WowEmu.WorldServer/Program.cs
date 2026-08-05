@@ -37,6 +37,7 @@ builder.Services.AddSingleton<CreatureTemplateStore>();
 builder.Services.AddSingleton<CreatureStatsStore>();
 builder.Services.AddSingleton<CreatureSpawnStore>();
 builder.Services.AddSingleton<GameObjectTemplateStore>();
+builder.Services.AddSingleton<ItemTemplateStore>();
 builder.Services.AddSingleton<GameObjectSpawnStore>();
 builder.Services.AddSingleton<PlayerXpStore>();
 builder.Services.AddSingleton<GraveyardStore>();
@@ -93,7 +94,8 @@ builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<PlayerXpStore>(),
     services.GetRequiredService<PlayerStatsStore>(),
     services.GetRequiredService<GraveyardStore>(),
-    services.GetRequiredService<DbcStores>().WorldSafeLocs));
+    services.GetRequiredService<DbcStores>().WorldSafeLocs,
+    services.GetRequiredService<SpellStores>()));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in

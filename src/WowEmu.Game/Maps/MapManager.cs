@@ -36,7 +36,8 @@ public sealed class MapManager(
     PlayerXpStore? experienceTable = null,
     PlayerStatsStore? playerStats = null,
     GraveyardStore? graveyards = null,
-    DbcStore<WorldSafeLocsEntry>? worldSafeLocs = null) : IDisposable
+    DbcStore<WorldSafeLocsEntry>? worldSafeLocs = null,
+    SpellStores? spells = null) : IDisposable
 {
     /// <summary>
     /// The four phases. Three update a category of map; the fourth is a pause.
@@ -72,6 +73,7 @@ public sealed class MapManager(
                 PlayerStats = playerStats,
                 Graveyards = graveyards,
                 WorldSafeLocs = worldSafeLocs,
+                Spells = spells,
             };
             _maps[mapId] = map;
         }

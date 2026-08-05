@@ -158,6 +158,10 @@ internal static partial class Log
         Message = "'{Name}' started attacking '{Target}' — {Address}")]
     public static partial void AttackStarted(ILogger logger, string name, string target, string address);
 
+    [LoggerMessage(EventId = 2326, Level = LogLevel.Information,
+        Message = "Loaded {Templates} item templates")]
+    public static partial void ItemTemplatesLoaded(ILogger logger, int templates);
+
     [LoggerMessage(EventId = 2325, Level = LogLevel.Information,
         Message = "Loaded {Links} graveyard links across {Zones} zones, {Locations} safe locations")]
     public static partial void GraveyardsLoaded(ILogger logger, int links, int zones, int locations);

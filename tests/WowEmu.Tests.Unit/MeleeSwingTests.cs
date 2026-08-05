@@ -630,7 +630,8 @@ internal static class MapCombatFixture
     public static (Map Map, Player Attacker, Creature Victim, Link Connection) Engaged(
         float distance = 2f,
         PlayerXpStore? experience = null,
-        PlayerStatsStore? playerStats = null)
+        PlayerStatsStore? playerStats = null,
+        SpellStores? spells = null)
     {
         Creature victim = CreatureFixture.Build(position: new Position(distance, 0f, 0f, 0f));
 
@@ -640,6 +641,7 @@ internal static class MapCombatFixture
         {
             ExperienceTable = experience,
             PlayerStats = playerStats,
+            Spells = spells,
         };
 
         CharacterSummary summary = new(1, "Fighter", 1, 1, 0, 0, 0, 0, 0, 0, 1, 12, 0, 0f, 0f, 0f, 0, 0, 0);
@@ -767,6 +769,40 @@ internal static class MapCombatFixture
         public void SendResurrected() => SendSpiritHealerLocation(uint.MaxValue, default);
 
         public void SendSwingError(SwingError reason) => SwingErrors.Add(reason);
+
+
+        /// <summary>Auras this client was told landed, and on whom.</summary>
+        public List<(ObjectGuid Target, byte Slot, uint SpellId, byte Flags, int RemainingMs)> AurasApplied { get; } = [];
+
+        /// <summary>Auras this client was told went away.</summary>
+        public List<(ObjectGuid Target, byte Slot)> AurasRemoved { get; } = [];
+
+        /// <summary>Periodic ticks this client was told about.</summary>
+        public List<(ObjectGuid Target, uint SpellId, uint AuraType, uint Amount, uint Overflow)> AuraTicks { get; } = [];
+
+        public void SendAuraApplied(
+            ObjectGuid target,
+            byte slot,
+            uint spellId,
+            byte flags,
+            byte casterLevel,
+            byte stackAmount,
+            ObjectGuid caster,
+            int maxDurationMs,
+            int remainingMs) =>
+            AurasApplied.Add((target, slot, spellId, flags, remainingMs));
+
+        public void SendAuraRemoved(ObjectGuid target, byte slot) => AurasRemoved.Add((target, slot));
+
+        public void QueuePeriodicAuraLog(
+            ObjectGuid target,
+            ObjectGuid caster,
+            uint spellId,
+            uint auraType,
+            uint amount,
+            uint overflow,
+            uint schoolMask) =>
+            AuraTicks.Add((target, spellId, auraType, amount, overflow));
 
         public void DrainMapPackets(uint diff)
         {

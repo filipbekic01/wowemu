@@ -72,6 +72,7 @@ public sealed class WorldSession(
     private readonly List<(ObjectGuid Mover, CreatureMove Move, uint SplineId)> _pendingMonsterMoves = [];
     private readonly List<AttackerState> _pendingMeleeSwings = [];
     private readonly List<SpellDamageLog> _pendingSpellDamage = [];
+    private readonly List<PeriodicAuraLog> _pendingAuraLogs = [];
 
     /// <summary>The last swing failure told to this client, so a run of them is only reported once.</summary>
     private SwingError _lastSwingError;
@@ -304,6 +305,10 @@ public sealed class WorldSession(
 
             case Opcode.CMSG_RECLAIM_CORPSE:
                 HandleReclaimCorpse();
+                return;
+
+            case Opcode.CMSG_ITEM_QUERY_SINGLE:
+                HandleItemQuerySingle(payload);
                 return;
 
             default:
@@ -915,6 +920,61 @@ public sealed class WorldSession(
         }
     }
 
+    /// <summary>
+    /// Answers <c>CMSG_ITEM_QUERY_SINGLE</c> — what is this item?
+    /// </summary>
+    /// <remarks>
+    /// The client asks about anything it has a guid for but no cached tooltip, which after a cache
+    /// wipe is everything it owns. It blocks the tooltip on the answer, so an unanswered query is a
+    /// slot that never shows what it holds.
+    /// <para>
+    /// A missing entry is answered too, with the high bit set — see
+    /// <see cref="ItemQueryResponse.NotFoundFlag"/>. Silence would leave the client asking again.
+    /// </para>
+    /// </remarks>
+    private void HandleItemQuerySingle(ReadOnlyMemory<byte> payload)
+    {
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt32(out uint entry))
+        {
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_ITEM_QUERY_SINGLE_RESPONSE, 600);
+
+        if (world.Items.TryGet(entry, out ItemTemplate? template) && template is not null)
+        {
+            ItemQueryResponse.Write(packet.Body, template, TryGetSpellCooldown);
+        }
+        else
+        {
+            ItemQueryResponse.WriteNotFound(packet.Body, entry);
+        }
+
+        connection.Send(packet);
+    }
+
+    /// <summary>The cooldown figures an item's spell slot falls back on. See <see cref="SpellCooldownLookup"/>.</summary>
+    private bool TryGetSpellCooldown(
+        int spellId, out uint recoveryMs, out uint category, out uint categoryRecoveryMs)
+    {
+        recoveryMs = 0;
+        category = 0;
+        categoryRecoveryMs = 0;
+
+        if (spellId <= 0 || !world.Spells.Spells.TryGet((uint)spellId, out SpellEntry spell))
+        {
+            return false;
+        }
+
+        recoveryMs = spell.RecoveryTime;
+        category = spell.Category;
+        categoryRecoveryMs = spell.CategoryRecoveryTime;
+
+        return true;
+    }
+
     private void HandleMovement(Opcode opcode, ReadOnlyMemory<byte> payload)
     {
         if (_player is null || _map is null)
@@ -1107,6 +1167,27 @@ public sealed class WorldSession(
         }
 
         _pendingSpellDamage.Clear();
+
+        // Last, with the rest of the combat log. A tick is a log line like any other and belongs in
+        // tick order behind the swings and spells of the same update.
+        foreach (PeriodicAuraLog tick in _pendingAuraLogs)
+        {
+            ServerPacket packet = new(Opcode.SMSG_PERIODICAURALOG, 48);
+
+            AuraUpdate.WritePeriodicLog(
+                packet.Body,
+                tick.Target,
+                tick.Caster,
+                tick.SpellId,
+                tick.AuraType,
+                tick.Amount,
+                tick.Overflow,
+                tick.SchoolMask);
+
+            connection.Send(packet);
+        }
+
+        _pendingAuraLogs.Clear();
     }
 
     /// <summary>
@@ -1240,6 +1321,57 @@ public sealed class WorldSession(
             Resisted: hit.Resisted,
             Blocked: hit.Blocked,
             IsPhysical: hit.IsPhysical));
+
+    /// <summary>Tells this client an aura has landed, or that one already there has changed.</summary>
+    public void SendAuraApplied(
+        ObjectGuid target,
+        byte slot,
+        uint spellId,
+        byte flags,
+        byte casterLevel,
+        byte stackAmount,
+        ObjectGuid caster,
+        int maxDurationMs,
+        int remainingMs)
+    {
+        ServerPacket packet = new(Opcode.SMSG_AURA_UPDATE, 32);
+
+        AuraUpdate.WriteApplied(
+            packet.Body,
+            target,
+            new AuraSlotUpdate(
+                Slot: slot,
+                SpellId: spellId,
+                Flags: flags,
+                CasterLevel: casterLevel,
+                StackAmount: stackAmount,
+                Caster: caster,
+                MaxDurationMs: maxDurationMs,
+                RemainingMs: remainingMs));
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Tells this client an aura is gone.</summary>
+    public void SendAuraRemoved(ObjectGuid target, byte slot)
+    {
+        ServerPacket packet = new(Opcode.SMSG_AURA_UPDATE, 16);
+        AuraUpdate.WriteRemoved(packet.Body, target, slot);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Queues one periodic aura tick for the combat log.</summary>
+    public void QueuePeriodicAuraLog(
+        ObjectGuid target,
+        ObjectGuid caster,
+        uint spellId,
+        uint auraType,
+        uint amount,
+        uint overflow,
+        uint schoolMask) =>
+        _pendingAuraLogs.Add(new PeriodicAuraLog(
+            target, caster, spellId, auraType, amount, overflow, schoolMask));
 
     /// <summary>Tells this client that a cast has started.</summary>
     /// <remarks>

@@ -49,7 +49,7 @@
       "name": "Combat",
       "meaning": "Kill a mob with autoattack and a spell, gain XP, level up",
       "state": "progress",
-      "note": "Melee is done end to end and verified by a headless gate. Spells cast and deal damage; auras do not exist yet. Not yet confirmed against a real client."
+      "note": "Melee is done end to end and verified by a headless gate. Spells cast, deal damage and apply auras that tick. Not yet confirmed against a real client."
     },
     {
       "id": "M6",
@@ -929,7 +929,7 @@
       "title": "Combat",
       "state": "progress",
       "milestone": "M5",
-      "summary": "Melee is done end to end and verified by a headless gate. Spells cast and deal damage; auras do not exist yet.",
+      "summary": "Melee is done end to end and verified by a headless gate. Spells cast, deal damage, and apply auras that tick on the map's clock.",
       "groups": [
         {
           "title": "The melee attack table",
@@ -1163,6 +1163,70 @@
           ]
         },
         {
+          "title": "Auras",
+          "items": [
+            {
+              "done": true,
+              "text": "3.3.5a HAS NO AURA UPDATE FIELDS — the client learns about auras from SMSG_AURA_UPDATE alone, keyed by slot",
+              "note": "Earlier clients carried them in the unit's field block, and every guide written for those still says so. Only UNIT_FIELD_AURASTATE survives here."
+            },
+            {
+              "done": true,
+              "text": "AuraEffect / Aura / AuraContainer — effects, duration, slots",
+              "note": "Slots are lowest-free rather than a running counter: the client indexes a fixed 255-wide space, and a counter would run off the end of a long session."
+            },
+            {
+              "done": true,
+              "text": "THE FIRST TICK IS A FULL PERIOD AWAY, not immediate",
+              "note": "A damage-over-time that ticks the instant it lands is a direct hit with extra steps, and it front-loads every such spell."
+            },
+            {
+              "done": true,
+              "text": "The tick loop is a WHILE and THE REMAINDER CARRIES FORWARD",
+              "note": "An out-of-phase map hands in four ticks' worth of diff at once, so a tick longer than the amplitude is the normal case. Resetting the timer instead of adding to it stretches the period and loses ticks."
+            },
+            {
+              "done": true,
+              "text": "Expiry is checked AFTER ticking, so an aura's last tick lands",
+              "note": "Checking first drops one tick from every damage-over-time in the game — an 8 s burn paying for four and landing three."
+            },
+            {
+              "done": true,
+              "text": "A recast from the same caster refreshes in place and KEEPS ITS SLOT; two casters each get their own",
+              "note": "Keeping the slot stops the buff bar flickering the icon away and back on every refresh."
+            },
+            {
+              "done": true,
+              "text": "SMSG_AURA_UPDATE — the caster guid appears only when the CASTER flag is CLEAR, the two durations only when the DURATION flag is set"
+            },
+            {
+              "done": true,
+              "text": "A removal is the slot and a ZERO SPELL ID, and the packet ends there"
+            },
+            {
+              "done": true,
+              "text": "SMSG_PERIODICAURALOG, whose trailer differs per aura type"
+            },
+            {
+              "done": true,
+              "text": "Ticks go through the same damage path as a swing: threat, death and experience all follow",
+              "note": "A burn can kill something after its caster has walked away, and the caster is looked up rather than held because it may be gone."
+            },
+            {
+              "done": true,
+              "text": "Death clears every aura and tells the client about each one"
+            },
+            {
+              "done": false,
+              "text": "Stacking, charges, dispel and proc triggers"
+            },
+            {
+              "done": false,
+              "text": "MOD_STAT, MOD_DECREASE_SPEED and the rest — applied and shown, but they do nothing yet"
+            }
+          ]
+        },
+        {
           "title": "Experience and levelling",
           "items": [
             {
@@ -1242,7 +1306,7 @@
       "title": "Progression systems",
       "state": "progress",
       "milestone": "M6",
-      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands. Player death is done — it was the hole creatures fighting back opened.",
+      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands. Death and the item model are done; the bags that hold the items are next.",
       "groups": [
         {
           "title": "Death and release",
@@ -1304,11 +1368,82 @@
           ]
         },
         {
+          "title": "Items",
+          "items": [
+            {
+              "done": true,
+              "text": "item_template vendored — 38,610 rows, 150 columns",
+              "note": "sql/world/ grows from ~28 MB to ~42 MB. The vendoring rule says a fresh clone must be able to start, and that is the price."
+            },
+            {
+              "done": true,
+              "text": "THE STORE IS WIDE WHERE THE OTHERS ARE NARROW, and has to be",
+              "note": "Nearly every column is written straight back out in the query response — that packet is how the client draws a tooltip it has never seen. Reading a subset means an item missing whatever was left out."
+            },
+            {
+              "done": true,
+              "text": "GetMaxStackSize — zero, negative and int.MaxValue all mean 0x7FFFFFFE",
+              "note": "Read literally, a stackable of 0 is an item nobody can hold and the -1 the table uses for coins is a stack of four billion."
+            },
+            {
+              "done": true,
+              "text": "Item is an Object but NOT a WorldObject — 64 field slots against a unit's 148",
+              "note": "No position, no map, no movement block. It reaches a client because that client owns it, not because it is nearby."
+            },
+            {
+              "done": true,
+              "text": "A container is a Bag, whose block runs 74 slots further to CONTAINER_END",
+              "note": "The client reads the extra slots the moment the container type bit is set. Verified: all 155 bags in the table fit the client's 36-slot array."
+            },
+            {
+              "done": true,
+              "text": "A fresh item holds ONE, not a full stack; durability starts full; spell charges keep their sign",
+              "note": "A negative charge count is what destroys the item at zero — store the absolute value and an empty potion stays in the bag forever."
+            },
+            {
+              "done": true,
+              "text": "SMSG_ITEM_QUERY_SINGLE_RESPONSE — nearly every field is FOUR BYTES regardless of its column",
+              "note": "class is a tinyint in the table and a uint32 on the wire, because the C++ struct widens it on load."
+            },
+            {
+              "done": true,
+              "text": "The stat count is a length prefix; the three unused name slots are ONE ZERO BYTE each",
+              "note": "Writing all ten stats regardless, or three words for the names, shifts the whole tail."
+            },
+            {
+              "done": true,
+              "text": "A spell slot is six words whether or not the spell exists, and -1 cooldowns mean ASK THE SPELL",
+              "note": "Sending the -1 through shows a clickable item with a four-billion-millisecond cooldown. Needed Spell.dbc's Category column, which was not being read."
+            },
+            {
+              "done": true,
+              "text": "A missing item answers with the entry and the high bit set, not with silence",
+              "note": "A zeroed body instead leaves the client believing in a nameless item, which it caches to disk and stops asking about."
+            },
+            {
+              "done": true,
+              "text": "All 38,610 rows write as a query response without throwing; longest is 699 bytes"
+            },
+            {
+              "done": false,
+              "text": "Random properties, enchantments and gems"
+            },
+            {
+              "done": false,
+              "text": "Item duration ticking down, and the item disappearing when it runs out"
+            },
+            {
+              "done": false,
+              "text": "locales_item — every tooltip is English"
+            }
+          ]
+        },
+        {
           "title": "Still to come",
           "items": [
             {
               "done": false,
-              "text": "Inventory and items"
+              "text": "Inventory, equipment and bags — the slots the items go in"
             },
             {
               "done": false,
@@ -1605,7 +1740,7 @@
       "items": [
         "Nothing checks that a player knows the spell it casts. There is no spellbook, so CMSG_CAST_SPELL is honoured for any id in Spell.dbc.",
         "SPELLS CANNOT MISS, CRIT OR BE RESISTED. Every cast that passes its checks lands in full — no spell hit table, no spell crit, no resistance.",
-        "AURAS DO NOT EXIST, so APPLY_AURA — the single most common effect in the file — does nothing. Fireball's direct damage lands; its burn does not.",
+        "Auras apply, tick and expire, but only PERIODIC_DAMAGE and PERIODIC_HEAL DO ANYTHING. Every other type is applied and shown on the buff bar and has no effect — a slow that does not slow. No stacking, no charges, no dispel, no procs.",
         "A creature's spell damage is not rescaled by its level. Upstream multiplies by the ratio of the creature's base damage to the spell's for spells flagged to scale.",
         "Nothing interrupts a cast. Moving, taking damage and dying all leave the bar running; only CMSG_CANCEL_CAST ends one early."
       ]
@@ -1658,13 +1793,23 @@
         "World tables are imported by piping vendored .sql dumps — there is no real importer, no schema mapping and no type cleanup. 12 of upstream's 309 tables are vendored so far.",
         "world structure is upstream's verbatim, not a schema we own. PLAN §5.2 wants cleaned types and names with columns and semantics preserved — that belongs in WowEmu.Data.Import."
       ]
+    },
+    {
+      "category": "Items",
+      "items": [
+        "Nothing creates an item yet. The store, the object and the query response exist; there are no bags to put one in, so no player owns anything.",
+        "No random properties, no enchantments, no gems — the fields are on the object and nothing writes them.",
+        "Item duration is copied from the template and never counts down.",
+        "locales_item is not read, so every tooltip is English whatever the client asked for.",
+        "BuyPrice is a bigint in the table and an int32 on the wire. Following the C++ struct rather than the column; no real row is anywhere near the boundary."
+      ]
     }
   ],
   "remember": [
     "Session handlers that await resume on the tick, but nothing ENFORCES it: a future handler that writes ConfigureAwait(false) would silently resume on the thread pool and touch a Player from outside its loop. TickScheduler.AssertOwnerThread exists for exactly this and is not yet wired in.",
     "THE TWO REFERENCE TREES ARE AT DIFFERENT POINTS IN AZEROTHCORE'S HISTORY, and creature spawning is the first place it bites. The C++ reads creature models from a creature_template_model table; the vendored database still has modelid1..4. Ours follows the DATA. Read the C++ for behaviour, but check the dump before trusting a column name.",
     "Both reference trees (azerothcore-wotlk, database-wotlk) have no git root — updating means re-cloning.",
-    "sql/world/ is now ~19 MB, almost all of it creature (12 MB) and creature_template (7 MB). The vendoring rule says a fresh clone must be able to start, and that is the price. item_template will roughly double it.",
+    "sql/world/ is now ~42 MB: item_template (14 MB), creature (12 MB), creature_template (7.6 MB), gameobject (7 MB). The vendoring rule says a fresh clone must be able to start, and that is the price.",
     "data/ is 3 GB of extracted client data and is not committed; a fresh clone needs the extractors run again.",
     "sql/world/ redistributes AGPL-3.0 content from AzerothCore's database. Deliberate — but it is a licence obligation worth being aware of."
   ],

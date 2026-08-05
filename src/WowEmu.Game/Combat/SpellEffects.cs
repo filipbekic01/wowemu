@@ -18,6 +18,15 @@ public static class SpellEffectId
     /// <summary>Restores health.</summary>
     public const uint Heal = 10;
 
+    /// <summary>
+    /// Puts an aura on the target.
+    /// </summary>
+    /// <remarks>
+    /// The most common effect in the whole file. What it <i>does</i> is decided by the effect's
+    /// <c>ApplyAuraName</c>, not by this id — see <see cref="AuraType"/>.
+    /// </remarks>
+    public const uint ApplyAura = 6;
+
     /// <summary>Weapon damage plus a flat bonus, dealt in no particular school.</summary>
     public const uint WeaponDamageNoSchool = 17;
 

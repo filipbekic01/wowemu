@@ -18,12 +18,16 @@ public sealed class WorldContent(
     DbcStores stores,
     PlayerStatsStore stats,
     TerrainManager terrain,
-    SpellStores spells)
+    SpellStores spells,
+    ItemTemplateStore items)
 {
     public TerrainManager Terrain { get; } = terrain;
 
     /// <summary>Every spell, and the tables its cast time, range and duration index into.</summary>
     public SpellStores Spells { get; } = spells;
+
+    /// <summary>Every item the client can be told about.</summary>
+    public ItemTemplateStore Items { get; } = items;
 
     public DbcStores Stores { get; } = stores;
 

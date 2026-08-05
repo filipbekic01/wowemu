@@ -143,6 +143,49 @@ public interface IPlayerConnection
     /// <summary>Tells this client it is alive again.</summary>
     void SendResurrected();
 
+    /// <summary>
+    /// Tells this client an aura has landed on a unit, or that one already there has changed.
+    /// </summary>
+    /// <remarks>
+    /// Immediate rather than queued, and knowingly so: an aura is applied by a cast whose
+    /// <c>SMSG_SPELL_GO</c> has already gone out immediately, so queueing this behind it would let
+    /// the impact reach the client before the buff icon.
+    /// </remarks>
+    /// <param name="flags">
+    /// Decides the packet's own shape — which of the caster guid and the two durations follow. It is
+    /// passed rather than derived because only the game layer knows whether the caster is the
+    /// target.
+    /// </param>
+    void SendAuraApplied(
+        ObjectGuid target,
+        byte slot,
+        uint spellId,
+        byte flags,
+        byte casterLevel,
+        byte stackAmount,
+        ObjectGuid caster,
+        int maxDurationMs,
+        int remainingMs);
+
+    /// <summary>Tells this client an aura is gone, so the icon leaves the bar.</summary>
+    void SendAuraRemoved(ObjectGuid target, byte slot);
+
+    /// <summary>
+    /// Relays one periodic aura tick, for the combat log and the floating number.
+    /// </summary>
+    /// <remarks>
+    /// Queued rather than sent, for the same reason a swing is: a tick naming a caster the client
+    /// has not been told about draws nothing.
+    /// </remarks>
+    void QueuePeriodicAuraLog(
+        ObjectGuid target,
+        ObjectGuid caster,
+        uint spellId,
+        uint auraType,
+        uint amount,
+        uint overflow,
+        uint schoolMask);
+
     /// <summary>Runs the packets this session queued for its map's worker.</summary>
     void DrainMapPackets(uint diff);
 }
@@ -229,6 +272,9 @@ public sealed class Map(
     /// <summary>Base stats per race, class and level — what a level-up recomputes from.</summary>
     public PlayerStatsStore? PlayerStats { get => _playerStats; init => _playerStats = value; }
 
+    /// <summary>Every spell, so an aura can resolve its own duration.</summary>
+    public SpellStores? Spells { get => _spells; init => _spells = value; }
+
     /// <summary>Which graveyards a zone offers. Without it a ghost stays where it fell.</summary>
     public GraveyardStore? Graveyards { get => _graveyards; init => _graveyards = value; }
 
@@ -240,6 +286,7 @@ public sealed class Map(
 
     private readonly PlayerXpStore? _xpTable;
     private readonly PlayerStatsStore? _playerStats;
+    private readonly SpellStores? _spells;
     private readonly GraveyardStore? _graveyards;
     private readonly DbcStore<WorldSafeLocsEntry>? _worldSafeLocs;
 
@@ -757,6 +804,7 @@ public sealed class Map(
         }
 
         UpdateCreatureCombat(gameplayDiff);
+        UpdateAuras(gameplayDiff);
     }
 
     /// <summary>
@@ -960,6 +1008,8 @@ public sealed class Map(
 
         SpellHit hit = SpellEffects.Apply(caster, target, spell, GameRandom.Urand);
 
+        ApplyAuras(caster, target, spell);
+
         if (!hit.IsAnything)
         {
             return;
@@ -988,6 +1038,195 @@ public sealed class Map(
         target.Threat.AddThreat(caster, hit.Damage);
 
         NoticeDeath(target);
+    }
+
+    /// <summary>
+    /// Puts a spell's auras on a target and tells the client.
+    /// </summary>
+    /// <remarks>
+    /// Separate from the damage: a spell can do both, and Fireball does — direct damage from effect
+    /// 0 and a burn from effect 1. Nothing here depends on whether the damage landed.
+    /// </remarks>
+    private void ApplyAuras(Unit caster, Unit target, SpellEntry spell)
+    {
+        if (_spells is null || !target.IsAlive)
+        {
+            return;
+        }
+
+        int duration = _spells.DurationMs(spell);
+
+        Aura? aura = target.Auras.Apply(
+            spell,
+            caster.Guid,
+            caster.Level,
+            duration,
+            effect => SpellEffects.CalculateValue(
+                spell, effect, caster.Level, (min, max) => (int)GameRandom.Urand((uint)min, (uint)max)));
+
+        if (aura is not null)
+        {
+            BroadcastAuraApplied(target, aura);
+        }
+    }
+
+    /// <summary>
+    /// Advances every unit's auras and applies what came due.
+    /// </summary>
+    /// <remarks>
+    /// Creatures as well as players: a burn on a wolf has to tick, and it is the only thing that
+    /// kills something after its attacker has walked away.
+    /// </remarks>
+    private void UpdateAuras(uint gameplayDiff)
+    {
+        // Materialised: a tick can kill, and a death takes the victim out of the cell it was filed
+        // in — enumerating the live collections while that happens throws.
+        foreach (Unit unit in Players.Cast<Unit>().Concat(_creatures).ToList())
+        {
+            if (unit.Auras.Count == 0)
+            {
+                continue;
+            }
+
+            (IReadOnlyList<AuraTick> ticks, IReadOnlyList<Aura> expired) = unit.Auras.Update(gameplayDiff);
+
+            foreach (AuraTick tick in ticks)
+            {
+                ApplyAuraTick(unit, tick);
+            }
+
+            foreach (Aura aura in expired)
+            {
+                BroadcastAuraRemoved(unit, aura);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies what one aura effect owed this update, one tick at a time.
+    /// </summary>
+    /// <remarks>
+    /// A tick is one combat-log line, so an update that owes three sends three rather than one for
+    /// the total — an out-of-phase map owes several at once routinely, and summing them would show
+    /// a burn hitting for triple every fourth tick.
+    /// <para>
+    /// The caster is looked up rather than held, because it may have died, logged out or walked off
+    /// the map since the aura landed. A burn outlives the person who cast it.
+    /// </para>
+    /// </remarks>
+    private void ApplyAuraTick(Unit target, in AuraTick tick)
+    {
+        if (!tick.Effect.IsHandled)
+        {
+            return;
+        }
+
+        uint amount = (uint)Math.Max(tick.Effect.Amount, 0);
+
+        if (amount == 0)
+        {
+            return;
+        }
+
+        Unit? caster = Find(tick.Aura.CasterGuid) as Unit;
+
+        for (int i = 0; i < tick.Ticks; i++)
+        {
+            if (!target.IsAlive)
+            {
+                return;
+            }
+
+            if (tick.Effect.Type == AuraType.PeriodicHeal)
+            {
+                uint before = target.Health;
+                target.Health = Math.Min(target.Health + amount, target.MaxHealth);
+
+                BroadcastAuraTick(target, tick, target.Health - before, amount - (target.Health - before));
+                continue;
+            }
+
+            uint healthBefore = target.Health;
+            uint overkill = amount > healthBefore ? amount - healthBefore : 0;
+
+            BroadcastAuraTick(target, tick, amount, overkill);
+
+            target.Health = amount >= healthBefore ? 0 : healthBefore - amount;
+
+            // A tick generates threat for whoever cast it, so a damage-over-time keeps its caster on
+            // the list rather than letting the target wander off to someone else.
+            if (caster is not null)
+            {
+                target.Threat.AddThreat(caster, amount);
+            }
+
+            NoticeDeath(target);
+        }
+    }
+
+    /// <summary>Takes every aura off a unit and tells the clients each one is gone.</summary>
+    private void ClearAuras(Unit unit)
+    {
+        if (unit.Auras.Count == 0)
+        {
+            return;
+        }
+
+        foreach (Aura aura in unit.Auras.Auras.ToList())
+        {
+            BroadcastAuraRemoved(unit, aura);
+        }
+
+        unit.Auras.Clear();
+    }
+
+    private void BroadcastAuraApplied(Unit target, Aura aura)
+    {
+        foreach (Player watcher in WatchersOf(target))
+        {
+            watcher.Connection?.SendAuraApplied(
+                target.Guid, aura.Slot, aura.Spell.Id, (byte)aura.FlagsFor(target.Guid),
+                aura.CasterLevel, aura.StackAmount, aura.CasterGuid,
+                aura.MaxDurationMs, aura.RemainingMs);
+        }
+    }
+
+    private void BroadcastAuraRemoved(Unit target, Aura aura)
+    {
+        foreach (Player watcher in WatchersOf(target))
+        {
+            watcher.Connection?.SendAuraRemoved(target.Guid, aura.Slot);
+        }
+    }
+
+    private void BroadcastAuraTick(Unit target, in AuraTick tick, uint amount, uint overflow)
+    {
+        foreach (Player watcher in WatchersOf(target))
+        {
+            watcher.Connection?.QueuePeriodicAuraLog(
+                target.Guid, tick.Aura.CasterGuid, tick.Aura.Spell.Id,
+                tick.Effect.Type, amount, overflow, tick.Aura.Spell.SchoolMask);
+        }
+    }
+
+    /// <summary>
+    /// Everyone who should be told about something happening to a unit, including the unit itself.
+    /// </summary>
+    /// <remarks>
+    /// A player is not in its own visible set, so a loop over watchers alone leaves the person the
+    /// aura is on as the only one who cannot see it.
+    /// </remarks>
+    private IEnumerable<Player> WatchersOf(Unit unit)
+    {
+        if (unit is Player self)
+        {
+            yield return self;
+        }
+
+        foreach (Player watcher in PlayersWhoSeeCore(unit.Guid))
+        {
+            yield return watcher;
+        }
     }
 
     /// <summary>Tells everyone who can see the fight about one spell's damage.</summary>
@@ -1172,6 +1411,11 @@ public sealed class Map(
         {
             return;
         }
+
+        // Death takes every aura with it. Leaving them on ticks a burn against a corpse, which is
+        // harmless in itself but re-enters this method every tick with a victim that is already
+        // dead — and on a player it leaves the buff bar populated through the release screen.
+        ClearAuras(victim);
 
         switch (victim)
         {

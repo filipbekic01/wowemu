@@ -237,7 +237,7 @@ public sealed class SpellStoreTests(ITestOutputHelper output)
 
         SpellEntry nothing = new(
             0, "", "", new uint[SpellEntry.AttributeWords],
-            CastingTimeIndex: 0, RecoveryTime: 0, CategoryRecoveryTime: 0,
+            Category: 0, CastingTimeIndex: 0, RecoveryTime: 0, CategoryRecoveryTime: 0,
             StartRecoveryCategory: 0, StartRecoveryTime: 0, InterruptFlags: 0, Targets: 0,
             PowerType: 0, ManaCost: 0, ManaCostPerLevel: 0, ManaCostPercentage: 0,
             RangeIndex: 0, Speed: 0f, DurationIndex: 0, BaseLevel: 0, SpellLevel: 0, MaxLevel: 0,
@@ -288,7 +288,7 @@ public sealed class SpellStoreTests(ITestOutputHelper output)
 
         SpellEntry spell = new(
             1, "test", "", new uint[SpellEntry.AttributeWords],
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0f,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0f,
             DurationIndex: scaled.Id, BaseLevel: 1, SpellLevel: 1, MaxLevel: 0,
             0, 0, 0, 0, 0, 0, 0,
             Effects: new SpellEffectEntry[SpellConstants.MaxEffects]);
@@ -377,7 +377,7 @@ public sealed class SpellStoreTests(ITestOutputHelper output)
     {
         SpellEntry spell = new(
             1, "test", "", [0xFFFFFFFF, 0, 0, 0, 0, 0, 0, 0],
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             new SpellEffectEntry[SpellConstants.MaxEffects]);
 
         Assert.True(spell.HasAttribute(0, 1));

@@ -587,3 +587,160 @@ public static class ExperiencePackets
         }
     }
 }
+
+/// <summary>One aura as the client is told about it.</summary>
+/// <param name="Slot">Which of the target's aura slots. The client keys everything off this.</param>
+/// <param name="SpellId">Zero means "the slot is now empty" and nothing else follows.</param>
+/// <param name="Flags">Decides which of the optional trailers are present.</param>
+/// <param name="CasterLevel">Shown on the tooltip.</param>
+/// <param name="StackAmount">Never zero — the client draws a zero stack as no aura at all.</param>
+/// <param name="Caster">Written only when the target did <b>not</b> cast it on itself.</param>
+/// <param name="MaxDurationMs">Written only with the duration flag.</param>
+/// <param name="RemainingMs">As above.</param>
+public readonly record struct AuraSlotUpdate(
+    byte Slot,
+    uint SpellId,
+    byte Flags,
+    byte CasterLevel,
+    byte StackAmount,
+    ObjectGuid Caster = default,
+    int MaxDurationMs = 0,
+    int RemainingMs = 0);
+
+/// <summary>One periodic aura tick, held until the session's next flush.</summary>
+/// <param name="Overflow">Overkill for a damage tick, overhealing for a heal.</param>
+public readonly record struct PeriodicAuraLog(
+    ObjectGuid Target,
+    ObjectGuid Caster,
+    uint SpellId,
+    uint AuraType,
+    uint Amount,
+    uint Overflow,
+    uint SchoolMask);
+
+/// <summary>
+/// Writes <c>SMSG_AURA_UPDATE</c> and <c>SMSG_PERIODICAURALOG</c>.
+/// </summary>
+/// <remarks>
+/// Port of <c>AuraApplication::BuildUpdatePacket</c> and <c>Unit::SendPeriodicAuraLog</c>.
+/// <para>
+/// <b>3.3.5a has no aura update fields.</b> Earlier clients carried auras in the unit's own field
+/// block; this one learns about them through these packets alone, which is why a slot number is the
+/// only handle either side has.
+/// </para>
+/// </remarks>
+public static class AuraUpdate
+{
+    /// <summary>The caster cast it on itself, so no caster guid is written.</summary>
+    public const byte FlagCaster = 0x08;
+
+    /// <summary>Two duration words follow.</summary>
+    public const byte FlagDuration = 0x20;
+
+    /// <summary>
+    /// Writes an aura landing or changing.
+    /// </summary>
+    /// <remarks>
+    /// Which trailers appear is decided entirely by <paramref name="update"/>'s flags, so they have
+    /// to describe what is actually written — a duration flag with no duration behind it leaves the
+    /// client reading the next packet's bytes as a timer.
+    /// </remarks>
+    public static void WriteApplied(PacketWriter writer, ObjectGuid target, in AuraSlotUpdate update)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WritePackedGuid(target);
+        writer.WriteUInt8(update.Slot);
+        writer.WriteUInt32(update.SpellId);
+        writer.WriteUInt8(update.Flags);
+        writer.WriteUInt8(update.CasterLevel);
+
+        // Never zero: the client treats a zero stack as an aura that is not there and draws nothing.
+        writer.WriteUInt8(Math.Max(update.StackAmount, (byte)1));
+
+        if ((update.Flags & FlagCaster) == 0)
+        {
+            writer.WritePackedGuid(update.Caster);
+        }
+
+        if ((update.Flags & FlagDuration) != 0)
+        {
+            writer.WriteUInt32((uint)Math.Max(update.MaxDurationMs, 0));
+            writer.WriteUInt32((uint)Math.Max(update.RemainingMs, 0));
+        }
+    }
+
+    /// <summary>
+    /// Writes an aura going away.
+    /// </summary>
+    /// <remarks>
+    /// A spell id of zero <i>is</i> the removal, and the packet ends there. Sending the full body
+    /// with a zero id instead leaves four bytes the client reads as the start of something else.
+    /// </remarks>
+    public static void WriteRemoved(PacketWriter writer, ObjectGuid target, byte slot)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WritePackedGuid(target);
+        writer.WriteUInt8(slot);
+        writer.WriteUInt32(0);
+    }
+
+    /// <summary>
+    /// Writes <c>SMSG_PERIODICAURALOG</c> — one tick in the combat log.
+    /// </summary>
+    /// <remarks>
+    /// The payload after the aura type differs per type, which is why this takes the type rather
+    /// than inferring it: a heal writes three words and a damage tick writes five plus a byte.
+    /// </remarks>
+    /// <param name="auraType">The <c>AuraType</c>, which selects the trailer's shape.</param>
+    public static void WritePeriodicLog(
+        PacketWriter writer,
+        ObjectGuid target,
+        ObjectGuid caster,
+        uint spellId,
+        uint auraType,
+        uint amount,
+        uint overflow,
+        uint schoolMask)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WritePackedGuid(target);
+        writer.WritePackedGuid(caster);
+        writer.WriteUInt32(spellId);
+
+        // A count, always one here. Upstream can batch several effects of the same aura into one
+        // packet; nothing produces more than one at a time yet.
+        writer.WriteUInt32(1);
+        writer.WriteUInt32(auraType);
+
+        const uint PeriodicDamage = 3;
+        const uint PeriodicHeal = 8;
+
+        switch (auraType)
+        {
+            case PeriodicDamage:
+                writer.WriteUInt32(amount);
+                writer.WriteUInt32(overflow);     // overkill
+                writer.WriteUInt32(schoolMask);
+                writer.WriteUInt32(0);            // absorbed
+                writer.WriteUInt32(0);            // resisted
+                writer.WriteUInt8(0);             // critical, new in 3.1.2
+                break;
+
+            case PeriodicHeal:
+                writer.WriteUInt32(amount);
+                writer.WriteUInt32(overflow);     // overheal
+                writer.WriteUInt32(0);            // absorbed
+                writer.WriteUInt8(0);             // critical
+                break;
+
+            default:
+                // Anything else takes the power-drain shape, which is a single amount. Writing
+                // nothing would truncate the packet mid-record.
+                writer.WriteUInt32(amount);
+                break;
+        }
+    }
+}

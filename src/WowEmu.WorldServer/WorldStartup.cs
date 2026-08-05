@@ -163,6 +163,16 @@ internal static class WorldStartup
                 "or mailboxes in it. Import them with: tools/db/import-world.sh");
         }
 
+        ItemTemplateStore items = services.GetRequiredService<ItemTemplateStore>();
+        await items.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        if (items.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "item_template is empty — nothing could be looted, equipped or sold. Import it " +
+                "with: tools/db/import-world.sh");
+        }
+
         // Measured into a local rather than inline: the analyzer objects to work inside a log call,
         // and the elapsed time has to be taken at the same point whether or not anyone is listening.
         double elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -176,5 +186,6 @@ internal static class WorldStartup
             elapsedMs);
 
         Log.GameObjectContentLoaded(logger, objectTemplates.Count, objectSpawns.Count, objectSpawns.MapCount);
+        Log.ItemTemplatesLoaded(logger, items.Count);
     }
 }

@@ -304,7 +304,7 @@ public sealed class SpellCastStateTests
         uint id = 1, uint recoveryTime = 0, uint startRecoveryTime = 1500,
         uint manaCost = 0, uint manaCostPercentage = 0, uint powerType = 0) =>
         new(id, "test", "", new uint[SpellEntry.AttributeWords],
-            CastingTimeIndex: 0, RecoveryTime: recoveryTime, CategoryRecoveryTime: 0,
+            Category: 0, CastingTimeIndex: 0, RecoveryTime: recoveryTime, CategoryRecoveryTime: 0,
             StartRecoveryCategory: 0, StartRecoveryTime: startRecoveryTime, InterruptFlags: 0,
             Targets: 0, PowerType: powerType, ManaCost: manaCost, ManaCostPerLevel: 0,
             ManaCostPercentage: manaCostPercentage, RangeIndex: 0, Speed: 0f, DurationIndex: 0,

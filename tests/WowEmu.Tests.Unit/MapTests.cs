@@ -393,6 +393,34 @@ public sealed class MapVisibilityTests
 
         public void SendSwingError(SwingError reason) => SwingErrors.Add(reason);
 
+        public void SendAuraApplied(
+            ObjectGuid target,
+            byte slot,
+            uint spellId,
+            byte flags,
+            byte casterLevel,
+            byte stackAmount,
+            ObjectGuid caster,
+            int maxDurationMs,
+            int remainingMs)
+        {
+        }
+
+        public void SendAuraRemoved(ObjectGuid target, byte slot)
+        {
+        }
+
+        public void QueuePeriodicAuraLog(
+            ObjectGuid target,
+            ObjectGuid caster,
+            uint spellId,
+            uint auraType,
+            uint amount,
+            uint overflow,
+            uint schoolMask)
+        {
+        }
+
         public void DrainMapPackets(uint diff)
         {
         }

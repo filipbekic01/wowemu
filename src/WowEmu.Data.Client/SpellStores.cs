@@ -79,6 +79,9 @@ public sealed record SpellEntry(
     string Name,
     string Rank,
     uint[] Attributes,
+
+    /// <summary>Row in <c>SpellCategory.dbc</c>. Shared cooldowns are keyed on it, not on the spell.</summary>
+    uint Category,
     uint CastingTimeIndex,
     uint RecoveryTime,
     uint CategoryRecoveryTime,
@@ -372,6 +375,7 @@ public sealed class SpellStores
             Name: record.GetLocalizedString(136, locale),
             Rank: record.GetLocalizedString(153, locale),
             Attributes: attributes,
+            Category: record.GetUInt32(1),
             CastingTimeIndex: record.GetUInt32(28),
             RecoveryTime: record.GetUInt32(29),
             CategoryRecoveryTime: record.GetUInt32(30),

@@ -15,7 +15,7 @@ public sealed class SpellEffectValueTests
 {
     private static SpellEntry Spell(uint baseLevel = 0, uint spellLevel = 0, uint maxLevel = 0) =>
         new(1, "test", "", new uint[SpellEntry.AttributeWords],
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0f, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0f, 0,
             BaseLevel: baseLevel, SpellLevel: spellLevel, MaxLevel: maxLevel,
             0, 0, 0, 0, 0, 0, 0, new SpellEffectEntry[SpellConstants.MaxEffects]);
 
@@ -156,7 +156,7 @@ public sealed class SpellApplyTests
 
         return new SpellEntry(
             1, "test", "", new uint[SpellEntry.AttributeWords],
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0f, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0f, 0, 0, 0, 0,
             SchoolMask: schoolMask, DmgClass: 0, PreventionType: 0, SpellFamilyName: 0,
             MaxAffectedTargets: 0, SpellIconId: 0, SpellVisual: 0, Effects: slots);
     }

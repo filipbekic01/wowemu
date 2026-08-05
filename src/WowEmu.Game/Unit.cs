@@ -342,6 +342,11 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
 
     private ThreatManager? _threat;
 
+    /// <summary>Every aura on this unit.</summary>
+    public AuraContainer Auras => _auras ??= new AuraContainer();
+
+    private AuraContainer? _auras;
+
     /// <summary>What this unit is casting, and what it is waiting on.</summary>
     public SpellCastState Casting => _casting ??= new SpellCastState();
 
