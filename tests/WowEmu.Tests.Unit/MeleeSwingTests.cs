@@ -753,6 +753,19 @@ internal static class MapCombatFixture
         public void SendExperienceGain(ObjectGuid victim, uint amount, IReadOnlyList<LevelUp> levels) =>
             ExperienceGains.Add((amount, levels));
 
+
+        /// <summary>Deaths this client was told about, as the reclaim delay it was given.</summary>
+        public List<int> Deaths { get; } = [];
+
+        /// <summary>Spirit-healer markers, and the clears (map id uint.MaxValue).</summary>
+        public List<(uint MapId, Position At)> SpiritHealers { get; } = [];
+
+        public void SendPlayerDied(int reclaimDelayMs) => Deaths.Add(reclaimDelayMs);
+
+        public void SendSpiritHealerLocation(uint mapId, Position at) => SpiritHealers.Add((mapId, at));
+
+        public void SendResurrected() => SendSpiritHealerLocation(uint.MaxValue, default);
+
         public void SendSwingError(SwingError reason) => SwingErrors.Add(reason);
 
         public void DrainMapPackets(uint diff)

@@ -88,6 +88,48 @@ public sealed class Player : Unit
     /// <inheritdoc cref="GetStat"/>
     public void SetStat(int index, uint value) => Fields.SetUInt32(UpdateFields.UNIT_FIELD_STAT0 + index, value);
 
+    // ------------------------------------------------------------------ death
+
+    /// <summary>
+    /// Whether the player is walking around as a spirit.
+    /// </summary>
+    /// <remarks>
+    /// A client-visible flag, so the wisp the client draws and the server's idea of the state cannot
+    /// drift. Distinct from being dead: a corpse has not released yet and cannot move.
+    /// </remarks>
+    public bool IsGhost
+    {
+        get => (PlayerFlags & PlayerDeath.PlayerFlagGhost) != 0;
+        set => PlayerFlags = value
+            ? PlayerFlags | PlayerDeath.PlayerFlagGhost
+            : PlayerFlags & ~PlayerDeath.PlayerFlagGhost;
+    }
+
+    /// <summary><c>PLAYER_FLAGS</c> — ghost, resting, AFK and the rest.</summary>
+    public uint PlayerFlags
+    {
+        get => Fields.GetUInt32(UpdateFields.PLAYER_FLAGS);
+        set => Fields.SetUInt32(UpdateFields.PLAYER_FLAGS, value);
+    }
+
+    /// <summary>Milliseconds left before the client offers to release for you. Zero when alive.</summary>
+    public int ReleaseTimerMs { get; set; }
+
+    /// <summary>Where the body was left, for the corpse run. Null when there is no corpse.</summary>
+    public uint? CorpseMapId { get; set; }
+
+    /// <inheritdoc cref="CorpseMapId"/>
+    public Position CorpsePosition { get; set; }
+
+    /// <summary>
+    /// Which side the character is on, from its race.
+    /// </summary>
+    /// <remarks>
+    /// Stored rather than looked up, because a graveyard query happens at the moment of death and
+    /// should not need the DBC stores threaded into it.
+    /// </remarks>
+    public bool IsAlliance { get; private init; }
+
     /// <summary>The class's mana before any gear. <c>UNIT_FIELD_BASE_MANA</c>.</summary>
     public uint BaseMana
     {
@@ -156,6 +198,7 @@ public sealed class Player : Unit
             MapId = character.Map,
             ZoneId = character.Zone,
             Position = new Position(character.PositionX, character.PositionY, character.PositionZ, 0f),
+            IsAlliance = race.IsAlliance,
         };
 
         UpdateFieldStorage fields = player.Fields;

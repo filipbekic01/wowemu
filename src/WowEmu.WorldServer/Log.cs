@@ -158,6 +158,18 @@ internal static partial class Log
         Message = "'{Name}' started attacking '{Target}' — {Address}")]
     public static partial void AttackStarted(ILogger logger, string name, string target, string address);
 
+    [LoggerMessage(EventId = 2325, Level = LogLevel.Information,
+        Message = "Loaded {Links} graveyard links across {Zones} zones, {Locations} safe locations")]
+    public static partial void GraveyardsLoaded(ILogger logger, int links, int zones, int locations);
+
+    [LoggerMessage(EventId = 2323, Level = LogLevel.Debug,
+        Message = "'{Name}' released its spirit — {Address}")]
+    public static partial void PlayerReleased(ILogger logger, string name, string address);
+
+    [LoggerMessage(EventId = 2324, Level = LogLevel.Debug,
+        Message = "'{Name}' resurrected at its corpse — {Address}")]
+    public static partial void PlayerResurrected(ILogger logger, string name, string address);
+
     [LoggerMessage(EventId = 2321, Level = LogLevel.Information,
         Message = "Loaded {Rows} experience-per-level rows, to level {MaxLevel}")]
     public static partial void ExperienceTableLoaded(ILogger logger, int rows, byte maxLevel);

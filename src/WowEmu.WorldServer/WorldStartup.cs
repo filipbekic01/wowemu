@@ -61,6 +61,9 @@ internal static class WorldStartup
         PlayerXpStore experience = services.GetRequiredService<PlayerXpStore>();
         await experience.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
+        GraveyardStore graveyards = services.GetRequiredService<GraveyardStore>();
+        await graveyards.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
         if (experience.Count == 0)
         {
             // Not fatal, but worth saying loudly: without it nobody gains a level, and the symptom
@@ -105,6 +108,9 @@ internal static class WorldStartup
             logger, spells.Spells.Count, spells.CastTimes.Count, spells.Ranges.Count, spells.Durations.Count);
 
         Log.ExperienceTableLoaded(logger, experience.Count, experience.MaxLevel);
+
+        Log.GraveyardsLoaded(
+            logger, graveyards.Count, graveyards.ZoneCount, content.Stores.WorldSafeLocs.Count);
     }
 
     /// <summary>

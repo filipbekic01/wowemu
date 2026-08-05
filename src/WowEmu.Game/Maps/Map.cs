@@ -122,6 +122,27 @@ public interface IPlayerConnection
     /// </remarks>
     void SendExperienceGain(ObjectGuid victim, uint amount, IReadOnlyList<Combat.LevelUp> levels);
 
+    /// <summary>
+    /// Tells this client it has died, and how long before it can reclaim its corpse.
+    /// </summary>
+    /// <remarks>
+    /// The delay is what the client counts down on the release button. Zero means "release now",
+    /// which is not the same as not sending it — without the packet the button never appears.
+    /// </remarks>
+    void SendPlayerDied(int reclaimDelayMs);
+
+    /// <summary>
+    /// Tells this client where its spirit healer is, so the minimap shows it.
+    /// </summary>
+    /// <remarks>
+    /// Cleared on resurrection by sending a map id of <c>-1</c>. That is the only way to remove the
+    /// marker; there is no separate opcode.
+    /// </remarks>
+    void SendSpiritHealerLocation(uint mapId, Position at);
+
+    /// <summary>Tells this client it is alive again.</summary>
+    void SendResurrected();
+
     /// <summary>Runs the packets this session queued for its map's worker.</summary>
     void DrainMapPackets(uint diff);
 }
@@ -208,11 +229,19 @@ public sealed class Map(
     /// <summary>Base stats per race, class and level — what a level-up recomputes from.</summary>
     public PlayerStatsStore? PlayerStats { get => _playerStats; init => _playerStats = value; }
 
+    /// <summary>Which graveyards a zone offers. Without it a ghost stays where it fell.</summary>
+    public GraveyardStore? Graveyards { get => _graveyards; init => _graveyards = value; }
+
+    /// <summary>Graveyard coordinates, from <c>WorldSafeLocs.dbc</c>.</summary>
+    public DbcStore<WorldSafeLocsEntry>? WorldSafeLocs { get => _worldSafeLocs; init => _worldSafeLocs = value; }
+
     /// <summary>The server's experience multiplier. 1.0 is Blizzard's own rate.</summary>
     public float ExperienceRate { get; init; } = 1.0f;
 
     private readonly PlayerXpStore? _xpTable;
     private readonly PlayerStatsStore? _playerStats;
+    private readonly GraveyardStore? _graveyards;
+    private readonly DbcStore<WorldSafeLocsEntry>? _worldSafeLocs;
 
     /// <summary>
     /// The surface under a point: the higher of terrain and any model standing there.
@@ -958,10 +987,7 @@ public sealed class Map(
         // the health changed.
         target.Threat.AddThreat(caster, hit.Damage);
 
-        if (target.Health == 0 && target is Creature killed)
-        {
-            Kill(killed);
-        }
+        NoticeDeath(target);
     }
 
     /// <summary>Tells everyone who can see the fight about one spell's damage.</summary>
@@ -1032,6 +1058,85 @@ public sealed class Map(
         }
     }
 
+    /// <summary>
+    /// Releases a dead player's spirit and sends it to a graveyard.
+    /// </summary>
+    /// <remarks>
+    /// The corpse position is remembered before the move, because that is what a corpse run walks
+    /// back to. Losing it is how a player ends up a permanent ghost with nowhere to resurrect.
+    /// <para>
+    /// A zone with no usable graveyard leaves the player where it fell — a ghost standing over its
+    /// own corpse, which it can still reclaim. Teleporting to some other zone's graveyard would be
+    /// worse than not moving.
+    /// </para>
+    /// </remarks>
+    /// <returns>Whether there was a spirit to release.</returns>
+    public bool ReleaseSpirit(Player player)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        if (!PlayerDeath.Release(player))
+        {
+            return false;
+        }
+
+        if (_graveyards is null || _worldSafeLocs is null)
+        {
+            return true;
+        }
+
+        if (PlayerDeath.ClosestGraveyard(player, _graveyards, _worldSafeLocs) is not { } graveyard)
+        {
+            return true;
+        }
+
+        Relocate(player, graveyard.Position);
+
+        // The marker the client draws on the minimap, which is what a corpse run is navigated by.
+        player.Connection?.SendSpiritHealerLocation(graveyard.MapId, graveyard.Position);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Resurrects a ghost standing at its own corpse.
+    /// </summary>
+    /// <remarks>
+    /// The range check is the whole mechanic: reclaiming from anywhere makes the corpse run
+    /// optional, which is the cost of dying.
+    /// </remarks>
+    /// <returns>Whether the corpse was close enough to reclaim.</returns>
+    public bool ReclaimCorpse(Player player)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        if (!player.IsGhost || player.CorpseMapId is not { } corpseMap)
+        {
+            return false;
+        }
+
+        // Against this map's own id, not just the player's: a ghost that has been moved to another
+        // map has a corpse this map cannot see, and reclaiming it here would resurrect someone into
+        // a world their body is not in.
+        if (corpseMap != MapId || player.MapId != MapId)
+        {
+            return false;
+        }
+
+        if (player.Position.GetExactDist2dSq(player.CorpsePosition) > CorpseReclaimRange * CorpseReclaimRange)
+        {
+            return false;
+        }
+
+        PlayerDeath.Resurrect(player);
+        player.Connection?.SendResurrected();
+
+        return true;
+    }
+
+    /// <summary>How close a ghost must be to its corpse to reclaim it.</summary>
+    public const float CorpseReclaimRange = 39.0f;
+
     /// <summary>Applies one landed swing and tells everyone who can see it.</summary>
     /// <remarks>
     /// The victim's health is read <i>before</i> the damage is taken off, because that is what the
@@ -1051,10 +1156,72 @@ public sealed class Map(
 
         // Death is noticed here, where health changed, rather than polled somewhere later. A hit
         // that takes the last point and a hit that takes ten times it are the same kill.
-        if (victim.Health == 0 && victim is Creature killed)
+        NoticeDeath(victim);
+    }
+
+    /// <summary>
+    /// Turns a unit at zero health into a corpse.
+    /// </summary>
+    /// <remarks>
+    /// One place for both kinds, so a swing and a spell cannot disagree about what a kill is. A
+    /// player becomes a corpse that has to release; a creature becomes one that decays.
+    /// </remarks>
+    private void NoticeDeath(Unit victim)
+    {
+        if (victim.Health > 0 || !victim.IsAlive)
         {
-            Kill(killed);
+            return;
         }
+
+        switch (victim)
+        {
+            case Creature creature:
+                Kill(creature);
+                break;
+
+            case Player player:
+                KillPlayer(player);
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Kills a player and stops everything that was fighting it.
+    /// </summary>
+    /// <remarks>
+    /// The creatures are told to forget it explicitly. A creature left holding a dead player on its
+    /// threat list stands over the corpse swinging at something the swing loop refuses to hit,
+    /// forever — the player never releases, so nothing ever clears it.
+    /// </remarks>
+    public void KillPlayer(Player player)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        if (!player.IsAlive)
+        {
+            return;
+        }
+
+        PlayerDeath.Kill(player);
+
+        foreach (Creature creature in _creatures)
+        {
+            if (creature.Threat.Contains(player))
+            {
+                creature.Threat.Remove(player);
+            }
+
+            if (ReferenceEquals(creature.Victim, player))
+            {
+                CreatureAi.Evade(creature);
+                SendCreatureMove(creature, creature.HomePosition);
+            }
+        }
+
+        player.Connection?.SendPlayerDied(PlayerDeath.ReleaseTimerMs);
     }
 
     /// <summary>

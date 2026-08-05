@@ -55,8 +55,8 @@
       "id": "M6",
       "name": "Progression",
       "meaning": "Complete the first quests of a starting zone",
-      "state": "todo",
-      "note": "Inventory, loot, quests, vendors, trainers, talents, reputation."
+      "state": "progress",
+      "note": "Player death, release and corpse runs work. Inventory, loot and quests are next."
     },
     {
       "id": "M7",
@@ -341,6 +341,11 @@
             },
             {
               "done": true,
+              "text": "WorldSafeLocs — graveyards and other named safe points",
+              "note": "Its format string is not in upstream's DBCfmt.h: the C++ stopped reading this file when graveyards moved into the world database. Derived from the file itself."
+            },
+            {
+              "done": true,
               "text": "Tests against real extracted files, skipped when data is absent"
             },
             {
@@ -362,7 +367,7 @@
             {
               "done": false,
               "text": "Remaining stores, as phases need them",
-              "note": "109 total upstream; 8 loaded."
+              "note": "109 total upstream; 9 loaded."
             }
           ]
         },
@@ -437,6 +442,10 @@
             {
               "done": true,
               "text": "player_xp_for_level (79 rows) — the cost of leaving each level"
+            },
+            {
+              "done": true,
+              "text": "game_graveyard_zone (700 rows) — which graveyard a zone releases you to"
             },
             {
               "done": false,
@@ -1231,12 +1240,71 @@
     {
       "id": 10,
       "title": "Progression systems",
-      "state": "todo",
+      "state": "progress",
       "milestone": "M6",
-      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands.",
+      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands. Player death is done — it was the hole creatures fighting back opened.",
       "groups": [
         {
-          "title": "Not started",
+          "title": "Death and release",
+          "items": [
+            {
+              "done": true,
+              "text": "Player death lands on Corpse, the same promotion a creature makes — JustDied is the moment things that happen once happen, not a state anything updates in"
+            },
+            {
+              "done": true,
+              "text": "THE THREE STATES ARE NOT TWO: alive, a corpse that cannot move, and a ghost that can",
+              "note": "The client keys movement off the health value, so a ghost gets 1 point and not 0. Leave it at zero after release and the player is stuck on the spot with the release button gone."
+            },
+            {
+              "done": true,
+              "text": "A creature that kills a player forgets it and goes home",
+              "note": "Without this it stands over the corpse swinging at something the swing loop refuses to hit, forever — the player never releases, so nothing ever clears the threat list."
+            },
+            {
+              "done": true,
+              "text": "The corpse position is remembered at release, which is what a corpse run walks back to"
+            },
+            {
+              "done": true,
+              "text": "CMSG_REPOP_REQUEST releases to the nearest usable graveyard; CMSG_RECLAIM_CORPSE resurrects at the body"
+            },
+            {
+              "done": true,
+              "text": "Resurrecting restores half health and mana, and EMPTIES RAGE rather than halving it",
+              "note": "Rage is earned in combat. Half a bar you did not fight for is a different resource."
+            },
+            {
+              "done": true,
+              "text": "game_graveyard_zone vendored (700 links across 163 zones); coordinates come from WorldSafeLocs.dbc",
+              "note": "Newer AzerothCore reads them from a game_graveyard table the vendored dump predates. The same divergence as creature_template_model — the data is what this follows. Measured: a human dying at the Northshire start releases 58 yards away, to 'Elwynn Forest, Northshire'."
+            },
+            {
+              "done": true,
+              "text": "The faction filter runs before the distance comparison",
+              "note": "570 of the 700 rows are neutral, so forgetting it looks like it works — until a contested zone leaves a player with nowhere to go."
+            },
+            {
+              "done": true,
+              "text": "A graveyard on another map is skipped, and a zone with none leaves the ghost where it fell",
+              "note": "There is no cross-map transfer yet. Releasing somewhere unreachable is worse than not moving; standing over your own corpse, you can still reclaim."
+            },
+            {
+              "done": false,
+              "text": "Resurrection sickness, and the spirit healer's own resurrect"
+            },
+            {
+              "done": false,
+              "text": "A real Corpse object — the body is currently a remembered position rather than something other players can see"
+            },
+            {
+              "done": false,
+              "text": "The corpse reclaim delay is sent but never enforced; reclaiming is allowed immediately"
+            }
+          ]
+        },
+        {
+          "title": "Still to come",
           "items": [
             {
               "done": false,
@@ -1261,10 +1329,6 @@
             {
               "done": false,
               "text": "Reputation"
-            },
-            {
-              "done": false,
-              "text": "Corpse, resurrect, graveyards"
             },
             {
               "done": false,
@@ -1528,7 +1592,7 @@
     {
       "category": "Combat",
       "items": [
-        "PLAYER DEATH DOES NOTHING. A creature can take a player to zero health and nothing happens — no corpse, no release, no resurrection sickness. Creatures fight back as of Phase 9, so this is now reachable in normal play rather than theoretical.",
+        "There is no real Corpse object. A dead player's body is a remembered position, not something another player can see or walk up to — and the reclaim delay is sent to the client but never enforced, so reclaiming is allowed immediately.",
         "LOOT DOES NOT EXIST, so UNIT_DYNFLAG_LOOTABLE is deliberately never set on a corpse — the flag would promise a lootable corpse that opens an empty window.",
         "creature_addon is not vendored, so every creature is ReactState.Aggressive. A passive quest prop currently behaves like anything else and will fight back.",
         "A creature's facing is server-side only. CreatureAi.FaceTowards decides whether a swing lands, but the client is not told — that needs the facing-target form of SMSG_MONSTER_MOVE.",
@@ -1588,10 +1652,10 @@
         "132 of 436 sampled model groups carry an all-zero bounding box while holding real geometry. A zero box means \"not recorded\", not \"empty\" — anything that culls by it must not conclude the group is nowhere.",
         "Model liquids parse but are unused; the tileless single-height form was not seen in the sampled files.",
         "Off-mesh connections are exercised by exactly one tile in the entire extraction (5622031.mmtile, Blade's Edge Arena, 2 connections).",
-        "Only 8 of 109 DBC stores are loaded",
+        "Only 9 of 109 DBC stores are loaded",
         ".map flight bounds are parsed past but discarded",
         "Terrain holes are implemented but never exercised by a test against a known hole",
-        "World tables are imported by piping vendored .sql dumps — there is no real importer, no schema mapping and no type cleanup. 11 of upstream's 309 tables are vendored so far.",
+        "World tables are imported by piping vendored .sql dumps — there is no real importer, no schema mapping and no type cleanup. 12 of upstream's 309 tables are vendored so far.",
         "world structure is upstream's verbatim, not a schema we own. PLAN §5.2 wants cleaned types and names with columns and semantics preserved — that belongs in WowEmu.Data.Import."
       ]
     }

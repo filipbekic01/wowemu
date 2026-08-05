@@ -34,7 +34,9 @@ public sealed class MapManager(
     VmapManager? vmaps = null,
     DbcStore<FactionTemplateEntry>? factions = null,
     PlayerXpStore? experienceTable = null,
-    PlayerStatsStore? playerStats = null) : IDisposable
+    PlayerStatsStore? playerStats = null,
+    GraveyardStore? graveyards = null,
+    DbcStore<WorldSafeLocsEntry>? worldSafeLocs = null) : IDisposable
 {
     /// <summary>
     /// The four phases. Three update a category of map; the fourth is a pause.
@@ -68,6 +70,8 @@ public sealed class MapManager(
                 Factions = factions,
                 ExperienceTable = experienceTable,
                 PlayerStats = playerStats,
+                Graveyards = graveyards,
+                WorldSafeLocs = worldSafeLocs,
             };
             _maps[mapId] = map;
         }

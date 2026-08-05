@@ -298,6 +298,14 @@ public sealed class WorldSession(
                 HandleCancelCast();
                 return;
 
+            case Opcode.CMSG_REPOP_REQUEST:
+                HandleRepopRequest();
+                return;
+
+            case Opcode.CMSG_RECLAIM_CORPSE:
+                HandleReclaimCorpse();
+                return;
+
             default:
                 // Every movement opcode routes to one handler, exactly as upstream does — the
                 // opcode says what the client thinks it is doing, but the payload is identical.
@@ -865,6 +873,48 @@ public sealed class WorldSession(
     /// </remarks>
     private void HandleCancelCast() => _player?.Casting.Cancel();
 
+    /// <summary>
+    /// Releases the spirit — the client's "Release" button.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>WorldSession::HandleRepopRequestOpcode</c>. A living player asking to release is
+    /// ignored rather than refused: the client sends it whenever the button is visible, and the
+    /// button outlives the state it belongs to by a tick or two.
+    /// </remarks>
+    private void HandleRepopRequest()
+    {
+        if (_player is null || _map is null || _player.IsAlive || _player.IsGhost)
+        {
+            return;
+        }
+
+        if (_map.ReleaseSpirit(_player))
+        {
+            Log.PlayerReleased(logger, _player.Name, connection.RemoteAddress);
+        }
+    }
+
+    /// <summary>
+    /// Resurrects at the corpse — the client's "Resurrect" button.
+    /// </summary>
+    /// <remarks>
+    /// Silently ignored when out of range. The client only shows the button when it thinks the
+    /// corpse is close, so a refusal here means the two disagree about where things are, and a
+    /// message about it would be noise rather than information.
+    /// </remarks>
+    private void HandleReclaimCorpse()
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        if (_map.ReclaimCorpse(_player))
+        {
+            Log.PlayerResurrected(logger, _player.Name, connection.RemoteAddress);
+        }
+    }
+
     private void HandleMovement(Opcode opcode, ReadOnlyMemory<byte> payload)
     {
         if (_player is null || _map is null)
@@ -1114,6 +1164,35 @@ public sealed class WorldSession(
 
         connection.Send(stop);
     }
+
+    /// <summary>Tells this client it has died.</summary>
+    public void SendPlayerDied(int reclaimDelayMs)
+    {
+        ServerPacket packet = new(Opcode.SMSG_CORPSE_RECLAIM_DELAY, 4);
+        packet.Body.WriteUInt32((uint)Math.Max(reclaimDelayMs / 1000, 0));
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Tells this client where its spirit healer is.</summary>
+    public void SendSpiritHealerLocation(uint mapId, Position at)
+    {
+        ServerPacket packet = new(Opcode.SMSG_DEATH_RELEASE_LOC, 16);
+        packet.Body.WriteUInt32(mapId);
+        packet.Body.WriteSingle(at.X);
+        packet.Body.WriteSingle(at.Y);
+        packet.Body.WriteSingle(at.Z);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Tells this client it is alive again.</summary>
+    /// <remarks>
+    /// The minimap marker is cleared with a map id of <c>-1</c> and no coordinates that mean
+    /// anything — there is no separate "forget the spirit healer" opcode.
+    /// </remarks>
+    public void SendResurrected() =>
+        SendSpiritHealerLocation(uint.MaxValue, default);
 
     /// <summary>Tells this client it gained experience, and about any levels that came with it.</summary>
     /// <remarks>

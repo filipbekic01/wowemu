@@ -133,6 +133,24 @@ public sealed record FactionTemplateEntry(
         HostileMask == 0 && FriendlyMask == 0 && Array.TrueForAll(EnemyFactions, faction => faction == 0);
 }
 
+/// <summary>
+/// A row of <c>WorldSafeLocs.dbc</c> — a graveyard, or any other named safe point.
+/// </summary>
+/// <remarks>
+/// <b>This is where graveyard coordinates live in our data.</b> Newer AzerothCore reads them from a
+/// <c>game_graveyard</c> world table instead; the vendored dump predates that and carries only
+/// <c>game_graveyard_zone</c>, which maps a zone to an id in <i>this</i> file. Same divergence as
+/// <c>creature_template_model</c> — read the C++ for behaviour, but check the dump before trusting a
+/// column name.
+/// </remarks>
+public sealed record WorldSafeLocsEntry(
+    uint Id,
+    uint MapId,
+    float X,
+    float Y,
+    float Z,
+    string Name);
+
 /// <summary>A row of <c>ChrClasses.dbc</c>.</summary>
 public sealed record ChrClassesEntry(
     uint ClassId,
@@ -178,16 +196,23 @@ public sealed class DbcStores
     private const string MapFormat = "nxiixssssssssssssssssxixxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxixiffxixi";
     private const string FactionTemplateFormat = "niiiiiiiiiiiii";
 
+    // Not in upstream's DBCfmt.h — the C++ stopped reading this file when graveyards moved into
+    // the world database. Derived from the file itself: 22 fields, id + map + three floats, then
+    // sixteen locale names and a flags word.
+    private const string WorldSafeLocsFormat = "nifffssssssssssssssssx";
+
     private DbcStores(
         DbcStore<ChrRacesEntry> races,
         DbcStore<ChrClassesEntry> classes,
         DbcStore<MapEntry> maps,
-        DbcStore<FactionTemplateEntry> factionTemplates)
+        DbcStore<FactionTemplateEntry> factionTemplates,
+        DbcStore<WorldSafeLocsEntry> worldSafeLocs)
     {
         Races = races;
         Classes = classes;
         Maps = maps;
         FactionTemplates = factionTemplates;
+        WorldSafeLocs = worldSafeLocs;
     }
 
     public DbcStore<ChrRacesEntry> Races { get; }
@@ -199,8 +224,12 @@ public sealed class DbcStores
     /// <summary>Who fights whom.</summary>
     public DbcStore<FactionTemplateEntry> FactionTemplates { get; }
 
+    /// <summary>Graveyards and other named safe points.</summary>
+    public DbcStore<WorldSafeLocsEntry> WorldSafeLocs { get; }
+
     /// <summary>Total rows loaded, for the startup log.</summary>
-    public int TotalRows => Races.Count + Classes.Count + Maps.Count + FactionTemplates.Count;
+    public int TotalRows =>
+        Races.Count + Classes.Count + Maps.Count + FactionTemplates.Count + WorldSafeLocs.Count;
 
     /// <summary>
     /// Loads every store from a directory of extracted <c>.dbc</c> files.
@@ -289,6 +318,18 @@ public sealed class DbcStores
                         record.GetUInt32(11),
                         record.GetUInt32(12),
                         record.GetUInt32(13),
-                    ])));
+                    ])),
+
+            DbcStore<WorldSafeLocsEntry>.Load(
+                Path.Combine(directory, "WorldSafeLocs.dbc"),
+                WorldSafeLocsFormat,
+                idField: 0,
+                (in DbcRecord record) => new WorldSafeLocsEntry(
+                    Id: record.GetUInt32(0),
+                    MapId: record.GetUInt32(1),
+                    X: record.GetFloat(2),
+                    Y: record.GetFloat(3),
+                    Z: record.GetFloat(4),
+                    Name: record.GetLocalizedString(5, locale))));
     }
 }
