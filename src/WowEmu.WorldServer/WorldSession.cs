@@ -783,15 +783,28 @@ public sealed class WorldSession(
     /// Players and creatures produce the same block: upstream gives both
     /// <c>UPDATEFLAG_LIVING | UPDATEFLAG_STATIONARY_POSITION</c> in the <c>Unit</c> constructor, and
     /// what differs is the type id and the update type, both of which the builder derives.
+    /// <para>
+    /// A gameobject is a different block entirely — no movement, no speeds, a packed rotation, and
+    /// a field block that ends at slot 18 rather than 148. Nothing in a create block carries a
+    /// length, so sending one as the other is not a degraded picture; it is a disconnect.
+    /// </para>
     /// </remarks>
     public void QueueCreate(WorldObject other)
     {
         ArgumentNullException.ThrowIfNull(other);
 
-        other.SyncMovement();
+        if (other is GameObject gameObject)
+        {
+            _pendingUpdates.AddBlock(UpdateBlockBuilder.BuildGameObjectCreateBlock(
+                gameObject.Guid, gameObject.Fields, gameObject.Position, gameObject.PackedRotation));
+        }
+        else
+        {
+            other.SyncMovement();
 
-        _pendingUpdates.AddBlock(UpdateBlockBuilder.BuildCreateBlock(
-            other.Guid, other.TypeId, other.Fields, other.Movement, other.Speeds, isSelf: false));
+            _pendingUpdates.AddBlock(UpdateBlockBuilder.BuildCreateBlock(
+                other.Guid, other.TypeId, other.Fields, other.Movement, other.Speeds, isSelf: false));
+        }
 
         Log.ObjectBecameVisible(logger, other.Name, _player?.Name ?? "?");
     }

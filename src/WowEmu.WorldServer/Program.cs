@@ -35,6 +35,8 @@ builder.Services.AddSingleton<PlayerStatsStore>();
 builder.Services.AddSingleton<CreatureTemplateStore>();
 builder.Services.AddSingleton<CreatureStatsStore>();
 builder.Services.AddSingleton<CreatureSpawnStore>();
+builder.Services.AddSingleton<GameObjectTemplateStore>();
+builder.Services.AddSingleton<GameObjectSpawnStore>();
 
 // The DBC stores are read from disk once and never change, so they are built during registration
 // rather than in the startup pass — a missing data directory should fail before anything else runs.
@@ -53,9 +55,16 @@ builder.Services.AddSingleton(_ => new TerrainManager(
 builder.Services.AddSingleton<WorldContent>();
 
 // Grid object loading is registered as the interface the map layer asks for, so a map can be built
-// without one — which is what the map tests do.
+// without one — which is what the map tests do. A grid holds more than one kind of thing, so the
+// loaders are composed rather than the map being taught about each.
 builder.Services.AddSingleton<CreatureFactory>();
-builder.Services.AddSingleton<IGridObjectLoader, CreatureGridLoader>();
+builder.Services.AddSingleton<CreatureGridLoader>();
+builder.Services.AddSingleton<GameObjectGridLoader>();
+builder.Services.AddSingleton<IGridObjectLoader>(services => new CompositeGridLoader(
+[
+    services.GetRequiredService<CreatureGridLoader>(),
+    services.GetRequiredService<GameObjectGridLoader>(),
+]));
 builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<TerrainManager>(),
     services.GetRequiredService<IGridObjectLoader>(),

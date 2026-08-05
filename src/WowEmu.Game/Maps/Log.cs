@@ -20,4 +20,13 @@ internal static partial class Log
     [LoggerMessage(EventId = 3001, Level = LogLevel.Debug,
         Message = "Creature spawn {SpawnId} skipped: {Reason}")]
     public static partial void CreatureSpawnSkipped(ILogger logger, uint spawnId, string? reason);
+
+    [LoggerMessage(EventId = 3002, Level = LogLevel.Debug,
+        Message = "Grid ({GridX}, {GridY}) on map {MapId}: {Loaded} gameobject(s) loaded, {Skipped} skipped")]
+    public static partial void GameObjectGridLoaded(
+        ILogger logger, uint mapId, int gridX, int gridY, int loaded, int skipped);
+
+    [LoggerMessage(EventId = 3003, Level = LogLevel.Debug,
+        Message = "Gameobject spawn {SpawnId} skipped: no gameobject_template row for entry {Entry}")]
+    public static partial void GameObjectSpawnMissingTemplate(ILogger logger, uint spawnId, uint entry);
 }

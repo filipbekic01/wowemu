@@ -149,6 +149,11 @@ internal static partial class Log
         Message = "Deferred work for a session threw ({Address})")]
     public static partial void DeferredWorkFailed(ILogger logger, Exception exception, string address);
 
+    [LoggerMessage(EventId = 2317, Level = LogLevel.Information,
+        Message = "Loaded {Templates} gameobject templates and {Spawns} spawns across {Maps} maps")]
+    public static partial void GameObjectContentLoaded(
+        ILogger logger, int templates, int spawns, int maps);
+
     // ------------------------------------------------------------------ world tick
 
     [LoggerMessage(EventId = 2400, Level = LogLevel.Information,

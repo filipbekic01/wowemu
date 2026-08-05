@@ -90,7 +90,7 @@ internal static class WorldStartup
     }
 
     /// <summary>
-    /// Loads the three tables creature spawning reads, and reports how long it took.
+    /// Loads the tables creature and gameobject spawning read, and reports how long it took.
     /// </summary>
     /// <remarks>
     /// Timed because this is the first load large enough to matter — 176,000 rows against the 5,800
@@ -126,6 +126,19 @@ internal static class WorldStartup
                 "have no creatures in it. Import them with: tools/db/import-world.sh");
         }
 
+        GameObjectTemplateStore objectTemplates = services.GetRequiredService<GameObjectTemplateStore>();
+        await objectTemplates.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        GameObjectSpawnStore objectSpawns = services.GetRequiredService<GameObjectSpawnStore>();
+        await objectSpawns.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        if (objectTemplates.Count == 0 || objectSpawns.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "gameobject_template or gameobject is empty — the world would have no doors, chests " +
+                "or mailboxes in it. Import them with: tools/db/import-world.sh");
+        }
+
         // Measured into a local rather than inline: the analyzer objects to work inside a log call,
         // and the elapsed time has to be taken at the same point whether or not anyone is listening.
         double elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
@@ -137,5 +150,7 @@ internal static class WorldStartup
             spawns.Count,
             spawns.MapCount,
             elapsedMs);
+
+        Log.GameObjectContentLoaded(logger, objectTemplates.Count, objectSpawns.Count, objectSpawns.MapCount);
     }
 }

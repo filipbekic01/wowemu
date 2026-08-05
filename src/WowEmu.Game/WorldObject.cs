@@ -60,6 +60,9 @@ public static class TypeMask
 
     /// <summary>What a creature reports: object + unit. There is no separate creature bit.</summary>
     public const uint CreatureObject = Object | Unit;
+
+    /// <summary>What a gameobject reports. Note it is not a unit — no level, no health.</summary>
+    public const uint GameObjectObject = Object | GameObject;
 }
 
 /// <summary>An object that exists somewhere on a map.</summary>

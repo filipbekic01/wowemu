@@ -2,10 +2,9 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** The server runs on a tick. The world loop drains sessions, then the map workers run, and
-the two never overlap — which is what lets `Map` be lock-free the way upstream's entity code is.
-`TickScheduler` is finally what it was built for. Next: gameobject spawns, and then creature
-movement, which is the first thing that needs the tick it now has.
+**Now:** Gameobjects spawn alongside creatures — doors, benches, chests and mailboxes are in the
+world and the create block's rotation and low-guid branches are written. Next: creature movement,
+which is the first thing that needs the tick, and the last item M4 is waiting on.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -106,8 +105,9 @@ movement, which is the first thing that needs the tick it now has.
 - [x] `player_levelstats` (4960 rows), `player_classlevelstats` (800 rows) — base stats
 - [x] `creature_template` (29,928), `creature` (145,946), `creature_model_info` (24,143),
       `creature_classlevelstats` (400) — vendored and loaded in 0.9 s
+- [x] `gameobject_template` (21,512), `gameobject` (85,552) — vendored and loaded
 - [ ] `creature_addon`, `creature_equip_template` — auras and visible weapons on spawn
-- [ ] `gameobject_template`, `gameobject`
+- [ ] `gameobject_template_addon` — per-template faction and flag overrides
 - [ ] `item_template`
 - [ ] `quest_template`, `npc_text`
 - [ ] Startup timing report, target under ~30 s (creature load is timed; nothing else is)
@@ -124,6 +124,7 @@ movement, which is the first thing that needs the tick it now has.
 - [x] `UpdateData` — block accumulation, out-of-range block, payload assembly
 - [x] Compression above 100 bytes, uncompressed size prefixed
 - [x] Movement block (`MovementInfo` + nine speeds) and the create-block builder
+- [x] `Position`, `LowGuid` and `Rotation` branches of the create block, for gameobjects
 - [ ] Transport branch of the movement block (throws for now; Phase 6)
 - [ ] Per-observer visibility filtering — the mask intersection exists, nothing computes the
       observer's visible-flag set yet
@@ -134,7 +135,7 @@ movement, which is the first thing that needs the tick it now has.
 - [x] `Player.Create` from the characters row + `ChrRaces` + `ChrClasses` + base stats
 - [x] `Unit` as its own layer — everything below `UNIT_END` lives there, Player and Creature share it
 - [x] `Creature` — a port of `InitEntry`, `UpdateEntry`, `SelectLevel` and `LoadFromDB`'s health block
-- [ ] `GameObject`
+- [x] `GameObject` — a `WorldObject` but **not** a `Unit`; 18 field slots against a unit's 148
 - [ ] `Item` / `Bag` — an `Object` but **not** a `WorldObject`
 - [ ] Creature equipment, addon auras, and the `creature_template_model` split (see below)
 
@@ -174,7 +175,7 @@ movement, which is the first thing that needs the tick it now has.
 - [x] Grid creation (terrain) vs grid object loading as two distinct steps — the second is
       `IGridObjectLoader`, which is also what lets a map be tested without a database
 - [x] `spawnMask` honoured, so the 78 spawns that exclude difficulty 0 stay out of the normal world
-- [ ] Gameobject spawn loading per grid
+- [x] Gameobject spawn loading per grid, composed with the creature loader
 - [ ] Unload cells and tiles when a grid empties — a grid, once loaded, currently stays for the life
       of the process, and there is no tick to notice that the last player left
 - [x] `MapUpdater` worker pool, `MapMgr` 4-phase round-robin with the accumulated-diff rule
@@ -239,8 +240,8 @@ play, which is exactly why they are written down.
 - [ ] Per-observer field filtering — `UpdateMask.IntersectWith` exists but nothing computes which
       fields a given observer may see, so every observer currently gets every non-zero field
       (a real information leak once there is anything private to leak)
-- [ ] Create-block branches for `Transport`, `HasTarget`, `Vehicle`, `Rotation` and `LowGuid` are
-      unwritten — only `Living | StationaryPosition | Self` is produced
+- [ ] Create-block branches for `Transport`, `HasTarget` and `Vehicle` are unwritten. `Living`,
+      `StationaryPosition`, `Self`, `Position`, `LowGuid` and `Rotation` are all produced.
 - [ ] Our deflate output is not byte-identical to upstream's, by design (PLAN §9 excludes
       compressed bodies from byte-exact comparison) — worth remembering when diffing captures
 
@@ -251,6 +252,20 @@ play, which is exactly why they are written down.
 - [ ] No name profanity or reserved-name checks
 - [ ] No declined names (the Russian client asks for them)
 - [ ] Character deletion is immediate — no in-progress state, no undelete window
+
+**Gameobjects**
+
+- [ ] They do nothing. No opening, looting, using, or trapping — a gameobject stands where its row
+      puts it and can be looked at.
+- [ ] The 32 `data0..data31` columns are not read, so nothing knows what a door opens with or where
+      a teleporter goes
+- [ ] `gameobject_template_addon` is not read, so per-spawn faction and flag overrides are missing
+- [ ] Three templates carry `size = 0` and 11 spawns use them; they are drawn at nothing. Upstream
+      does the same, so it is reproduced rather than corrected — but it looks like a bug when found.
+- [ ] 1,193 spawns have no display id. These are invisible triggers and upstream creates them too,
+      but each still costs a create block to a client that will never see anything.
+- [ ] Rotation is computed once at spawn and is not an update field, so anything that ever rotates a
+      gameobject will have to resend a whole create block
 
 **Creatures**
 
