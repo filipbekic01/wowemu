@@ -1345,28 +1345,34 @@ public sealed class WorldSession(
 
     public async Task SavePlayerAsync(CancellationToken cancellationToken)
     {
-        if (_player is null)
+        // Captured once, and used for the rest of the method. The field is nulled when the player
+        // leaves the world, and there is an await in the middle of this — so re-reading it after
+        // the save would throw whenever a logout and a dropped connection overlap, which is exactly
+        // what happens when a client disconnects immediately after logging out.
+        Player? player = _player;
+
+        if (player is null)
         {
             return;
         }
 
         await characters.SavePositionAsync(
-            _player.Guid.Counter,
-            _player.MapId,
-            _player.ZoneId,
-            _player.Position.X,
-            _player.Position.Y,
-            _player.Position.Z,
-            _player.Position.Orientation,
+            player.Guid.Counter,
+            player.MapId,
+            player.ZoneId,
+            player.Position.X,
+            player.Position.Y,
+            player.Position.Z,
+            player.Position.Orientation,
             cancellationToken).ConfigureAwait(true);
 
-        Log.PlayerSaved(logger, _player.Name, _player.Position.X, _player.Position.Y);
+        Log.PlayerSaved(logger, player.Name, player.Position.X, player.Position.Y);
 
         // A dropped connection never sends a logout, so the map has to be told here too or the
         // player stays visible to everyone else as a statue.
         if (_map is not null)
         {
-            _map.Remove(_player);
+            _map.Remove(player);
             _map = null;
         }
     }

@@ -3,269 +3,53 @@
 A .NET 10 / C# reimplementation of [AzerothCore](https://www.azerothcore.org/) — a World of Warcraft
 3.3.5a (WotLK, client build 12340) server emulator.
 
-See **[TODO.md](TODO.md)** for what is done and what is next, and **[PLAN.md](PLAN.md)** for the
-full architecture, phased roadmap and risk register.
-The C++ reference implementation lives in `azerothcore-wotlk/` and is the behavioral source of truth.
+The C++ reference implementation lives in `azerothcore-wotlk/` and is the behavioural source of truth.
 
-## Status
+## Where everything is
 
-| Phase | Scope | State |
-|---|---|---|
-| 0 | Foundations — crypto, packet primitives, tick scheduler | **done** |
-| 1 | Authserver → client reaches the realm list | **done — M1 reached** |
-| 2 | Database layer + schema | **done** — auth and characters schemas, first world table |
-| 3 | Worldserver socket + session | **done — M2 reached** |
-| 4 | Static game data | **in progress** — DBC loader done |
-| 5+ | See [TODO.md](TODO.md) | not started |
+**Progress, status, setup and known gaps have moved to [`web/`](web/).**
 
-**M1 is verified**: a retail 3.3.5a client logs in and displays the realm, and
-`tools/harness/m1_login.py` drives the same handshake headlessly as a regression gate.
-
-**M2 passes**: `tools/harness/m2_world.py` completes the world handshake — encrypted headers, addon
-manifest, ping — then creates a character, finds it in the character list at its proper starting
-position, and deletes it again.
-
-**Phase 3 progress**
-
-- [x] Pipelines framing — mixed-endian headers, split reads, RC4 header crypt
-- [x] `SMSG_AUTH_CHALLENGE` → `CMSG_AUTH_SESSION` → digest → `SMSG_AUTH_RESPONSE`
-- [x] Addon manifest (zlib) and `SMSG_ADDON_INFO`
-- [x] `CMSG_CHAR_ENUM` returning an empty list, ping/pong, cache version, tutorials, account data
-- [x] Opcode enum — all 1313, generated from upstream's header
-- [x] Opcode table — session-status and processing classification for all 1312, generated from
-      upstream's `Opcodes.cpp` and enforced before any handler runs (PLAN §4.2 rule 4)
-- [x] Character create, list and delete against the `characters` database
-
-**Phase 0** — every exit criterion in [PLAN.md](PLAN.md) §6 is met and covered by tests.
-
-- [x] Solution skeleton, analyzers, warnings-as-errors
-- [x] `WowEmu.Cryptography` — RC4, SRP6, AuthCrypt header encryption, SessionKeyGenerator
-- [x] `WowEmu.Protocol` — `PacketReader`/`PacketWriter`, packed GUID / XYZ / time
-- [x] `WowEmu.Core` — `ObjectGuid`, `Position`, `WorldLocation`, millisecond clock with wraparound
-- [x] Tick-bound scheduler (`TickScheduler`) — PLAN §4.2 rule 3
-- [x] SFMT-19937 + `urand` / `irand` / `frand` / `rand_norm` / roll helpers
-- [x] Config and logging
-
-One deliberate deviation: PLAN §6 step 7 calls for an ini config system. We use
-`appsettings.json` plus environment overrides instead — the same layering, in the idiom the rest of
-the .NET stack already speaks.
-
-**Phase 2 progress**
-
-- [x] `auth` schema — accounts (SRP6 salt/verifier/session key as binary), `realmlist`, `build_info`
-- [x] EF Core model + repositories + migrations, MySQL in Docker Compose
-- [x] Auth server reads accounts, realms and build gating from the database
-- [x] Account CLI
-- [x] `characters` schema — designed fresh, migrated by the world server
-- [x] First `world` table imported: `playercreateinfo`, the 62 race/class start positions
-- [ ] `WowEmu.Data.Import` — a real importer, rather than piping one `.sql` file at a time
-
-## Layout
-
-```
-src/WowEmu.Core/           ObjectGuid, Position, clocks, tick scheduler, SFMT + distributions
-src/WowEmu.Cryptography/   SRP6, RC4, header encryption, session key expansion
-src/WowEmu.Protocol/       PacketReader / PacketWriter, packed encodings, generated opcode enum
-src/WowEmu.Network/        World-protocol framing and header encryption
-src/WowEmu.Data.Client/    .dbc reader (and later .map, .vmap, .mmap)
-src/WowEmu.Data.Db/        EF Core models and repositories for the auth and characters databases
-src/WowEmu.AuthServer/     The logon server (port 3724)
-src/WowEmu.WorldServer/    The world server (port 8085)
-tools/WowEmu.AccountCli/   Account and realm maintenance
-tools/harness/             Headless protocol clients that drive the milestone gates
-tools/codegen/             Generates the opcode enum and table from upstream's headers
-tools/db/                  World-table import and vendoring scripts
-tools/vectors/             Reference implementations + golden test vectors
-sql/world/                 Vendored world-database content (AGPL-3.0, see sql/README.md)
-tests/WowEmu.Tests.Unit/   xUnit tests
-azerothcore-wotlk/         The C++ server being ported (reference only, not built)
-database-wotlk/            AzerothCore's world database dump (reference only, not imported)
-```
-
-Neither reference tree is a git repository — they are raw folders. Updating them means re-cloning
-from `github.com/azerothcore/{azerothcore-wotlk,database-wotlk}`. Both are gitignored.
-
-### Where the reference SQL lives
-
-Phases 2, 4 and 5 need schemas and content for the `characters` and `world` databases. All of it is
-already on disk, in two places that are easy to confuse:
-
-| Path | Files | What it is |
-|---|---|---|
-| `azerothcore-wotlk/data/sql/base/db_auth/` | 22 | Auth schema. We designed ours fresh instead — see [PLAN.md](PLAN.md) §5.2 |
-| `azerothcore-wotlk/data/sql/base/db_characters/` | 108 | **Characters schema.** The starting point for Phase 5's persistence |
-| `azerothcore-wotlk/data/sql/base/db_world/` | 309 | World schema + content, 296M |
-| `database-wotlk/sql/base/` | 155 | World schema + content, 193M — `DROP TABLE`, `CREATE TABLE` and the `INSERT`s together, one file per table |
-| `database-wotlk/sql/updates/` | 5 | Incremental migrations applied on top of the base dump |
-
-Note that `database-wotlk` is **world data only** — it contains no `characters` tables, so Phase 5
-takes its schema from `db_characters/` above.
-
-Per PLAN.md §5.2 the treatment differs by database: `world` stays structurally close to upstream,
-because 309 tables of community-curated content are not worth re-curating, while `characters` is
-ours to design properly and gets imported table by table as each phase needs it.
-
-## Build and test
+[`web/todo.json`](web/todo.json) is the single source of truth for what is done, what is next, and
+every stub and silent gap worth remembering. [`web/index.html`](web/index.html) renders it as a
+progress board — phases, milestones, filters, search.
 
 ```bash
-dotnet build
-dotnet test
+cd web && python3 -m http.server 8000
+# then open http://localhost:8000
 ```
 
-Requires the .NET 10 SDK. The unit tests need nothing else — no database, WoW client or extracted
-game data.
+It has to be served rather than opened off disk: a browser will not `fetch` a sibling file over
+`file://`. The page tells you so if you try.
 
-## Running the logon server
+**Edit `web/todo.json`, not this file.**
 
-The auth server needs MySQL. Everything below assumes Docker is running.
+[PLAN.md](PLAN.md) remains the architecture, the phased roadmap and the risk register — the *why*.
+The board is the *what*.
+
+## Quick start
 
 ```bash
-docker compose up -d                                             # MySQL on 127.0.0.1:3306
+dotnet build && dotnet test          # needs only the .NET 10 SDK
+docker compose up -d                 # MySQL on 127.0.0.1:3306
+tools/db/import-world.sh             # vendored world content
 dotnet run --project tools/WowEmu.AccountCli -- account create test
-dotnet run --project src/WowEmu.AuthServer
+dotnet run --project src/WowEmu.AuthServer     # port 3724
+dotnet run --project src/WowEmu.WorldServer    # port 8085
 ```
 
-The server applies pending migrations itself on startup, so the first run creates the schema. The
-`account create` command prompts for the password rather than taking it on the command line, which
-keeps it out of your shell history.
-
-The world server is a second process. It reads the auth database for session keys, owns the
-characters database, and reads `world` for static content:
-
-```bash
-tools/db/import-world.sh                   # world content: start positions, base stats
-dotnet run --project src/WowEmu.WorldServer
-```
-
-**Where each database comes from.** The three are filled three different ways, which is worth
-knowing when something is missing:
-
-| Database | Schema from | Data from |
-|---|---|---|
-| `wowemu_auth` | EF Core migrations, applied by the logon server at startup | the account CLI |
-| `wowemu_characters` | EF Core migrations, applied by the world server at startup | players, at runtime |
-| `wowemu_world` | the dumps in `sql/world/` | `tools/db/import-world.sh` |
-
-The schemas are created by `docker/mysql-init/` when the volume is first made. On a volume that
-predates a schema, apply it by hand:
-
-```bash
-docker exec -i wowemu-mysql mysql -uroot -pwowemu < docker/mysql-init/01-create-databases.sql
-```
-
-`world` is content rather than schema we own, so it is imported rather than migrated — see
-[PLAN.md](PLAN.md) §5.2. The dumps are committed in [`sql/world/`](sql/README.md), so a fresh clone
-needs nothing but Docker; `database-wotlk/` is only required to vendor a *new* table. Each file
-records what reads it. A real importer is tracked in [TODO.md](TODO.md).
-
-Verify both without launching a client:
+Verify without a client — three headless gates that speak the real protocol:
 
 ```bash
 python3 tools/harness/m1_login.py     # logon, realm list, reconnect
-python3 tools/harness/m2_world.py     # the above, then the world handshake to character select
+python3 tools/harness/m2_world.py     # world handshake, character create/list/delete
+python3 tools/harness/m5_combat.py    # walk to a mob, kill it, gain experience
 ```
 
-Then point a 3.3.5a client at it by setting `SET realmlist "<host>"` in `WTF/Config.wtf` — note that
+Then point a 3.3.5a client at it with `SET realmlist "<host>"` in `WTF/Config.wtf` — note that
 `Config.wtf` overrides `Data/<locale>/realmlist.wtf`, so editing only the latter does nothing.
 
-The realm advertised after login is seeded as `127.0.0.1:8085`. If the client runs anywhere else —
-a VM, another machine — point the realm at an address it can actually reach:
-
-```bash
-dotnet run --project tools/WowEmu.AccountCli -- realm set-address 1 192.168.1.10 8085
-```
-
-The running server picks that up on its next realm refresh; no restart needed.
-
-**Configuration.** `src/WowEmu.AuthServer/appsettings.json` holds the bind address, port and
-connection string. An empty connection string means the Docker Compose default; the
-`WOWEMU_AUTH_CONNECTION` environment variable overrides everything and is also what the
-`dotnet ef` tooling reads.
-
-### In VS Code
-
-`.vscode/tasks.json` wires up the common commands. Press <kbd>⌘⇧B</kbd> to build, or
-<kbd>⌘⇧P</kbd> → *Tasks: Run Task* for the rest:
-
-| Task | What it does |
-|---|---|
-| `build` | Default build task (<kbd>⌘⇧B</kbd>) |
-| `rebuild` / `clean` | Full rebuild / remove output |
-| `test` | Run all tests (default test task) |
-| `test: filter` | Prompts for a name substring, e.g. `Srp6`, `Interleave` |
-| `watch: test` | Re-runs tests on every save — leave it running while you work |
-| `vectors: verify` | Checks the golden vectors still match what the tests assert |
-| `vectors: regenerate` | Re-runs the Python crypto reference implementation |
-| `vectors: regenerate SFMT` | Re-runs AzerothCore's C SFMT to regenerate its vectors |
-| `vectors: regenerate distributions` | Re-runs SFMT + libstdc++ in a container (needs Docker) |
-| `check` | rebuild → test → verify vectors. Run before committing. |
-| `db: up` / `db: down` | Start / stop the MySQL container |
-| `db: migrate` | Apply pending EF Core migrations |
-| `account: create` / `account: list` | Account maintenance |
-| `gate: M1` | Log in over the real protocol, headlessly. Needs the auth server running. |
-| `gate: M2` | Reach the character list. Needs both servers running. |
-| `codegen: opcodes` | Regenerate the opcode enum from upstream's `Opcodes.h` |
-| `codegen: opcode table` | Regenerate the status/processing classification from `Opcodes.cpp` |
-| `Run: Auth Server` | Start the logon server on port 3724 |
-| `Run: World Server` | Start the world server on port 8085 |
-
-To debug a single test, use the run/debug icon in the gutter next to the test method, or the
-Testing panel. `.vscode/launch.json` can launch either server, or both at once via the
-*Debug: Auth + World* compound.
-
-## On the test vectors
-
-Three sets, each generated by something other than our own code — a test that compares our C#
-against our C# proves nothing about protocol correctness.
-
-| File | Generated by | Covers |
-|---|---|---|
-| `vectors.json` | `generate_crypto_vectors.py` — an independent Python transcription | SRP6, RC4, AuthCrypt, SessionKeyGenerator |
-| `sfmt_vectors.json` | `generate_sfmt_vectors.sh` — AzerothCore's own `deps/SFMT/SFMT.c`, compiled | The SFMT-19937 bit stream |
-| `random_vectors.json` | `generate_random_vectors.sh` — SFMT + libstdc++ in a `gcc` container | `urand`, `irand`, `frand`, `rand_norm` |
-
-`verify_vectors_in_tests.py` checks that every generated value still appears in the test sources,
-so regenerating vectors without updating the tests is caught rather than silently passing.
-
-### Why the distributions need their own vectors
-
-AzerothCore does not roll its own distributions — it feeds SFMT into libstdc++'s
-`uniform_int_distribution` and `uniform_real_distribution`. Those consume a *specific* number of
-32-bit draws: the integer one rejection-samples (so the count varies per call), `frand` takes one
-draw and `rand_norm` takes two. An implementation that gets the draw count wrong still produces
-perfectly uniform numbers — and desynchronises the two servers' streams after the first roll,
-which would quietly destroy the differential testing the SFMT port exists for.
-
-The vectors are generated against **libstdc++ specifically**, inside a container, because libc++
-(what clang uses on macOS) implements `uniform_int_distribution` differently. The generator has an
-`#error` guard so it cannot be built against the wrong standard library by accident.
-
-### The crypto vectors
-
-The cryptography tests are checked against `tools/vectors/vectors.json`, generated by
-`tools/vectors/generate_crypto_vectors.py` — an independent Python transcription of AzerothCore's
-`SRP6.cpp` and `AuthCrypt.cpp`. Keeping the reference in a second language matters: a test that only
-compares our C# against our C# proves nothing about protocol correctness.
-
-The generator is deterministic (fixed RNG seed), so re-running it must produce a byte-identical
-`vectors.json`. It self-checks its RC4 against the published RFC 6229 vectors before emitting
-anything, and it implements *both* sides of SRP6 and asserts client and server derive the same
-session key.
-
-```bash
-python3 tools/vectors/generate_crypto_vectors.py
-```
-
-### Why one vector is named `ZEROCASE`
-
-`SHA1Interleave` skips leading zero bytes of the shared secret `S`, rounding the offset up to an even
-index before halving. The obvious implementation — split `S` into even/odd bytes and hash both halves
-whole — is correct about 255 times out of 256 and fails whenever `S` happens to begin with a zero
-byte, producing an intermittent login failure that is very hard to trace.
-
-`ZEROCASE` is a handshake constructed so that `S` starts with `0x00`, and
-`Sha1Interleave_DiffersFromNaiveImplementation_WhenSHasLeadingZeroes` asserts that the correct answer
-genuinely differs from the naive one. Anyone who "simplifies" that method gets a red test.
+The full setup, the layout, where each database comes from, and the reasoning behind the test
+vectors are all on the board.
 
 ## Legal
 

@@ -1,0 +1,1866 @@
+{
+  "project": {
+    "name": "WowEmu",
+    "tagline": "A .NET 10 / C# reimplementation of AzerothCore",
+    "target": "World of Warcraft 3.3.5a — WotLK, client build 12340",
+    "note": "The C++ reference lives in azerothcore-wotlk/ and is the behavioural source of truth. PLAN.md is the architecture and the why; this is the checklist.",
+    "links": [
+      {
+        "label": "AzerothCore",
+        "href": "https://www.azerothcore.org/"
+      },
+      {
+        "label": "PLAN.md",
+        "href": "../PLAN.md"
+      }
+    ]
+  },
+  "milestones": [
+    {
+      "id": "M1",
+      "name": "Realm list",
+      "meaning": "Client logs in and sees the realm list",
+      "state": "done",
+      "note": "Verified with a retail client. tools/harness/m1_login.py drives the same handshake headlessly."
+    },
+    {
+      "id": "M2",
+      "name": "Character select",
+      "meaning": "Client reaches character selection",
+      "state": "done",
+      "note": "Create, list and delete all work. tools/harness/m2_world.py."
+    },
+    {
+      "id": "M3",
+      "name": "Enter the world",
+      "meaning": "Character enters the world and renders",
+      "state": "done",
+      "note": "Confirmed with a retail client — logs in and roams."
+    },
+    {
+      "id": "M4",
+      "name": "Movement",
+      "meaning": "Players move, creatures wander",
+      "state": "progress",
+      "note": "Swimming and home-return still open."
+    },
+    {
+      "id": "M5",
+      "name": "Combat",
+      "meaning": "Kill a mob with autoattack and a spell, gain XP, level up",
+      "state": "progress",
+      "note": "Melee is done end to end and verified by a headless gate. Spells cast and deal damage; auras do not exist yet. Not yet confirmed against a real client."
+    },
+    {
+      "id": "M6",
+      "name": "Progression",
+      "meaning": "Complete the first quests of a starting zone",
+      "state": "todo",
+      "note": "Inventory, loot, quests, vendors, trainers, talents, reputation."
+    },
+    {
+      "id": "M7",
+      "name": "AI + scripting",
+      "meaning": "SmartAI creatures behave; one boss script completes",
+      "state": "todo",
+      "note": "SmartAI is the highest-leverage item in the plan — ~9,773 creature templates of behaviour from data alone."
+    }
+  ],
+  "phases": [
+    {
+      "id": 0,
+      "title": "Foundations",
+      "state": "done",
+      "summary": "Crypto, packet primitives, the tick scheduler. Every exit criterion in PLAN §6 is met and covered by tests.",
+      "groups": [
+        {
+          "title": "Core",
+          "items": [
+            {
+              "done": true,
+              "text": "Solution skeleton, analyzers, warnings-as-errors"
+            },
+            {
+              "done": true,
+              "text": "WowEmu.Cryptography — SRP6, RC4 + drop1024, AuthCrypt, SessionKeyGenerator"
+            },
+            {
+              "done": true,
+              "text": "Golden crypto vectors from an independent Python reference"
+            },
+            {
+              "done": true,
+              "text": "PacketReader / PacketWriter over spans"
+            },
+            {
+              "done": true,
+              "text": "Packed GUID, packed XYZ, packed time — round-trip tested"
+            },
+            {
+              "done": true,
+              "text": "ObjectGuid — 64-bit layout, entry/counter split per type"
+            },
+            {
+              "done": true,
+              "text": "Position / WorldLocation — distances, angles, arcs, orientation normalization"
+            },
+            {
+              "done": true,
+              "text": "MsTime / GameTime — 32-bit millisecond clock with wraparound preserved"
+            },
+            {
+              "done": true,
+              "text": "TickScheduler — tick-bound continuations, bounded drain",
+              "note": "PLAN §4.2 rule 3"
+            },
+            {
+              "done": true,
+              "text": "SFMT-19937, verified against upstream's own C"
+            },
+            {
+              "done": true,
+              "text": "urand / irand / frand / rand_norm, verified against libstdc++ draw counts"
+            },
+            {
+              "done": true,
+              "text": "Config and logging",
+              "note": "JSON + env rather than ini — a deliberate deviation from PLAN §6 step 7, same layering in the idiom the rest of .NET speaks."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "title": "Auth server",
+      "state": "done",
+      "milestone": "M1",
+      "summary": "The logon server, on port 3724.",
+      "groups": [
+        {
+          "title": "Handshake",
+          "items": [
+            {
+              "done": true,
+              "text": "Logon challenge / proof, SRP6 server side"
+            },
+            {
+              "done": true,
+              "text": "Reconnect handshake"
+            },
+            {
+              "done": true,
+              "text": "Realm list"
+            },
+            {
+              "done": true,
+              "text": "Build gating from build_info"
+            },
+            {
+              "done": true,
+              "text": "M1 gate script (tools/harness/m1_login.py)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Database layer",
+      "state": "done",
+      "summary": "MySQL in Docker, three databases filled three different ways.",
+      "groups": [
+        {
+          "title": "Schemas",
+          "items": [
+            {
+              "done": true,
+              "text": "MySQL in Docker Compose, schema init script"
+            },
+            {
+              "done": true,
+              "text": "auth schema — accounts, realmlist, build_info"
+            },
+            {
+              "done": true,
+              "text": "EF Core model, repositories, migrations"
+            },
+            {
+              "done": true,
+              "text": "Session key persisted so the world server can read it"
+            },
+            {
+              "done": true,
+              "text": "Account CLI — create, set-password, delete, list, realm management"
+            },
+            {
+              "done": true,
+              "text": "characters schema — designed fresh, migrated by the world server"
+            },
+            {
+              "done": true,
+              "text": "First world table imported: playercreateinfo"
+            },
+            {
+              "done": false,
+              "text": "WowEmu.Data.Import — a real importer instead of piping .sql files by hand"
+            },
+            {
+              "done": false,
+              "text": "Idempotent re-import"
+            },
+            {
+              "done": false,
+              "text": "Import AzerothCore auth accounts",
+              "note": "Only matters if migrating an existing server."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "World server socket + session",
+      "state": "done",
+      "milestone": "M2",
+      "summary": "Framing, header encryption, and the handful of handlers the client needs before character selection.",
+      "groups": [
+        {
+          "title": "Protocol",
+          "items": [
+            {
+              "done": true,
+              "text": "Pipelines framing — mixed-endian headers, split reads, large-packet form"
+            },
+            {
+              "done": true,
+              "text": "RC4 header encryption, continuous streams, serialized sends"
+            },
+            {
+              "done": true,
+              "text": "SMSG_AUTH_CHALLENGE → CMSG_AUTH_SESSION → digest → SMSG_AUTH_RESPONSE"
+            },
+            {
+              "done": true,
+              "text": "Addon manifest (zlib) → SMSG_ADDON_INFO"
+            },
+            {
+              "done": true,
+              "text": "Opcode enum — all 1313, generated"
+            },
+            {
+              "done": true,
+              "text": "Opcode table — status/processing classification for all 1312, generated and enforced",
+              "note": "PLAN §4.2 rule 4"
+            },
+            {
+              "done": true,
+              "text": "CMSG_PING / SMSG_PONG, cache version, tutorial flags, account data times"
+            }
+          ]
+        },
+        {
+          "title": "Characters",
+          "items": [
+            {
+              "done": true,
+              "text": "CMSG_CHAR_ENUM from the database"
+            },
+            {
+              "done": true,
+              "text": "CMSG_CHAR_CREATE — name rules, race/class validity, start position"
+            },
+            {
+              "done": true,
+              "text": "CMSG_CHAR_DELETE with ownership check"
+            },
+            {
+              "done": true,
+              "text": "M2 gate script (tools/harness/m2_world.py)"
+            },
+            {
+              "done": false,
+              "text": "Expansion gating (death knight level requirement)"
+            },
+            {
+              "done": false,
+              "text": "Faction rules (no mixed-faction accounts on PvP realms)"
+            },
+            {
+              "done": false,
+              "text": "playercreateinfo_item — start the character with gear rather than naked"
+            },
+            {
+              "done": false,
+              "text": "playercreateinfo_spell / _action — starting abilities and action bar"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Static game data",
+      "state": "progress",
+      "summary": "DBC, terrain and the vendored world database.",
+      "groups": [
+        {
+          "title": "DBC",
+          "items": [
+            {
+              "done": true,
+              "text": "DbcFile — header, format-string column offsets, string block, validation"
+            },
+            {
+              "done": true,
+              "text": "DbcStore<T> — id-indexed, sparse"
+            },
+            {
+              "done": true,
+              "text": "Localized string groups with locale fallback"
+            },
+            {
+              "done": true,
+              "text": "ChrRaces — display ids per gender, faction, name"
+            },
+            {
+              "done": true,
+              "text": "ChrClasses — power type, name"
+            },
+            {
+              "done": true,
+              "text": "Map — type, flags, directory, expansion"
+            },
+            {
+              "done": true,
+              "text": "FactionTemplate — 841 rows, IsHostileTo / IsFriendlyTo"
+            },
+            {
+              "done": true,
+              "text": "Spell + SpellCastTimes, SpellRange, SpellDuration, SpellRadius"
+            },
+            {
+              "done": true,
+              "text": "Tests against real extracted files, skipped when data is absent"
+            },
+            {
+              "done": true,
+              "text": "player_levelstats / player_classlevelstats loaded into PlayerStatsStore"
+            },
+            {
+              "done": false,
+              "text": "CharStartOutfit — starting gear per race/class"
+            },
+            {
+              "done": false,
+              "text": "AreaTable — zone lookup for the character list and login"
+            },
+            {
+              "done": false,
+              "text": "SpellItemEnchantment — needed for equipment in the character list"
+            },
+            {
+              "done": false,
+              "text": "Remaining stores, as phases need them",
+              "note": "109 total upstream; 8 loaded."
+            }
+          ]
+        },
+        {
+          "title": "Terrain",
+          "items": [
+            {
+              "done": true,
+              "text": ".map header — magic MAPS, version 9, 44-byte map_fileheader"
+            },
+            {
+              "done": true,
+              "text": "Area data (16×16 uint16), including the single-area shortcut"
+            },
+            {
+              "done": true,
+              "text": "Height data — all three widths (float / uint16 / uint8), V9 129×129 + V8 128×128"
+            },
+            {
+              "done": true,
+              "text": "Holes, with upstream's lookup tables"
+            },
+            {
+              "done": true,
+              "text": "Height lookup — four-triangle interpolation per cell"
+            },
+            {
+              "done": true,
+              "text": "Tiles loaded on demand and cached, absence cached too"
+            },
+            {
+              "done": true,
+              "text": "Verified against three race start positions on two maps (within 2 yards)"
+            },
+            {
+              "done": true,
+              "text": "Zone id derived from terrain on login and refreshed as the player moves"
+            },
+            {
+              "done": false,
+              "text": "Liquid data + queries (swimming, drowning, fall damage)"
+            },
+            {
+              "done": false,
+              "text": "Verify a height query against the C++ server's .gps output"
+            },
+            {
+              "done": false,
+              "text": "Unload tiles when a grid empties"
+            }
+          ]
+        },
+        {
+          "title": "World database",
+          "items": [
+            {
+              "done": true,
+              "text": "player_levelstats (4,960) and player_classlevelstats (800) — base stats"
+            },
+            {
+              "done": true,
+              "text": "creature_template (29,928), creature (145,946), creature_model_info (24,143), creature_classlevelstats (400) — vendored, loaded in 0.9 s"
+            },
+            {
+              "done": true,
+              "text": "gameobject_template (21,512), gameobject (85,552) — vendored and loaded"
+            },
+            {
+              "done": true,
+              "text": "creature_template widened with combat columns: damage range, multiplier, swing times, attack power, flags_extra"
+            },
+            {
+              "done": true,
+              "text": "player_xp_for_level (79 rows) — the cost of leaving each level"
+            },
+            {
+              "done": false,
+              "text": "creature_addon, creature_equip_template — auras and visible weapons on spawn"
+            },
+            {
+              "done": false,
+              "text": "gameobject_template_addon — per-template faction and flag overrides"
+            },
+            {
+              "done": false,
+              "text": "item_template"
+            },
+            {
+              "done": false,
+              "text": "quest_template, npc_text"
+            },
+            {
+              "done": false,
+              "text": "Startup timing report, target under ~30 s",
+              "note": "Creature load is timed; nothing else is."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Object model + entering the world",
+      "state": "done",
+      "milestone": "M3",
+      "summary": "Update fields are the critical path — 381 generated constants, all eight block boundaries matching PLAN §5.",
+      "groups": [
+        {
+          "title": "Update fields",
+          "items": [
+            {
+              "done": true,
+              "text": "Generated field-index constants — 381, all eight block boundaries match PLAN §5"
+            },
+            {
+              "done": true,
+              "text": "Per-field size, type and visibility flags carried through from upstream's comments"
+            },
+            {
+              "done": true,
+              "text": "uint[] storage with a per-field dirty mask, no-op on unchanged writes"
+            },
+            {
+              "done": true,
+              "text": "Typed accessors — uint32, int32, float, packed byte, packed uint16, guid, flags"
+            },
+            {
+              "done": true,
+              "text": "UpdateMask — block-based bitmask, 42 blocks for a player"
+            },
+            {
+              "done": true,
+              "text": "UpdateData — block accumulation, out-of-range block, payload assembly"
+            },
+            {
+              "done": true,
+              "text": "Compression above 100 bytes, uncompressed size prefixed"
+            },
+            {
+              "done": true,
+              "text": "Movement block (MovementInfo + nine speeds) and the create-block builder"
+            },
+            {
+              "done": true,
+              "text": "Position, LowGuid and Rotation branches of the create block, for gameobjects"
+            },
+            {
+              "done": false,
+              "text": "Transport branch of the movement block",
+              "note": "Throws for now."
+            },
+            {
+              "done": false,
+              "text": "Per-observer visibility filtering",
+              "note": "The mask intersection exists; nothing computes the observer's visible-flag set."
+            }
+          ]
+        },
+        {
+          "title": "Object hierarchy",
+          "items": [
+            {
+              "done": true,
+              "text": "GameObjectBase → WorldObject → Unit → Player, with the cumulative type mask"
+            },
+            {
+              "done": true,
+              "text": "Player.Create from the characters row + ChrRaces + ChrClasses + base stats"
+            },
+            {
+              "done": true,
+              "text": "Unit as its own layer — everything below UNIT_END lives there"
+            },
+            {
+              "done": true,
+              "text": "Creature — a port of InitEntry, UpdateEntry, SelectLevel and LoadFromDB's health block"
+            },
+            {
+              "done": true,
+              "text": "GameObject — a WorldObject but not a Unit; 18 field slots against a unit's 148"
+            },
+            {
+              "done": false,
+              "text": "Item / Bag — an Object but not a WorldObject"
+            },
+            {
+              "done": false,
+              "text": "Creature equipment, addon auras, and the creature_template_model split"
+            }
+          ]
+        },
+        {
+          "title": "Login and persistence",
+          "items": [
+            {
+              "done": true,
+              "text": "CMSG_PLAYER_LOGIN → build the player from the characters row + DBC + level stats"
+            },
+            {
+              "done": true,
+              "text": "SMSG_LOGIN_VERIFY_WORLD, SMSG_FEATURE_SYSTEM_STATUS, SMSG_MOTD, SMSG_LEARNED_DANCE_MOVES"
+            },
+            {
+              "done": true,
+              "text": "Before add-to-map: SMSG_BINDPOINTUPDATE, SMSG_INSTANCE_DIFFICULTY, SMSG_LOGIN_SETTIMESPEED"
+            },
+            {
+              "done": true,
+              "text": "The player's own create block, compressed, then SMSG_TIME_SYNC_REQ"
+            },
+            {
+              "done": true,
+              "text": "Session moves to SessionStatus.LoggedIn, admitting gameplay opcodes"
+            },
+            {
+              "done": true,
+              "text": "Confirmed with a retail client — logs in and roams"
+            },
+            {
+              "done": true,
+              "text": "Player save — position, zone, map, orientation"
+            },
+            {
+              "done": true,
+              "text": "Saved on clean logout and on disconnect (alt-F4 must not lose progress)"
+            },
+            {
+              "done": true,
+              "text": "CMSG_LOGOUT_REQUEST / CMSG_LOGOUT_CANCEL, session returns to Authed"
+            },
+            {
+              "done": true,
+              "text": "Periodic save"
+            },
+            {
+              "done": false,
+              "text": "character_homebind, character_spell, character_action"
+            },
+            {
+              "done": false,
+              "text": "Level, stats and health saved",
+              "note": "Only position is written today; the rest is recomputed from base tables on every login."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Maps, grids, visibility",
+      "state": "progress",
+      "summary": "Objects live in 8×8 cells per grid, 512×512 across a map, on an inverted origin-centred axis.",
+      "groups": [
+        {
+          "title": "Spatial index",
+          "items": [
+            {
+              "done": true,
+              "text": "Map per map id, objects filed into 8×8 cells per grid"
+            },
+            {
+              "done": true,
+              "text": "Inverted, origin-centred axis for grids and cells"
+            },
+            {
+              "done": true,
+              "text": "Visibility — per-player visible set, create on enter, destroy on leave, no duplicate creates"
+            },
+            {
+              "done": true,
+              "text": "Movement broadcast to everyone who can see the mover, never back to the mover"
+            },
+            {
+              "done": true,
+              "text": "Players added on login, removed on logout and on disconnect"
+            },
+            {
+              "done": true,
+              "text": "Cells hold WorldObject, not just Player"
+            },
+            {
+              "done": true,
+              "text": "Creature spawn loading per grid, on first sight, at most once per grid"
+            },
+            {
+              "done": true,
+              "text": "Grid creation (terrain) vs grid object loading as two distinct steps",
+              "note": "The second is IGridObjectLoader, which is also what lets a map be tested without a database."
+            },
+            {
+              "done": true,
+              "text": "spawnMask honoured — the 78 spawns that exclude difficulty 0 stay out of the normal world"
+            },
+            {
+              "done": true,
+              "text": "Gameobject spawn loading per grid, composed with the creature loader"
+            },
+            {
+              "done": true,
+              "text": "MapUpdater worker pool, MapMgr 4-phase round-robin with the accumulated-diff rule"
+            },
+            {
+              "done": true,
+              "text": "Sessions moved onto the TickScheduler; the map lock is gone"
+            },
+            {
+              "done": false,
+              "text": "Unload cells and tiles when a grid empties",
+              "note": "A grid, once loaded, stays for the life of the process."
+            },
+            {
+              "done": false,
+              "text": "400-yard far-visibility second pass"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Movement",
+      "state": "progress",
+      "milestone": "M4",
+      "summary": "Players move; creatures wander from their spawn point and never drift away.",
+      "groups": [
+        {
+          "title": "Creature movement",
+          "items": [
+            {
+              "done": true,
+              "text": "MotionMaster as a slot stack, with Idle and Random"
+            },
+            {
+              "done": true,
+              "text": "RandomMovementGenerator — uniform over the disc, anchored to the spawn point"
+            },
+            {
+              "done": true,
+              "text": "Straight-line moves advanced on the map tick, re-filed into their cells as they go"
+            },
+            {
+              "done": true,
+              "text": "SMSG_MONSTER_MOVE, including the point count derived from a padded spline",
+              "note": "It is 1 for a two-point move, not 2 — linear mode is initialised with the Catmull-Rom initialiser, which pads a virtual point at each end."
+            },
+            {
+              "done": true,
+              "text": "A creature already walking when you arrive is sent the remainder of its move"
+            },
+            {
+              "done": true,
+              "text": "Moves are queued behind the create block for the same creature, never ahead of it"
+            },
+            {
+              "done": false,
+              "text": "HomeMovementGenerator"
+            },
+            {
+              "done": false,
+              "text": "WaypointMovementGenerator",
+              "note": "12,000-odd spawns ask for it and currently stand still."
+            },
+            {
+              "done": false,
+              "text": "Real splines: Catmull-Rom, cyclic paths, parabolic arcs, facing targets"
+            },
+            {
+              "done": false,
+              "text": "Terrain height is not consulted when picking a destination"
+            },
+            {
+              "done": false,
+              "text": "Creature movement does not update UNIT_FIELD_BYTES_1 stand state or emit walk/run flags"
+            }
+          ]
+        },
+        {
+          "title": "Player movement",
+          "items": [
+            {
+              "done": true,
+              "text": "27 movement opcodes → one handler, routed by the generated opcode table"
+            },
+            {
+              "done": true,
+              "text": "MovementInfo read/write, round-trip tested"
+            },
+            {
+              "done": true,
+              "text": "Server tracks the player's position; broadcast under the opcode the client sent"
+            },
+            {
+              "done": true,
+              "text": "Coordinate sanity — NaN, infinity and out-of-map refused before they reach the map or the DB"
+            },
+            {
+              "done": true,
+              "text": "Teleport cap — no single packet may move more than 150 yards"
+            },
+            {
+              "done": true,
+              "text": "Speed check against server-measured elapsed time, not the client's own timestamp"
+            },
+            {
+              "done": true,
+              "text": "Contradictory flag combinations refused"
+            },
+            {
+              "done": true,
+              "text": "Rejected packets leave player state untouched and snap the client back"
+            },
+            {
+              "done": true,
+              "text": "Under-the-world check — refuses a position far below the floor"
+            },
+            {
+              "done": false,
+              "text": "The symmetric check — does Z match the floor",
+              "note": "Vmaps did not make it safe. It would have to know about transports, lifts, and the gap between leaving a surface and the fall being reported; each is an honest player disconnected."
+            },
+            {
+              "done": false,
+              "text": "Swim/fly distinction — needs the liquid chunk parsed"
+            },
+            {
+              "done": false,
+              "text": "Speed checks against applied speeds rather than a fixed ceiling — needs auras"
+            },
+            {
+              "done": false,
+              "text": "Fall damage"
+            },
+            {
+              "done": false,
+              "text": "Transport movement",
+              "note": "Both directions refuse rather than guess."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Collision + pathfinding",
+      "state": "progress",
+      "summary": "VMAPs are read and line of sight works. Detour is parsed but no path has been run yet.",
+      "groups": [
+        {
+          "title": "Navmesh",
+          "items": [
+            {
+              "done": true,
+              "text": "Detour compatibility spike",
+              "note": "PLAN §3.4.1, the phase's mandated first task. Answer: outcome 2 — fork DotRecast, change three constants."
+            },
+            {
+              "done": true,
+              "text": ".mmap and .mmtile headers parsed and verified against 40 real tiles"
+            },
+            {
+              "done": true,
+              "text": "Full tile reader for AzerothCore's raw layout — vertices, polygons, detail mesh, BV tree, off-mesh connections"
+            },
+            {
+              "done": true,
+              "text": "Verified by invariant, not by \"it parsed\"",
+              "note": "Every vertex inside its tile bounds, every polygon indexing a real vertex, every detail base inside its array, every BV escape inside the tree, and each section consuming exactly its predicted bytes."
+            },
+            {
+              "done": false,
+              "text": "DECISION NEEDED: fork DotRecast (zlib) and change DT_SALT_BITS / TILE_BITS / POLY_BITS to 12/21/31",
+              "blocked": true,
+              "note": "Three constants, but it means vendoring and maintaining a third-party codebase — worth a deliberate yes rather than drifting into it."
+            },
+            {
+              "done": false,
+              "text": "Load a real tile into a mesh, run a path, compare against the C++ server's .mmap path",
+              "note": "The phase's actual exit criterion, and still unproven."
+            },
+            {
+              "done": false,
+              "text": "PathGenerator, the (y, z, x) Detour coordinate swizzle, findSmoothPath"
+            },
+            {
+              "done": false,
+              "text": "Custom cost function: dist × (1 + slopeDegrees/100) × areaCost, and DT_SLOPE_TOO_STEEP"
+            }
+          ]
+        },
+        {
+          "title": "VMAPs",
+          "items": [
+            {
+              "done": true,
+              "text": ".vmtree and .vmtile readers — BIH index, model placements, bounds"
+            },
+            {
+              "done": true,
+              "text": "BIH traversal from the root, with a cycle guard; verified to reach every primitive"
+            },
+            {
+              "done": true,
+              "text": "The model-name terminator rule, which decides which file on disk holds the geometry"
+            },
+            {
+              "done": true,
+              "text": ".vmo model files — groups, vertices, triangles, per-group BIH, model liquids",
+              "note": "All 7,086 parse; 11,945,292 triangles, every one indexing a vertex its group has."
+            },
+            {
+              "done": true,
+              "text": "ModelInstance transforms — the ray is moved into model space, not the model into the world"
+            },
+            {
+              "done": true,
+              "text": "Möller–Trumbore ray/triangle intersection, with the nearest-hit distance threaded through"
+            },
+            {
+              "done": true,
+              "text": "BIH::intersectRay — interval narrowing and near-child-first ordering"
+            },
+            {
+              "done": true,
+              "text": "The world-to-vmap coordinate mirror, and the euler-angle swizzle upstream applies"
+            },
+            {
+              "done": true,
+              "text": "StaticMapTree — per-map tree, tiles on demand, line of sight and height in world coordinates",
+              "note": "25 of 25 sampled model surfaces block a ray passing through them."
+            },
+            {
+              "done": true,
+              "text": "THE VMAP TILE NAMING TRAP — a .vmtile is {map}_{gridY}_{gridX} while a .map is {map}{gridX}{gridY}",
+              "note": "Two extractors, opposite conventions, nothing anywhere saying so. Measured against 144 real tiles rather than assumed."
+            },
+            {
+              "done": true,
+              "text": "Height queries against vmaps, combined with terrain — the floor is the higher of the two",
+              "note": "246 of 437 sampled points in Stormwind stand on a model rather than the ground."
+            },
+            {
+              "done": false,
+              "text": "DynamicMapTree for gameobject-based line of sight, rebalanced every 200 ms"
+            },
+            {
+              "done": false,
+              "text": "Height and liquid checks in movement validation"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Combat",
+      "state": "progress",
+      "milestone": "M5",
+      "summary": "Melee is done end to end and verified by a headless gate. Spells cast and deal damage; auras do not exist yet.",
+      "groups": [
+        {
+          "title": "The melee attack table",
+          "items": [
+            {
+              "done": true,
+              "text": "RollMeleeOutcomeAgainst — one urand(0, 10000) against a running sum",
+              "note": "In the order miss, dodge, parry, block, glancing, crushing, crit, normal. Reproduced structurally, including the (tmp -= skillBonus) > 0 mutation inside the branch conditions."
+            },
+            {
+              "done": true,
+              "text": "The roll is inclusive at both ends, so there are 10001 outcomes and not 10000"
+            },
+            {
+              "done": true,
+              "text": "Facing asymmetry: only a player victim loses its dodge from behind",
+              "note": "Parry and block are lost by anyone. That is what makes tanking a boss survivable, not an oversight."
+            },
+            {
+              "done": true,
+              "text": "creature_template.flags_extra vendored and wired — the five bits that gate table branches",
+              "note": "NoDodge, NoParry, NoBlock, NoCrushingBlows, NoCrit. 4/4/5/1/4 creatures carry them."
+            },
+            {
+              "done": true,
+              "text": "Distribution verified over 10⁶ rolls, within 0.05 % of the chances asked for"
+            }
+          ]
+        },
+        {
+          "title": "Damage",
+          "items": [
+            {
+              "done": true,
+              "text": "CalcArmorReducedDamage — the x/(1+x) curve, the level-59 kink, the 75 % cap",
+              "note": "And the ceil that stops heavy armour making a target immune to weak hits."
+            },
+            {
+              "done": true,
+              "text": "Outcome multipliers: crit ×2, crushing +½ (integer, truncated), glancing −10 %/level capped at three, flat block",
+              "note": "Dodge and parry preserve clean damage for rage and threat."
+            },
+            {
+              "done": true,
+              "text": "ARMOUR IS APPLIED BEFORE THE OUTCOME MULTIPLIER, not after",
+              "note": "Observably different on about half of all inputs because of the ceil between them."
+            },
+            {
+              "done": true,
+              "text": "MeleeChances — the miss curve's two asymmetries, boss dodge/parry, humanoid-only parry",
+              "note": "0.04 vs 0.02 against a player; a cliff at ten points against a creature."
+            },
+            {
+              "done": true,
+              "text": "Percentages become hundredths as int32(chance × 100) in FLOAT, not double",
+              "note": "13.4f × 100 rounds to exactly 1340.0f, so a boss's parry is 1340 where decimal arithmetic says 1339."
+            }
+          ]
+        },
+        {
+          "title": "Auto-attack and its packets",
+          "items": [
+            {
+              "done": true,
+              "text": "SMSG_ATTACKERSTATEUPDATE, whose trailers are conditional on HitInfo",
+              "note": "An extra or missing one shifts every byte after it and the client notices several packets later."
+            },
+            {
+              "done": true,
+              "text": "Overkill is measured against the victim's health BEFORE the hit",
+              "note": "Upstream sends the packet and only then applies the damage."
+            },
+            {
+              "done": true,
+              "text": "SMSG_ATTACKSTART sends full guids where SMSG_ATTACKSTOP packs them",
+              "note": "Upstream's inconsistency, reproduced rather than tidied."
+            },
+            {
+              "done": true,
+              "text": "CMSG_ATTACKSWING / CMSG_ATTACKSTOP, and every rejection answers with a stop rather than silence"
+            },
+            {
+              "done": true,
+              "text": "Swing timers: a timer overshoots into the negative for exactly one tick",
+              "note": "min(timer + speed, speed) carries that overshoot into the next swing rather than discarding it."
+            },
+            {
+              "done": true,
+              "text": "A failed swing costs a 100 ms retry, not a weapon swing"
+            },
+            {
+              "done": true,
+              "text": "Swing errors are suppressed to one per run of failures",
+              "note": "The flip side: a fight that is out of range throughout emits exactly one packet, which makes a persistent failure look silent."
+            }
+          ]
+        },
+        {
+          "title": "Death, threat and AI",
+          "items": [
+            {
+              "done": true,
+              "text": "Kill lands on Corpse, never on JustDied — upstream promotes through it in one call"
+            },
+            {
+              "done": true,
+              "text": "Corpse delay from rank (60 s common, 300 s rare/elite, 600 s open-world boss)"
+            },
+            {
+              "done": true,
+              "text": "THE RESPAWN CLOCK INCLUDES THE CORPSE DELAY",
+              "note": "Measuring from the corpse's removal instead would bring everything back a minute early."
+            },
+            {
+              "done": true,
+              "text": "A despawned creature leaves its cell and the guid index but stays in the update list"
+            },
+            {
+              "done": true,
+              "text": "Threat: one point per point of damage; zero threat still joins the list"
+            },
+            {
+              "done": true,
+              "text": "THE VICTIM IS STICKY: 110 % to steal it in melee range, 130 % out of it",
+              "note": "Without the margin a creature thrashes between two similar attackers and tanking cannot work. Measured: 1 switch over 100 alternating swings."
+            },
+            {
+              "done": true,
+              "text": "Aggro radius: 20 yards at parity, ±1/level, clamped to 5–45",
+              "note": "Upstream's GetAggroRange has its two locals named backwards — the one called creatureLevel holds the target's level — so this follows GetAttackDistance, which computes the same thing with honest names."
+            },
+            {
+              "done": true,
+              "text": "A missing faction template is treated as HARMLESS",
+              "note": "The safe direction to fail — a creature that never fights is noticed; a zone that attacks on sight reads as a game rule."
+            },
+            {
+              "done": true,
+              "text": "Leash at 30 yards from the SPAWN POINT, not from where the fight started"
+            },
+            {
+              "done": true,
+              "text": "Evading clears the threat list, not only the victim"
+            },
+            {
+              "done": true,
+              "text": "A creature turns to face its victim",
+              "note": "Not cosmetic: the swing loop enforces a 120° cone, so a creature that never turns stands next to its victim and never lands a hit."
+            }
+          ]
+        },
+        {
+          "title": "Spells",
+          "items": [
+            {
+              "done": true,
+              "text": "Spell.dbc — 49,839 rows, 234 columns — plus the four tables it indexes into",
+              "note": "Cast time, range and duration are indices, not values."
+            },
+            {
+              "done": true,
+              "text": "BASEPOINTS IS STORED ONE BELOW THE MINIMUM",
+              "note": "Fireball's 14-22 is base 13 with 9 sides; reading the column as the minimum makes every spell in the game hit for one less."
+            },
+            {
+              "done": true,
+              "text": "Costs come from two columns",
+              "note": "Wrath moved caster spells to a percentage of base mana and left rage and energy flat, so reading only ManaCost finds every mage spell free."
+            },
+            {
+              "done": true,
+              "text": "Effects are three PARALLEL BLOCKS, not three interleaved records"
+            },
+            {
+              "done": true,
+              "text": "CMSG_CAST_SPELL and its target block, whose layout is decided by a leading mask",
+              "note": "Five separate flags share ONE guid field, not one each."
+            },
+            {
+              "done": true,
+              "text": "SMSG_SPELL_START and SMSG_SPELL_GO — two packets per cast, not one"
+            },
+            {
+              "done": true,
+              "text": "THE CASTER GUID IS WRITTEN TWICE in each",
+              "note": "The first is whatever produced the cast, the second is always the unit; writing it once shifts every field after it by a guid."
+            },
+            {
+              "done": true,
+              "text": "SMSG_SPELL_GO's hit and miss lists use FULL guids where the rest of the packet packs them",
+              "note": "And the two lists have different strides — a miss carries a reason byte, a hit does not."
+            },
+            {
+              "done": true,
+              "text": "THE GLOBAL COOLDOWN BLOCKS ONLY SPELLS THAT WOULD START ONE",
+              "note": "An ability with no StartRecoveryTime — Heroic Strike, say — is usable during it."
+            },
+            {
+              "done": true,
+              "text": "Power is taken when the cast STARTS, not when it lands, so a cancelled cast is not free"
+            },
+            {
+              "done": true,
+              "text": "POWER SLOTS ARE INDEXED BY TYPE",
+              "note": "Power used to always read slot 0, so a warrior's rage went into the mana field — a full mana bar and an empty rage bar on the same unit."
+            },
+            {
+              "done": true,
+              "text": "A SINGLE DIE SIDE ADDS EXACTLY 1 AND DRAWS NO RANDOM NUMBER",
+              "note": "Upstream has an explicit case 1; folding it into irand(1, 1) gives the same answer and desynchronises the stream."
+            },
+            {
+              "done": true,
+              "text": "SCHOOL_DAMAGE, HEAL, and the three weapon-damage forms — 4 of upstream's 164"
+            },
+            {
+              "done": true,
+              "text": "A WEAPON-DAMAGE EFFECT'S VALUE IS A FLAT BONUS ON TOP OF A SWING",
+              "note": "Treating it as damage makes Heroic Strike hit for 11 instead of a swing plus 11."
+            },
+            {
+              "done": true,
+              "text": "Armour is applied ONCE AT THE END, not per effect",
+              "note": "It ceilings, so per-effect mitigation gains a point per effect."
+            },
+            {
+              "done": true,
+              "text": "SMSG_SPELLNONMELEEDAMAGELOG — THE TARGET IS WRITTEN BEFORE THE CASTER",
+              "note": "The opposite order to SMSG_ATTACKERSTATEUPDATE, with nothing in either packet saying so."
+            }
+          ]
+        },
+        {
+          "title": "Experience and levelling",
+          "items": [
+            {
+              "done": true,
+              "text": "player_xp_for_level vendored — 79 rows. EACH ROW IS THE COST OF LEAVING THAT LEVEL",
+              "note": "Not a running total; reading it as a total makes every level after the first cost far too much."
+            },
+            {
+              "done": true,
+              "text": "Acore::XP::BaseGain — two different curves either side of the player's level"
+            },
+            {
+              "done": true,
+              "text": "GetGrayLevel (three segments, flat floor under 6) and GetZeroDifference (a nine-step widening function)",
+              "note": "Neither derivable from the other."
+            },
+            {
+              "done": true,
+              "text": "The base figure comes from the CONTENT, not the creature's level: 45 classic, 235 Outland, 580 Northrend"
+            },
+            {
+              "done": true,
+              "text": "Elite pays double — and RARE IS NOT ELITE, despite ranking above world boss numerically"
+            },
+            {
+              "done": true,
+              "text": "Critters and anything flagged NoExperience pay nothing",
+              "note": "Or a field of rabbits is a levelling strategy."
+            },
+            {
+              "done": true,
+              "text": "GiveXP as a LOOP, with the surplus carried forward — one kill can cross several levels"
+            },
+            {
+              "done": true,
+              "text": "Level-up recomputes health, mana and the five attributes, and REFILLS health and mana"
+            },
+            {
+              "done": true,
+              "text": "SMSG_LOG_XPGAIN, whose LAYOUT DEPENDS ON WHETHER THERE WAS A VICTIM"
+            },
+            {
+              "done": true,
+              "text": "SMSG_LEVELUP_INFO, which carries DELTAS RATHER THAN TOTALS, in fixed-size arrays"
+            },
+            {
+              "done": true,
+              "text": "Experience is paid BEFORE the threat list is cleared",
+              "note": "Creature.Kill forgets everyone, so paying afterwards pays nobody and looks like a kill that simply awards nothing."
+            }
+          ]
+        },
+        {
+          "title": "Verifying it",
+          "items": [
+            {
+              "done": true,
+              "text": "tools/harness/m5_combat.py — an M5 gate driving the whole loop over the real protocol",
+              "note": "Log in, walk to a wolf, auto-attack, kill it, gain experience. Measured: ~9 swings each way, 50 experience for a level 1 kill. Passes repeatedly."
+            },
+            {
+              "done": true,
+              "text": "A PLAYER HAD NO WEAPON DAMAGE AND NO ATTACK TIME",
+              "note": "Both are update fields defaulting to zero, so an unequipped character swung every tick for nothing, with no error anywhere — M5 was literally unreachable. Found by writing the gate, not by any unit test."
+            },
+            {
+              "done": false,
+              "text": "Verify against a real 3.3.5a client",
+              "note": "The gate proves the server's packets are self-consistent and carry the right numbers; it cannot prove the client reads them the same way. Only a real client can answer that."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Progression systems",
+      "state": "todo",
+      "milestone": "M6",
+      "summary": "Inventory, loot, quests, vendors, trainers, gossip, talents, reputation, corpses, chat, commands.",
+      "groups": [
+        {
+          "title": "Not started",
+          "items": [
+            {
+              "done": false,
+              "text": "Inventory and items"
+            },
+            {
+              "done": false,
+              "text": "Loot (*_loot_template)"
+            },
+            {
+              "done": false,
+              "text": "Quests — accept, objective, complete, reward"
+            },
+            {
+              "done": false,
+              "text": "Vendors, trainers, gossip"
+            },
+            {
+              "done": false,
+              "text": "Talents and glyphs"
+            },
+            {
+              "done": false,
+              "text": "Reputation"
+            },
+            {
+              "done": false,
+              "text": "Corpse, resurrect, graveyards"
+            },
+            {
+              "done": false,
+              "text": "Basic chat — say, yell, whisper"
+            },
+            {
+              "done": false,
+              "text": ".commands framework"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "AI + scripting",
+      "state": "todo",
+      "milestone": "M7",
+      "summary": "SmartAI is the highest-leverage item in the whole plan — it unlocks ~9,773 creature templates of behaviour from data alone.",
+      "groups": [
+        {
+          "title": "Not started",
+          "items": [
+            {
+              "done": false,
+              "text": "Script host — attribute discovery + source-generated registration, replacing 587 AddSC_*() functions"
+            },
+            {
+              "done": false,
+              "text": "UnitAI → CreatureAI → ScriptedAI → BossAI; EventMap, TaskScheduler, SummonList"
+            },
+            {
+              "done": false,
+              "text": "SmartAI interpreter — 93 events / 179 actions / 37 targets over smart_scripts"
+            },
+            {
+              "done": false,
+              "text": "ScriptMgr hook dispatch — start with the ~20 hooks actually used, not all 404"
+            },
+            {
+              "done": false,
+              "text": "SpellScript / AuraScript binding via spell_script_names"
+            },
+            {
+              "done": false,
+              "text": "Port 1–2 hand-written boss scripts as proof"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Breadth",
+      "state": "todo",
+      "summary": "Largely independent once phases 9–11 exist. Order these by what you want to play.",
+      "groups": [
+        {
+          "title": "Not started",
+          "items": [
+            {
+              "done": false,
+              "text": "Groups and raids"
+            },
+            {
+              "done": false,
+              "text": "Guilds"
+            },
+            {
+              "done": false,
+              "text": "Mail"
+            },
+            {
+              "done": false,
+              "text": "Auction house"
+            },
+            {
+              "done": false,
+              "text": "Battlegrounds and arenas"
+            },
+            {
+              "done": false,
+              "text": "LFG"
+            },
+            {
+              "done": false,
+              "text": "Instances and lockouts"
+            },
+            {
+              "done": false,
+              "text": "Achievements"
+            },
+            {
+              "done": false,
+              "text": "Channels, social, friends"
+            },
+            {
+              "done": false,
+              "text": "Pets, vehicles, transports"
+            },
+            {
+              "done": false,
+              "text": "Weather, game events, calendar, tickets, Warden"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "4.2",
+      "title": "The tick",
+      "state": "done",
+      "summary": "The threading model PLAN §4.2 calls the single most important constraint in the port.",
+      "groups": [
+        {
+          "title": "Threading",
+          "items": [
+            {
+              "done": true,
+              "text": "Outbound packets go through a Channel with one writer task",
+              "note": "Sending never touches a socket, so gameplay code on a map worker cannot block behind a slow client."
+            },
+            {
+              "done": true,
+              "text": "Header encryption begins at a POSITION IN THE SEND QUEUE, not a moment in time",
+              "note": "Otherwise the plaintext challenge would be encrypted if the writer had not caught up."
+            },
+            {
+              "done": true,
+              "text": "Map is synchronous and lock-free; safety comes from the tick's ordering, not a mutex"
+            },
+            {
+              "done": true,
+              "text": "World loop: drain the scheduler → drain sessions → run maps, in that order and never overlapping"
+            },
+            {
+              "done": true,
+              "text": "MapUpdater — dedicated threads, not the thread pool, so a callback storm cannot starve a tick"
+            },
+            {
+              "done": true,
+              "text": "One inbound queue per session, drained by whichever loop may run the packet at its front",
+              "note": "The two-queue design in PLAN §4.2 was withdrawn: the M3 gate caught a character saving at its pre-movement position because logout overtook movement. Upstream's head-of-line blocking is what makes it correct."
+            },
+            {
+              "done": true,
+              "text": "Handlers resume on the loop that started them",
+              "note": "ConfigureAwait(true) under the tick's SynchronizationContext, so a database answer never lands on a pool thread holding a Player."
+            },
+            {
+              "done": true,
+              "text": "Per-viewer update batching — one SMSG_UPDATE_OBJECT per tick instead of one per object",
+              "note": "Logging in at Northshire went from 131 packets to 1."
+            },
+            {
+              "done": false,
+              "text": "Analyzer banning bare Task.Run in gameplay code"
+            },
+            {
+              "done": false,
+              "text": "AssertOwnerThread is not called anywhere yet",
+              "note": "The invariant is documented and structural, but nothing fails loudly if a future caller breaks it."
+            },
+            {
+              "done": false,
+              "text": "Map workers default to 0 (inline). The pool is written and tested but unproven under load."
+            },
+            {
+              "done": false,
+              "text": "GRID LOADING BLOCKS THE TICK IT HAPPENS ON",
+              "note": "Measured: 875 ticks/second idle, but the tick a player logs in on takes ~71 ms, over the 50 ms budget, because the grid around them builds ~960 creatures inside the map update. Upstream splits this per cell rather than per grid."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "X",
+      "title": "Cross-cutting",
+      "state": "progress",
+      "summary": "Testing and tooling that spans every phase.",
+      "groups": [
+        {
+          "title": "Infrastructure",
+          "items": [
+            {
+              "done": false,
+              "text": "CI — build, test, vector verification on every push"
+            },
+            {
+              "done": false,
+              "text": "tests/WowEmu.Tests.Protocol — golden-packet comparison against captures"
+            },
+            {
+              "done": false,
+              "text": "tests/WowEmu.Tests.Integration — Docker MySQL + the gate harnesses"
+            },
+            {
+              "done": false,
+              "text": "Analyzer banning bare Task.Run in gameplay code"
+            },
+            {
+              "done": false,
+              "text": "Seeded differential testing against a running C++ server"
+            },
+            {
+              "done": false,
+              "text": "A harness client that deliberately misbehaves",
+              "note": "Nothing has yet proven a real client is snapped back correctly when its movement is rejected."
+            },
+            {
+              "done": false,
+              "text": "Startup timing report",
+              "note": "PLAN §6 Phase 4 wants under ~30 s."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "gaps": [
+    {
+      "category": "Auth server",
+      "items": [
+        "Bans and suspensions — FailBanned / FailSuspended exist as codes but nothing ever sends them; there is no account_banned table and no IP ban list",
+        "Failed-login lockout — passwords can be guessed at socket speed",
+        "Realm flags are static — a realm shows as online whether or not the world server is running",
+        "Realm population is always 0, and the character count per realm is always 0"
+      ]
+    },
+    {
+      "category": "World server",
+      "items": [
+        "CMSG_TIME_SYNC_RESP is never handled — the request is sent once and the reply ignored, so the server has no clock offset for the client",
+        "Latency is never measured, despite answering every ping",
+        "Account data (CMSG_UPDATE_ACCOUNT_DATA) is never stored, so client-side settings do not follow the account",
+        "Tutorial flags are always zero and never saved",
+        "MOTD comes from config, not from a database table",
+        "Banned-addon list is always empty; client cache version is a static config value",
+        "Logout is instant — upstream makes a player sit for 20 seconds unless resting or a GM",
+        "SessionStatus.Transfer is never entered; nothing moves between maps yet"
+      ]
+    },
+    {
+      "category": "Update objects",
+      "items": [
+        "Per-observer field filtering — UpdateMask.IntersectWith exists but nothing computes which fields a given observer may see, so every observer currently gets every non-zero field. A real information leak once there is anything private to leak.",
+        "Create-block branches for Transport, HasTarget and Vehicle are unwritten. Living, StationaryPosition, Self, Position, LowGuid and Rotation are all produced.",
+        "Our deflate output is not byte-identical to upstream's, by design (PLAN §9 excludes compressed bodies from byte-exact comparison)"
+      ]
+    },
+    {
+      "category": "Characters",
+      "items": [
+        "Only position, zone, map and orientation are saved — level, health and stats are recomputed from base tables on every login, so any change to them is lost",
+        "No name profanity or reserved-name checks",
+        "No declined names (the Russian client asks for them)",
+        "Character deletion is immediate — no in-progress state, no undelete window"
+      ]
+    },
+    {
+      "category": "Combat",
+      "items": [
+        "PLAYER DEATH DOES NOTHING. A creature can take a player to zero health and nothing happens — no corpse, no release, no resurrection sickness. Creatures fight back as of Phase 9, so this is now reachable in normal play rather than theoretical.",
+        "LOOT DOES NOT EXIST, so UNIT_DYNFLAG_LOOTABLE is deliberately never set on a corpse — the flag would promise a lootable corpse that opens an empty window.",
+        "creature_addon is not vendored, so every creature is ReactState.Aggressive. A passive quest prop currently behaves like anything else and will fight back.",
+        "A creature's facing is server-side only. CreatureAi.FaceTowards decides whether a swing lands, but the client is not told — that needs the facing-target form of SMSG_MONSTER_MOVE.",
+        "Glancing blows exclude a pet victim upstream; pets do not exist here, so only the player half of that condition is modelled.",
+        "Threat has no taunt, no redirection and no aura modifiers, and MeleeChances has no aura or expertise terms."
+      ]
+    },
+    {
+      "category": "Spells",
+      "items": [
+        "Nothing checks that a player knows the spell it casts. There is no spellbook, so CMSG_CAST_SPELL is honoured for any id in Spell.dbc.",
+        "SPELLS CANNOT MISS, CRIT OR BE RESISTED. Every cast that passes its checks lands in full — no spell hit table, no spell crit, no resistance.",
+        "AURAS DO NOT EXIST, so APPLY_AURA — the single most common effect in the file — does nothing. Fireball's direct damage lands; its burn does not.",
+        "A creature's spell damage is not rescaled by its level. Upstream multiplies by the ratio of the creature's base damage to the spell's for spells flagged to scale.",
+        "Nothing interrupts a cast. Moving, taking damage and dying all leave the bar running; only CMSG_CANCEL_CAST ends one early."
+      ]
+    },
+    {
+      "category": "Experience",
+      "items": [
+        "Experience is paid in full to everyone on the threat list, not split. Group splitting needs groups; paying each participant the whole amount errs towards over-rewarding, which is visible, rather than silently paying nobody.",
+        "The content level comes from the creature's template expansion, not its zone. Upstream uses the zone, so a classic creature standing in Outland pays classic rates here and Outland rates there.",
+        "There is no rested experience, no recruit-a-friend and no group rate. All three are multipliers on top of a figure that is computed correctly."
+      ]
+    },
+    {
+      "category": "Gameobjects",
+      "items": [
+        "They do nothing. No opening, looting, using, or trapping — a gameobject stands where its row puts it and can be looked at.",
+        "The 32 data0..data31 columns are not read, so nothing knows what a door opens with or where a teleporter goes",
+        "gameobject_template_addon is not read, so per-spawn faction and flag overrides are missing",
+        "Three templates carry size = 0 and 11 spawns use them; they are drawn at nothing. Upstream does the same, so it is reproduced rather than corrected — but it looks like a bug when found.",
+        "1,193 spawns have no display id. These are invisible triggers and upstream creates them too, but each still costs a create block to a client that will never see anything.",
+        "Rotation is computed once at spawn and is not an update field"
+      ]
+    },
+    {
+      "category": "Creatures",
+      "items": [
+        "Movement ignores collision entirely — a creature walks through walls, trees and each other, because there is no pathfinding yet",
+        "Health uses no per-rank rate. Upstream multiplies by Rate.Creature.*.HP from the config; all five default to 1.0 and there is no config system for them, so they are omitted rather than hard-coded to a number that would look deliberate.",
+        "creature_addon and creature_equip_template are not read, so no creature has visible weapons or its spawn auras",
+        "The damage formula follows our DATA, not the C++ checkout: the current tree scales damage_base by a BaseVariance column our dump predates, so the older mindmg/maxdmg/dmg_multiplier form is used instead.",
+        "No aura or item contributes to damage, because neither exists — upstream runs the result through four modifier layers that are all identity without them",
+        "Difficulty entries (difficulty_entry_1..3) are ignored; every creature is built from its normal-mode template",
+        "phaseMask is loaded and stored but never checked — everything is visible to everyone"
+      ]
+    },
+    {
+      "category": "Data",
+      "items": [
+        "Links are not read from .mmtile and must not be — the file reserves MaxLinkCount links' worth of space, but Detour builds them when a tile is added, so what is on disk is uninitialised. Anything that starts reading them is reading noise.",
+        "The under-the-world threshold (25 yards) is a judgement, not a measurement. It has been exercised by the gate walking on open ground, not by a real client in a city or a cave — the false-positive rate is unknown.",
+        "Vmap tiles are loaded on demand and never unloaded, the same gap grid loading has.",
+        "CollectCandidates allocates a List<uint> per group per ray. Fine for the tests, not for a tick.",
+        "The single-child (BVH2) branch of the BIH walk is written from the C++ and never observed firing in a test.",
+        "132 of 436 sampled model groups carry an all-zero bounding box while holding real geometry. A zero box means \"not recorded\", not \"empty\" — anything that culls by it must not conclude the group is nowhere.",
+        "Model liquids parse but are unused; the tileless single-height form was not seen in the sampled files.",
+        "Off-mesh connections are exercised by exactly one tile in the entire extraction (5622031.mmtile, Blade's Edge Arena, 2 connections).",
+        "Only 8 of 109 DBC stores are loaded",
+        ".map flight bounds are parsed past but discarded",
+        "Terrain holes are implemented but never exercised by a test against a known hole",
+        "World tables are imported by piping vendored .sql dumps — there is no real importer, no schema mapping and no type cleanup. 11 of upstream's 309 tables are vendored so far.",
+        "world structure is upstream's verbatim, not a schema we own. PLAN §5.2 wants cleaned types and names with columns and semantics preserved — that belongs in WowEmu.Data.Import."
+      ]
+    }
+  ],
+  "remember": [
+    "Session handlers that await resume on the tick, but nothing ENFORCES it: a future handler that writes ConfigureAwait(false) would silently resume on the thread pool and touch a Player from outside its loop. TickScheduler.AssertOwnerThread exists for exactly this and is not yet wired in.",
+    "THE TWO REFERENCE TREES ARE AT DIFFERENT POINTS IN AZEROTHCORE'S HISTORY, and creature spawning is the first place it bites. The C++ reads creature models from a creature_template_model table; the vendored database still has modelid1..4. Ours follows the DATA. Read the C++ for behaviour, but check the dump before trusting a column name.",
+    "Both reference trees (azerothcore-wotlk, database-wotlk) have no git root — updating means re-cloning.",
+    "sql/world/ is now ~19 MB, almost all of it creature (12 MB) and creature_template (7 MB). The vendoring rule says a fresh clone must be able to start, and that is the price. item_template will roughly double it.",
+    "data/ is 3 GB of extracted client data and is not committed; a fresh clone needs the extractors run again.",
+    "sql/world/ redistributes AGPL-3.0 content from AzerothCore's database. Deliberate — but it is a licence obligation worth being aware of."
+  ],
+  "conventions": [
+    "Anything used from database-wotlk/ gets vendored into sql/world/ first, via tools/db/export-world.sh, with a note saying what reads it. The server never reads the reference checkout at runtime.",
+    "Extracted client data (data/) is the same idea in reverse: too large to commit, so it stays out and data/README.md records how to regenerate it.",
+    "Golden vectors and generated code are committed so that regenerating them is a visible diff."
+  ],
+  "layout": [
+    {
+      "path": "src/WowEmu.Core/",
+      "what": "ObjectGuid, Position, clocks, tick scheduler, SFMT + distributions"
+    },
+    {
+      "path": "src/WowEmu.Cryptography/",
+      "what": "SRP6, RC4, header encryption, session key expansion"
+    },
+    {
+      "path": "src/WowEmu.Protocol/",
+      "what": "PacketReader / PacketWriter, packed encodings, generated opcode enum"
+    },
+    {
+      "path": "src/WowEmu.Network/",
+      "what": "World-protocol framing and header encryption"
+    },
+    {
+      "path": "src/WowEmu.Data.Client/",
+      "what": ".dbc, .map, .vmap and .mmap readers"
+    },
+    {
+      "path": "src/WowEmu.Data.Db/",
+      "what": "EF Core models and repositories for auth and characters; raw readers for world"
+    },
+    {
+      "path": "src/WowEmu.Game/",
+      "what": "Objects, maps, movement, combat — the game layer, which names no opcodes"
+    },
+    {
+      "path": "src/WowEmu.AuthServer/",
+      "what": "The logon server (port 3724)"
+    },
+    {
+      "path": "src/WowEmu.WorldServer/",
+      "what": "The world server (port 8085)"
+    },
+    {
+      "path": "tools/WowEmu.AccountCli/",
+      "what": "Account and realm maintenance"
+    },
+    {
+      "path": "tools/harness/",
+      "what": "Headless protocol clients that drive the milestone gates"
+    },
+    {
+      "path": "tools/codegen/",
+      "what": "Generates the opcode enum and table from upstream's headers"
+    },
+    {
+      "path": "tools/db/",
+      "what": "World-table import and vendoring scripts"
+    },
+    {
+      "path": "tools/vectors/",
+      "what": "Reference implementations + golden test vectors"
+    },
+    {
+      "path": "sql/world/",
+      "what": "Vendored world-database content (AGPL-3.0)"
+    },
+    {
+      "path": "tests/WowEmu.Tests.Unit/",
+      "what": "xUnit tests"
+    },
+    {
+      "path": "web/",
+      "what": "This progress board"
+    },
+    {
+      "path": "azerothcore-wotlk/",
+      "what": "The C++ server being ported (reference only, not built)"
+    },
+    {
+      "path": "database-wotlk/",
+      "what": "AzerothCore's world database dump (reference only, not imported)"
+    }
+  ],
+  "quickstart": [
+    {
+      "title": "Build and test",
+      "note": "Requires the .NET 10 SDK. The unit tests need nothing else — no database, WoW client or extracted game data.",
+      "commands": [
+        "dotnet build",
+        "dotnet test"
+      ]
+    },
+    {
+      "title": "Start the databases",
+      "note": "MySQL on 127.0.0.1:3306. Schemas are created by docker/mysql-init/ when the volume is first made.",
+      "commands": [
+        "docker compose up -d",
+        "tools/db/import-world.sh"
+      ]
+    },
+    {
+      "title": "Create an account and run the servers",
+      "note": "account create prompts for the password rather than taking it on the command line, which keeps it out of your shell history. Each server applies its own migrations on startup.",
+      "commands": [
+        "dotnet run --project tools/WowEmu.AccountCli -- account create test",
+        "dotnet run --project src/WowEmu.AuthServer",
+        "dotnet run --project src/WowEmu.WorldServer"
+      ]
+    },
+    {
+      "title": "Verify without a client",
+      "note": "Three headless gates that speak the real protocol.",
+      "commands": [
+        "python3 tools/harness/m1_login.py",
+        "python3 tools/harness/m2_world.py",
+        "python3 tools/harness/m5_combat.py"
+      ]
+    },
+    {
+      "title": "Point a real client at it",
+      "note": "Config.wtf overrides Data/<locale>/realmlist.wtf, so editing only the latter does nothing. If the client runs elsewhere, repoint the realm — the server picks it up on its next refresh, no restart needed.",
+      "commands": [
+        "SET realmlist \"<host>\"   # in WTF/Config.wtf",
+        "dotnet run --project tools/WowEmu.AccountCli -- realm set-address 1 192.168.1.10 8085"
+      ]
+    }
+  ],
+  "databases": [
+    {
+      "name": "wowemu_auth",
+      "schema": "EF Core migrations, applied by the logon server at startup",
+      "data": "the account CLI"
+    },
+    {
+      "name": "wowemu_characters",
+      "schema": "EF Core migrations, applied by the world server at startup",
+      "data": "players, at runtime"
+    },
+    {
+      "name": "wowemu_world",
+      "schema": "the dumps in sql/world/",
+      "data": "tools/db/import-world.sh"
+    }
+  ],
+  "vectors": {
+    "note": "Three sets, each generated by something other than our own code — a test that compares our C# against our C# proves nothing about protocol correctness. verify_vectors_in_tests.py checks that every generated value still appears in the test sources.",
+    "sets": [
+      {
+        "file": "vectors.json",
+        "by": "generate_crypto_vectors.py — an independent Python transcription",
+        "covers": "SRP6, RC4, AuthCrypt, SessionKeyGenerator"
+      },
+      {
+        "file": "sfmt_vectors.json",
+        "by": "generate_sfmt_vectors.sh — AzerothCore's own deps/SFMT/SFMT.c, compiled",
+        "covers": "The SFMT-19937 bit stream"
+      },
+      {
+        "file": "random_vectors.json",
+        "by": "generate_random_vectors.sh — SFMT + libstdc++ in a gcc container",
+        "covers": "urand, irand, frand, rand_norm"
+      }
+    ],
+    "why": [
+      "AzerothCore does not roll its own distributions — it feeds SFMT into libstdc++'s uniform_int_distribution and uniform_real_distribution. Those consume a SPECIFIC number of 32-bit draws: the integer one rejection-samples, frand takes one and rand_norm takes two. An implementation that gets the draw count wrong still produces perfectly uniform numbers — and desynchronises the two servers' streams after the first roll.",
+      "The vectors are generated against libstdc++ specifically, inside a container, because libc++ (what clang uses on macOS) implements uniform_int_distribution differently. The generator has an #error guard so it cannot be built against the wrong standard library by accident.",
+      "ZEROCASE: SHA1Interleave skips leading zero bytes of the shared secret S. The obvious implementation is correct about 255 times out of 256 and fails whenever S happens to begin with a zero byte — an intermittent login failure that is very hard to trace. ZEROCASE is a handshake constructed so that S starts with 0x00, and a test asserts the correct answer genuinely differs from the naive one."
+    ]
+  },
+  "legal": "This project reimplements a server for a game client it does not distribute. It contains no Blizzard assets. You must own a legitimate copy of the client, and all game data (.dbc, .map, .vmap, .mmap) is extracted locally and never committed.",
+  "vscode": {
+    "note": "Press ⌘⇧B to build, or ⌘⇧P → Tasks: Run Task for the rest. .vscode/launch.json can launch either server, or both at once via the Debug: Auth + World compound. To debug a single test, use the gutter icon next to the test method.",
+    "tasks": [
+      {
+        "label": "build",
+        "what": "Default build task (⌘⇧B)"
+      },
+      {
+        "label": "rebuild / clean",
+        "what": "Full rebuild / remove output"
+      },
+      {
+        "label": "test",
+        "what": "Run all tests (default test task)"
+      },
+      {
+        "label": "test: filter",
+        "what": "Prompts for a name substring, e.g. Srp6, Interleave"
+      },
+      {
+        "label": "watch: test",
+        "what": "Re-runs tests on every save — leave it running while you work"
+      },
+      {
+        "label": "check",
+        "what": "rebuild → test → verify vectors. Run before committing."
+      },
+      {
+        "label": "vectors: verify",
+        "what": "Checks the golden vectors still match what the tests assert"
+      },
+      {
+        "label": "vectors: regenerate",
+        "what": "Re-runs the Python crypto reference implementation"
+      },
+      {
+        "label": "vectors: regenerate SFMT",
+        "what": "Re-runs AzerothCore's C SFMT to regenerate its vectors"
+      },
+      {
+        "label": "vectors: regenerate distributions",
+        "what": "Re-runs SFMT + libstdc++ in a container (needs Docker)"
+      },
+      {
+        "label": "db: up / db: down",
+        "what": "Start / stop the MySQL container"
+      },
+      {
+        "label": "db: migrate",
+        "what": "Apply pending EF Core migrations"
+      },
+      {
+        "label": "account: create / account: list",
+        "what": "Account maintenance"
+      },
+      {
+        "label": "codegen: opcodes",
+        "what": "Regenerate the opcode enum from upstream's Opcodes.h"
+      },
+      {
+        "label": "codegen: opcode table",
+        "what": "Regenerate the status/processing classification from Opcodes.cpp"
+      },
+      {
+        "label": "gate: M1",
+        "what": "Log in over the real protocol, headlessly. Needs the auth server."
+      },
+      {
+        "label": "gate: M2",
+        "what": "Reach the character list. Needs both servers."
+      },
+      {
+        "label": "gate: M5",
+        "what": "Walk to a mob, kill it, gain experience. Needs both servers. Up to a minute — a wolf killed by a previous run stays dead for four."
+      },
+      {
+        "label": "Run: Auth Server",
+        "what": "Start the logon server on port 3724"
+      },
+      {
+        "label": "Run: World Server",
+        "what": "Start the world server on port 8085"
+      },
+      {
+        "label": "Run: Progress Board",
+        "what": "Serve web/ and open this page. Prompts for a port, default 8000."
+      }
+    ]
+  }
+}

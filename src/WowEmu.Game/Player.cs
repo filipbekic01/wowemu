@@ -1,5 +1,6 @@
 using WowEmu.Core;
 using WowEmu.Data.Client;
+using WowEmu.Game.Combat;
 using WowEmu.Data.Db;
 using WowEmu.Game.Maps;
 using WowEmu.Protocol;
@@ -222,6 +223,10 @@ public sealed class Player : Unit
 
         // Watched faction -1 means "none"; the client renders a reputation bar without it.
         fields.SetInt32(UpdateFields.PLAYER_FIELD_WATCHED_FACTION_INDEX, -1);
+
+        // Last, because it reads the stats and level set above. Without it the character has no
+        // weapon damage and no attack time — a swing every tick, for nothing, with no error.
+        PlayerCombatStats.Apply(player);
 
         player.SyncMovement();
         return player;

@@ -125,6 +125,10 @@ public static class Experience
         player.SetMaxPower(Unit.PowerMana, classStats.BaseMana);
         player.SetPower(Unit.PowerMana, classStats.BaseMana);
 
+        // Attack power moves with both level and strength, so it has to be recomputed here as well
+        // as at login — otherwise a character hits for its level 1 damage forever.
+        PlayerCombatStats.Apply(player);
+
         return new LevelUp(level, healthDelta, manaDelta, statDeltas);
     }
 }
