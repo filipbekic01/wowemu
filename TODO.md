@@ -2,11 +2,11 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** Rays hit geometry. Möller–Trumbore triangle intersection, the BIH ray walk with its
-near-child-first ordering, both model tree levels, and the instance transform — checked against
-brute force over 162 rays, agreeing on every hit and every distance. What is missing is the plumbing:
-nothing loads a map's models into memory or asks a question of them. Still open and still needing a
-deliberate yes: the DotRecast fork for pathfinding.
+**Now:** Line of sight works in world coordinates. `StaticMapTree` loads a map's tiles on demand —
+4,456 model instances around the human start — and a ray through a building is blocked while one
+across open air is not. Working towards **M5** (kill a mob, gain XP, level up) through the task list;
+next is the height query and then melee combat. Still open and still needing a deliberate yes: the
+DotRecast fork for pathfinding.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -251,8 +251,11 @@ deliberate yes: the DotRecast fork for pathfinding.
       the tree a filter rather than a full enumeration
 - [x] `IsInLineOfSight` over one model group
 - [x] The world-to-vmap coordinate mirror, and the euler-angle swizzle upstream applies
-- [ ] `StaticMapTree` — load a map's tiles and their models, and answer a query for a whole map.
-      The maths works; nothing calls it with real world coordinates yet.
+- [x] `StaticMapTree` — per-map tree, tiles loaded on demand, line of sight and height in world
+      coordinates. Verified: 25 of 25 sampled model surfaces block a ray passing through them.
+- [x] **The vmap tile naming trap** — a `.vmtile` is `{map}_{gridY}_{gridX}` while a `.map` is
+      `{map}{gridX}{gridY}`. Two extractors, opposite conventions, nothing anywhere saying so.
+      Measured against 144 real tiles rather than assumed.
 - [ ] `DynamicMapTree` for gameobject-based line of sight, rebalanced every 200 ms
 - [ ] Height queries against vmaps, which movement validation has been waiting on since Phase 7
 - [ ] `PathGenerator`, the (y, z, x) Detour coordinate swizzle, `findSmoothPath`
@@ -347,9 +350,9 @@ play, which is exactly why they are written down.
 - [ ] Links are not read from `.mmtile` and must not be — the file reserves `MaxLinkCount` links'
       worth of space, but Detour builds them when a tile is added, so what is on disk is
       uninitialised. Anything that starts reading them is reading noise.
-- [ ] Collision maths works but nothing *calls* it. There is no map-level tree that loads a tile's
-      models and answers "can A see B" for a world position, so movement validation still cannot
-      check height and no spell is blocked by a wall.
+- [ ] Line of sight is available but nothing asks for it: no spell, no attack and no movement check
+      calls `StaticMapTree` yet.
+- [ ] Vmap tiles are loaded on demand and never unloaded, the same gap grid loading has.
 - [ ] `CollectCandidates` allocates a `List<uint>` per group per ray. Fine for the tests, not for a
       tick — it wants a reusable buffer once something calls it in anger.
 - [ ] The single-child (`BVH2`) branch of the BIH walk is written from the C++ and never observed
