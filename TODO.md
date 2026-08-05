@@ -2,10 +2,11 @@
 
 Working tracker. [PLAN.md](PLAN.md) is the architecture and the *why*; this is the checklist.
 
-**Now:** All the collision *data* is readable. 101 map trees, every model placement, and all 7,086
-`.vmo` files — 11,945,292 triangles — parse and check out against invariants. What is missing is the
-maths: transforming a model into world space and intersecting a ray with it. That is line of sight,
-and it is next. Still open and still needing a deliberate yes: the DotRecast fork for pathfinding.
+**Now:** Rays hit geometry. Möller–Trumbore triangle intersection, the BIH ray walk with its
+near-child-first ordering, both model tree levels, and the instance transform — checked against
+brute force over 162 rays, agreeing on every hit and every distance. What is missing is the plumbing:
+nothing loads a map's models into memory or asks a question of them. Still open and still needing a
+deliberate yes: the DotRecast fork for pathfinding.
 
 | Milestone | Meaning | State |
 |---|---|---|
@@ -244,9 +245,16 @@ and it is next. Still open and still needing a deliberate yes: the DotRecast for
 - [x] The model-name terminator rule, which decides which file on disk holds the geometry
 - [x] `.vmo` model files — groups, vertices, triangles, per-group BIH, and model liquids.
       All 7,086 parse; 11,945,292 triangles, every one indexing a vertex its group has.
-- [ ] `ModelInstance` transforms — position, rotation and scale into world space
-- [ ] `IsInLineOfSight` — ray/triangle intersection through the two BIH levels
+- [x] `ModelInstance` transforms — the ray is moved into model space, not the model into the world
+- [x] Möller–Trumbore ray/triangle intersection, with the nearest-hit distance threaded through
+- [x] `BIH::intersectRay` — interval narrowing and near-child-first ordering, which is what makes
+      the tree a filter rather than a full enumeration
+- [x] `IsInLineOfSight` over one model group
+- [x] The world-to-vmap coordinate mirror, and the euler-angle swizzle upstream applies
+- [ ] `StaticMapTree` — load a map's tiles and their models, and answer a query for a whole map.
+      The maths works; nothing calls it with real world coordinates yet.
 - [ ] `DynamicMapTree` for gameobject-based line of sight, rebalanced every 200 ms
+- [ ] Height queries against vmaps, which movement validation has been waiting on since Phase 7
 - [ ] `PathGenerator`, the (y, z, x) Detour coordinate swizzle, `findSmoothPath`
 - [ ] Custom cost function: `dist * (1 + slopeDegrees/100) * areaCost`, and the
       `DT_SLOPE_TOO_STEEP` status bit
@@ -339,9 +347,13 @@ play, which is exactly why they are written down.
 - [ ] Links are not read from `.mmtile` and must not be — the file reserves `MaxLinkCount` links'
       worth of space, but Detour builds them when a tile is added, so what is on disk is
       uninitialised. Anything that starts reading them is reading noise.
-- [ ] VMAP data is read but nothing *uses* it. The triangles are in memory on demand; no ray is
-      cast, no model is transformed into world space, and movement validation still cannot check
-      height. Reading the files was the prerequisite, not the feature.
+- [ ] Collision maths works but nothing *calls* it. There is no map-level tree that loads a tile's
+      models and answers "can A see B" for a world position, so movement validation still cannot
+      check height and no spell is blocked by a wall.
+- [ ] `CollectCandidates` allocates a `List<uint>` per group per ray. Fine for the tests, not for a
+      tick — it wants a reusable buffer once something calls it in anger.
+- [ ] The single-child (`BVH2`) branch of the BIH walk is written from the C++ and never observed
+      firing in a test; the sampled trees may not contain one.
 - [ ] 132 of 436 sampled model groups carry an all-zero bounding box while holding real geometry.
       A zero box means "not recorded", not "empty" — anything that culls by it must not conclude the
       group is nowhere, or its triangles silently stop blocking anything. See
