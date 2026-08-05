@@ -21,6 +21,118 @@ public sealed record ChrRacesEntry(
     public bool IsAlliance => TeamId == 7;
 }
 
+
+/// <summary>
+/// A row of <c>FactionTemplate.dbc</c> — who a unit will and will not fight.
+/// </summary>
+/// <remarks>
+/// Every creature and every player carries a faction <i>template</i> id, not a faction id. The
+/// template is the relationship table: which factions it counts as enemies, which as friends, and
+/// two bitmasks for everyone it has no specific opinion about.
+/// </remarks>
+/// <param name="Id">The template id, which is what <c>creature_template.faction</c> holds.</param>
+/// <param name="Faction">The faction this template belongs to, for reputation.</param>
+/// <param name="Flags">Template flags — contested guards and call-for-help live here.</param>
+/// <param name="OurMask">Which broad groups this unit belongs to. <c>m_factionGroup</c>.</param>
+/// <param name="FriendlyMask">Which broad groups it is friendly towards.</param>
+/// <param name="HostileMask">Which broad groups it is hostile towards.</param>
+/// <param name="EnemyFactions">Up to four specific factions it will always fight.</param>
+/// <param name="FriendFactions">Up to four specific factions it will never fight.</param>
+public sealed record FactionTemplateEntry(
+    uint Id,
+    uint Faction,
+    uint Flags,
+    uint OurMask,
+    uint FriendlyMask,
+    uint HostileMask,
+    uint[] EnemyFactions,
+    uint[] FriendFactions)
+{
+    /// <summary>How many specific relations a template can name in each direction.</summary>
+    public const int MaxFactionRelations = 4;
+
+    /// <summary>The player faction groups, from <c>FactionMasks</c>.</summary>
+    public const uint MaskPlayer = 1;
+    public const uint MaskAlliance = 2;
+    public const uint MaskHorde = 4;
+    public const uint MaskMonster = 8;
+
+    /// <summary>
+    /// Whether this unit will attack <paramref name="other"/> on sight.
+    /// </summary>
+    /// <remarks>
+    /// <b>The specific lists win over the masks, and enemies are checked before friends.</b> A
+    /// template can name a faction as an enemy while its mask says the whole group is fine, which is
+    /// how a guard is hostile to one enemy city but not to neutral travellers. Checking the mask
+    /// first would make every such exception disappear.
+    /// <para>
+    /// Note the asymmetry with <see cref="IsFriendlyTo"/>: hostility consults only
+    /// <see cref="HostileMask"/> against the other's <see cref="OurMask"/>, in one direction, while
+    /// friendliness checks both directions. Two units can therefore be neither hostile nor friendly
+    /// — which is exactly what neutral means.
+    /// </para>
+    /// </remarks>
+    public bool IsHostileTo(FactionTemplateEntry other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+
+        if (other.Faction != 0)
+        {
+            if (Array.IndexOf(EnemyFactions, other.Faction) >= 0)
+            {
+                return true;
+            }
+
+            if (Array.IndexOf(FriendFactions, other.Faction) >= 0)
+            {
+                return false;
+            }
+        }
+
+        return (HostileMask & other.OurMask) != 0;
+    }
+
+    /// <summary>Whether this unit counts <paramref name="other"/> as a friend.</summary>
+    /// <remarks>Sharing a faction is always friendly, whatever the masks say.</remarks>
+    public bool IsFriendlyTo(FactionTemplateEntry other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+
+        if (Faction == other.Faction)
+        {
+            return true;
+        }
+
+        if (other.Faction != 0)
+        {
+            if (Array.IndexOf(EnemyFactions, other.Faction) >= 0)
+            {
+                return false;
+            }
+
+            if (Array.IndexOf(FriendFactions, other.Faction) >= 0)
+            {
+                return true;
+            }
+        }
+
+        return (FriendlyMask & other.OurMask) != 0 || (OurMask & other.FriendlyMask) != 0;
+    }
+
+    /// <summary>Hostile to players of either side.</summary>
+    public bool IsHostileToPlayers => (HostileMask & MaskPlayer) != 0;
+
+    /// <summary>
+    /// Picks a fight with nobody at all — critters, and most quest props.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from merely not being hostile to you: a neutral-to-all unit never initiates, which
+    /// is what stops a field of rabbits mobbing anyone who walks past.
+    /// </remarks>
+    public bool IsNeutralToAll =>
+        HostileMask == 0 && FriendlyMask == 0 && Array.TrueForAll(EnemyFactions, faction => faction == 0);
+}
+
 /// <summary>A row of <c>ChrClasses.dbc</c>.</summary>
 public sealed record ChrClassesEntry(
     uint ClassId,
@@ -64,12 +176,18 @@ public sealed class DbcStores
     private const string ChrRacesFormat = "niixiixixxxxiissssssssssssssssxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxi";
     private const string ChrClassesFormat = "nxixssssssssssssssssxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxixii";
     private const string MapFormat = "nxiixssssssssssssssssxixxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxixiffxixi";
+    private const string FactionTemplateFormat = "niiiiiiiiiiiii";
 
-    private DbcStores(DbcStore<ChrRacesEntry> races, DbcStore<ChrClassesEntry> classes, DbcStore<MapEntry> maps)
+    private DbcStores(
+        DbcStore<ChrRacesEntry> races,
+        DbcStore<ChrClassesEntry> classes,
+        DbcStore<MapEntry> maps,
+        DbcStore<FactionTemplateEntry> factionTemplates)
     {
         Races = races;
         Classes = classes;
         Maps = maps;
+        FactionTemplates = factionTemplates;
     }
 
     public DbcStore<ChrRacesEntry> Races { get; }
@@ -78,8 +196,11 @@ public sealed class DbcStores
 
     public DbcStore<MapEntry> Maps { get; }
 
+    /// <summary>Who fights whom.</summary>
+    public DbcStore<FactionTemplateEntry> FactionTemplates { get; }
+
     /// <summary>Total rows loaded, for the startup log.</summary>
-    public int TotalRows => Races.Count + Classes.Count + Maps.Count;
+    public int TotalRows => Races.Count + Classes.Count + Maps.Count + FactionTemplates.Count;
 
     /// <summary>
     /// Loads every store from a directory of extracted <c>.dbc</c> files.
@@ -140,6 +261,34 @@ public sealed class DbcStores
                     Directory: record.GetString(1),
                     Name: record.GetLocalizedString(5, locale),
                     LinkedZone: record.GetUInt32(22),
-                    Expansion: record.GetUInt32(63))));
+                    Expansion: record.GetUInt32(63))),
+
+            DbcStore<FactionTemplateEntry>.Load(
+                Path.Combine(directory, "FactionTemplate.dbc"),
+                FactionTemplateFormat,
+                idField: 0,
+                (in DbcRecord record) => new FactionTemplateEntry(
+                    Id: record.GetUInt32(0),
+                    Faction: record.GetUInt32(1),
+                    Flags: record.GetUInt32(2),
+                    OurMask: record.GetUInt32(3),
+                    FriendlyMask: record.GetUInt32(4),
+                    HostileMask: record.GetUInt32(5),
+                    // Four each, consecutive: enemies at 6-9, friends at 10-13. Reading them as one
+                    // block of eight would compile and would make every friend an enemy.
+                    EnemyFactions:
+                    [
+                        record.GetUInt32(6),
+                        record.GetUInt32(7),
+                        record.GetUInt32(8),
+                        record.GetUInt32(9),
+                    ],
+                    FriendFactions:
+                    [
+                        record.GetUInt32(10),
+                        record.GetUInt32(11),
+                        record.GetUInt32(12),
+                        record.GetUInt32(13),
+                    ])));
     }
 }

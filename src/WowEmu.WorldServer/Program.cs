@@ -48,6 +48,16 @@ builder.Services.AddSingleton(_ => DbcStores.Load(
             : Path.Combine(AppContext.BaseDirectory, startupOptions.DataDirectory),
         "dbc")));
 
+// Separate from DbcStores: Spell.dbc alone is 49,839 rows across 234 columns, and the four tables
+// it indexes into are useless apart from it. Loading them together keeps a spell's cast time, range
+// and duration resolvable in one place instead of at every call site.
+builder.Services.AddSingleton(_ => SpellStores.Load(
+    Path.Combine(
+        Path.IsPathRooted(startupOptions.DataDirectory)
+            ? startupOptions.DataDirectory
+            : Path.Combine(AppContext.BaseDirectory, startupOptions.DataDirectory),
+        "dbc")));
+
 builder.Services.AddSingleton(_ => new VmapManager(
     Path.IsPathRooted(startupOptions.DataDirectory)
         ? startupOptions.DataDirectory
@@ -76,7 +86,8 @@ builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<IGridObjectLoader>(),
     new MapUpdater(startupOptions.MapUpdateThreads),
     services.GetRequiredService<ILogger<Map>>(),
-    services.GetRequiredService<VmapManager>()));
+    services.GetRequiredService<VmapManager>(),
+    services.GetRequiredService<DbcStores>().FactionTemplates));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in

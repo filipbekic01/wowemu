@@ -56,6 +56,15 @@ public sealed class DbcStore<TEntry>
         return new DbcStore<TEntry>(file.Name, entries);
     }
 
+    /// <summary>
+    /// A store with nothing in it, for callers that must work without a client extracted.
+    /// </summary>
+    /// <remarks>
+    /// Every lookup misses, which is the point: the caller's missing-row path is exercised rather
+    /// than bypassed by a null check somewhere further up.
+    /// </remarks>
+    public static DbcStore<TEntry> Empty { get; } = new("(empty)", []);
+
     public bool TryGet(uint id, out TEntry entry) => _entries.TryGetValue(id, out entry!);
 
     /// <summary>Looks up an entry, or throws if it is missing.</summary>

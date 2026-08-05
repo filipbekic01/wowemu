@@ -30,7 +30,8 @@ public sealed class MapManager(
     IGridObjectLoader? gridObjects = null,
     MapUpdater? updater = null,
     ILogger<Map>? logger = null,
-    VmapManager? vmaps = null) : IDisposable
+    VmapManager? vmaps = null,
+    DbcStore<FactionTemplateEntry>? factions = null) : IDisposable
 {
     /// <summary>
     /// The four phases. Three update a category of map; the fourth is a pause.
@@ -59,7 +60,10 @@ public sealed class MapManager(
     {
         if (!_maps.TryGetValue(mapId, out Map? map))
         {
-            map = new Map(mapId, terrain.GetMap(mapId), gridObjects, logger, vmaps?.GetMap(mapId));
+            map = new Map(mapId, terrain.GetMap(mapId), gridObjects, logger, vmaps?.GetMap(mapId))
+            {
+                Factions = factions,
+            };
             _maps[mapId] = map;
         }
 

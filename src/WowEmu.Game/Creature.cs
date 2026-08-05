@@ -62,6 +62,16 @@ public sealed class Creature : Unit
     /// <summary>Whether this is a world boss, which has its own dodge and parry values.</summary>
     public bool IsWorldBoss => Rank == MeleeChances.WorldBossRank;
 
+    /// <summary>
+    /// Whether it starts fights, only finishes them, or neither.
+    /// </summary>
+    /// <remarks>
+    /// Aggressive by default, which is what most of the world is. Upstream reads a per-spawn
+    /// override from <c>creature_addon</c>; that table is not vendored yet, so a passive quest prop
+    /// currently behaves like anything else — visible as a critter that fights back.
+    /// </remarks>
+    public ReactState React { get; set; } = ReactState.Aggressive;
+
     /// <inheritdoc/>
     public override float DodgeChance => MeleeChances.CreatureDodge(IsWorldBoss);
 
@@ -142,7 +152,7 @@ public sealed class Creature : Unit
     /// </returns>
     public CreatureMove? Update(uint diffMs)
     {
-        if (diffMs == 0)
+        if (diffMs == 0 || !IsAlive)
         {
             return null;
         }
@@ -157,6 +167,14 @@ public sealed class Creature : Unit
             {
                 return null;
             }
+        }
+
+        // In a fight the AI decides where to go, so the wander generator is not consulted. Letting
+        // it run anyway would have a creature amble off mid-chase towards a random point near its
+        // spawn — the move it is on is still interpolated above, only the *next* one is withheld.
+        if (Victim is not null)
+        {
+            return null;
         }
 
         if (!Motion.TryGetDestination(this, diffMs, out Position destination))
@@ -180,6 +198,218 @@ public sealed class Creature : Unit
 
         return CurrentMove;
     }
+
+    /// <summary>
+    /// Sends the creature walking to a point, whatever its movement generator wanted.
+    /// </summary>
+    /// <remarks>
+    /// How chasing and returning home are expressed. Distinct from <see cref="Update"/>, which asks
+    /// the generator where to go — combat overrides that rather than negotiating with it.
+    /// <para>
+    /// The creature runs rather than walks. A wandering creature ambles; one chasing you does not,
+    /// and using the walk speed here makes a fight impossible to lose by running away.
+    /// </para>
+    /// </remarks>
+    /// <returns>The move that started, or null when it is already close enough to be pointless.</returns>
+    public CreatureMove? MoveTo(Position destination)
+    {
+        CreatureMove? move = CreatureMove.Create(Position, destination, Speeds.Run);
+
+        if (move is null)
+        {
+            return null;
+        }
+
+        CurrentMove = move.Value;
+        MoveElapsedMs = 0;
+        SplineId++;
+
+        return CurrentMove;
+    }
+
+    // ------------------------------------------------------------------ dying and coming back
+
+    /// <summary>How long this creature's corpse lies there before it disappears.</summary>
+    /// <remarks>
+    /// From the rank. A rare or elite corpse lasts five times as long as a common one, which is what
+    /// gives a group time to loot something they fought hard for.
+    /// </remarks>
+    public uint CorpseDelayMs { get; private init; }
+
+    /// <summary>How long after the corpse goes before the creature is back.</summary>
+    /// <remarks><c>creature.spawntimesecs</c> — per spawn, not per template.</remarks>
+    public uint RespawnDelayMs { get; private init; }
+
+    /// <summary>Milliseconds until the corpse disappears. Zero unless there is a corpse.</summary>
+    public uint CorpseRemainingMs { get; private set; }
+
+    /// <summary>Milliseconds until the creature comes back. Zero unless it is waiting to.</summary>
+    public uint RespawnRemainingMs { get; private set; }
+
+    /// <summary>Whether the creature is off the map, waiting out its respawn.</summary>
+    public bool IsDespawned => DeathState == DeathState.Dead;
+
+    /// <summary>What one tick did to a dead creature.</summary>
+    public enum DeathTransition : byte
+    {
+        /// <summary>Nothing yet.</summary>
+        None = 0,
+
+        /// <summary>The corpse just disappeared; everyone watching has to be told.</summary>
+        CorpseRemoved = 1,
+
+        /// <summary>The creature is back; everyone in range has to be told.</summary>
+        Respawned = 2,
+    }
+
+    /// <summary>
+    /// Kills the creature.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Creature::setDeathState(JUST_DIED)</c>, which ends by promoting straight to
+    /// <see cref="DeathState.Corpse"/> — <c>JustDied</c> never survives the call. That is why
+    /// upstream logs an error if it ever sees a creature <i>updating</i> in the just-died state.
+    /// The moment exists so that everything which happens exactly once at death — loot assignment,
+    /// experience, the kill log — happens between the two.
+    /// </remarks>
+    public void Kill()
+    {
+        if (!IsAlive)
+        {
+            return;
+        }
+
+        DeathState = DeathState.JustDied;
+
+        // Both timers start now. Respawn is measured from death and *includes* the corpse delay, so
+        // a creature is not back the instant its corpse fades.
+        CorpseRemainingMs = CorpseDelayMs;
+        RespawnRemainingMs = RespawnDelayMs + CorpseDelayMs;
+
+        Health = 0;
+        Power = 0;
+        Target = ObjectGuid.Empty;
+        AttackStop();
+        IsInCombat = false;
+
+        // Everything it hated is forgotten. Carrying the list through a respawn would have a
+        // creature come back already angry at whoever killed it, wherever they had got to.
+        Threat.Clear();
+
+        // A corpse offers no services. Leaving the flags up gives a dead innkeeper a usable gossip
+        // icon, which the client will happily draw.
+        NpcFlags = 0;
+
+        // Stop where it fell. Without this the client keeps interpolating the spline it was last
+        // given and the corpse slides away from where it died.
+        CancelMove();
+
+        // The client draws the loot sparkle from this. There is no loot yet, so it is not set — the
+        // flag would promise a lootable corpse that opens an empty window.
+        DeathState = DeathState.Corpse;
+    }
+
+    /// <summary>
+    /// Advances a dead creature's corpse and respawn timers.
+    /// </summary>
+    /// <remarks>
+    /// Split from <see cref="Update"/> rather than folded into it: a living creature walks and a dead
+    /// one decays, and they share nothing. The transition is returned rather than acted on, for the
+    /// same reason a move is — the creature knows nothing about who can see it.
+    /// </remarks>
+    public DeathTransition UpdateDeath(uint diffMs)
+    {
+        if (diffMs == 0 || IsAlive)
+        {
+            return DeathTransition.None;
+        }
+
+        RespawnRemainingMs = RespawnRemainingMs > diffMs ? RespawnRemainingMs - diffMs : 0;
+
+        if (DeathState == DeathState.Corpse)
+        {
+            CorpseRemainingMs = CorpseRemainingMs > diffMs ? CorpseRemainingMs - diffMs : 0;
+
+            if (CorpseRemainingMs == 0)
+            {
+                DeathState = DeathState.Dead;
+
+                // Back to the spawn point the moment the corpse goes, not when it respawns. A
+                // creature dragged across the zone would otherwise reappear where it was killed.
+                Position = HomePosition;
+
+                return DeathTransition.CorpseRemoved;
+            }
+
+            return DeathTransition.None;
+        }
+
+        if (RespawnRemainingMs == 0)
+        {
+            Respawn();
+
+            return DeathTransition.Respawned;
+        }
+
+        return DeathTransition.None;
+    }
+
+    /// <summary>Brings the creature back at full health, where it spawned.</summary>
+    public void Respawn()
+    {
+        DeathState = DeathState.Alive;
+
+        Health = MaxHealth;
+        Power = MaxPower;
+        Position = HomePosition;
+
+        NpcFlags = _spawnNpcFlags;
+        UnitFlags = _spawnUnitFlags;
+        DynamicFlags = _spawnDynamicFlags;
+
+        CorpseRemainingMs = 0;
+        RespawnRemainingMs = 0;
+
+        CancelMove();
+        SyncMovement();
+    }
+
+    /// <summary>
+    /// How long a corpse of a given rank lies there. <c>Corpse.Decay.*</c>.
+    /// </summary>
+    /// <remarks>
+    /// A minute for anything ordinary, five for rare and elite. A world boss outside an instance
+    /// gets ten rather than the hour it would get inside one — upstream shortens it deliberately, so
+    /// an open-world boss corpse does not block its own spawn point for an hour.
+    /// </remarks>
+    public static uint CorpseDelayMsFor(byte rank) => rank switch
+    {
+        RankRare => 300_000,
+        RankElite => 300_000,
+        RankRareElite => 300_000,
+        RankWorldBoss => 600_000,
+        _ => 60_000,
+    };
+
+    /// <summary>Ranks, from <c>CreatureEliteType</c>.</summary>
+    public const byte RankNormal = 0;
+    public const byte RankElite = 1;
+    public const byte RankRareElite = 2;
+    public const byte RankWorldBoss = 3;
+    public const byte RankRare = 4;
+
+    /// <summary>Ends any move in progress, leaving the creature where it stands.</summary>
+    private void CancelMove()
+    {
+        CurrentMove = default;
+        MoveElapsedMs = 0;
+    }
+
+    // The flags the spawn row asked for, kept so a respawn restores them rather than whatever the
+    // creature was carrying when it died.
+    private uint _spawnNpcFlags;
+    private uint _spawnUnitFlags;
+    private uint _spawnDynamicFlags;
 
     /// <summary>
     /// Builds a creature from its spawn row, its template, its model and the base stats for the
@@ -236,6 +466,8 @@ public sealed class Creature : Unit
             FlagsExtra = (CreatureFlagsExtra)template.FlagsExtra,
             Rank = template.Rank,
             CreatureType = template.CreatureType,
+            CorpseDelayMs = CorpseDelayMsFor(template.Rank),
+            RespawnDelayMs = spawn.RespawnDelaySeconds * 1000,
             MapId = spawn.MapId,
             Position = spawn.Position,
             HomePosition = spawn.Position,
@@ -281,6 +513,13 @@ public sealed class Creature : Unit
         creature.UnitFlags = spawn.UnitFlags != 0 ? spawn.UnitFlags : template.UnitFlags;
         creature.DynamicFlags = spawn.DynamicFlags != 0 ? spawn.DynamicFlags : template.DynamicFlags;
         creature.UnitFlags2 = template.UnitFlags2;
+
+        // Snapshotted so a respawn restores what the spawn row asked for, rather than whatever the
+        // creature was carrying when it died — death clears the npc flags, and without this a
+        // respawned innkeeper would come back with nothing to offer.
+        creature._spawnNpcFlags = creature.NpcFlags;
+        creature._spawnUnitFlags = creature.UnitFlags;
+        creature._spawnDynamicFlags = creature.DynamicFlags;
 
         ApplyLevelStats(creature, template, stats, spawn);
 

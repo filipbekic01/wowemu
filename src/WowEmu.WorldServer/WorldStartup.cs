@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 
 namespace WowEmu.WorldServer;
@@ -87,6 +88,11 @@ internal static class WorldStartup
             content.Stores.Classes.Count,
             content.Stores.Maps.Count,
             stats.LevelStatCount);
+
+        SpellStores spells = services.GetRequiredService<SpellStores>();
+
+        Log.SpellDataLoaded(
+            logger, spells.Spells.Count, spells.CastTimes.Count, spells.Ranges.Count, spells.Durations.Count);
     }
 
     /// <summary>

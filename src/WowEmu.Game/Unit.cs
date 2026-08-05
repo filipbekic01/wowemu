@@ -311,6 +311,17 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
     /// </remarks>
     private readonly int[] _attackTimers = new int[3];
 
+    /// <summary>
+    /// Who this unit hates and how much.
+    /// </summary>
+    /// <remarks>
+    /// On <see cref="Unit"/> rather than on <see cref="Creature"/> because a charmed player has one
+    /// too. Only creatures consult it to pick a victim; a player picks by clicking.
+    /// </remarks>
+    public ThreatManager Threat => _threat ??= new ThreatManager(this);
+
+    private ThreatManager? _threat;
+
     /// <summary>Who this unit is attacking, if anyone.</summary>
     /// <remarks>
     /// Distinct from <see cref="Target"/>, which is what the client draws as selected. A player can

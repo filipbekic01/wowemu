@@ -455,31 +455,48 @@ public sealed class MonsterMoveTests
 /// <summary>Builds creatures for the movement tests without a database.</summary>
 internal static class CreatureFixture
 {
+    /// <summary>
+    /// Hands out a fresh spawn id per creature, so every fixture creature has a distinct guid.
+    /// </summary>
+    /// <remarks>
+    /// Not a detail. A creature's guid is built from its entry and spawn id, so a fixed spawn id
+    /// makes every fixture creature the <i>same</i> guid — and anything keyed by guid, a threat list
+    /// or a visibility set, silently collapses three creatures into one. Interlocked because xunit
+    /// runs classes in parallel.
+    /// </remarks>
+    private static int _nextSpawnId;
+
     public static Creature Build(
         float wanderDistance = 0f,
         byte movementType = 0,
         byte rank = 0,
         byte creatureType = 1,
-        uint flagsExtra = 0)
+        uint flagsExtra = 0,
+        uint npcFlags = 0,
+        Position? position = null)
     {
         StubModels models = new();
         models.Add(new CreatureModelInfo(4481, 0.372f, 1.5f, 0, 0));
 
         CreatureSpawn spawn = new(
-            SpawnId: 1,
+            SpawnId: (uint)System.Threading.Interlocked.Increment(ref _nextSpawnId),
             Entry: 299,
             MapId: 0,
             SpawnMask: 1,
             PhaseMask: 1,
             ModelId: 0,
-            Position: new Position(-8913.2f, 554.6f, 93.7f, 0f),
+            // Through the spawn row, so HomePosition follows. Assigning Position afterwards instead
+            // leaves home where the fixture put it, and the creature evades the moment it has a
+            // victim because it believes it has been dragged nine thousand yards.
+            Position: position ?? new Position(-8913.2f, 554.6f, 93.7f, 0f),
             CurrentHealth: 1,
             CurrentMana: 0,
-            NpcFlags: 0,
+            NpcFlags: npcFlags,
             UnitFlags: 0,
             DynamicFlags: 0,
             WanderDistance: wanderDistance,
-            MovementType: movementType);
+            MovementType: movementType,
+            RespawnDelaySeconds: 120);
 
         CreatureTemplate template = new(
             Entry: 299,

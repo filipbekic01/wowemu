@@ -153,6 +153,16 @@ public sealed class Map(
     public StaticMapTree? Collision { get; } = collision;
 
     /// <summary>
+    /// Who fights whom, from <c>FactionTemplate.dbc</c>.
+    /// </summary>
+    /// <remarks>
+    /// Optional: a map built without it has creatures that never start fights. That is the safe
+    /// direction to fail — the alternative would be a zone that attacks on sight, which reads as a
+    /// game rule rather than as missing data.
+    /// </remarks>
+    public DbcStore<FactionTemplateEntry>? Factions { get; init; }
+
+    /// <summary>
     /// The surface under a point: the higher of terrain and any model standing there.
     /// </summary>
     /// <remarks>
@@ -253,8 +263,16 @@ public sealed class Map(
             return;
         }
 
-        foreach (Creature creature in _creatures)
+        // Materialised: a respawn or a corpse removal files and unfiles cells, and a despawned
+        // creature stays in this list so it has something to come back on.
+        foreach (Creature creature in _creatures.ToList())
         {
+            if (!creature.IsAlive)
+            {
+                UpdateDeadCreature(creature, gameplayDiff);
+                continue;
+            }
+
             CellCoord before = creature.Cell;
             Movement.CreatureMove? started = creature.Update(gameplayDiff);
 
@@ -290,6 +308,77 @@ public sealed class Map(
 
                 Log.CreatureMoveStarted(
                     logger, creature.Name, distance, started.Value.DurationMs, watchers.Count);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Ticks a corpse down and brings the creature back when its time comes.
+    /// </summary>
+    /// <remarks>
+    /// A despawned creature stays in <see cref="_creatures"/> but is taken out of its cell and out
+    /// of the guid index, so nothing can see it, find it or attack it — while something still ticks
+    /// it towards coming back. Removing it outright would be simpler and would mean it never
+    /// respawns.
+    /// </remarks>
+    private void UpdateDeadCreature(Creature creature, uint gameplayDiff)
+    {
+        switch (creature.UpdateDeath(gameplayDiff))
+        {
+            case Creature.DeathTransition.CorpseRemoved:
+                foreach (Player watcher in PlayersWhoSeeCore(creature.Guid))
+                {
+                    watcher.VisibleObjects.Remove(creature.Guid);
+                    SendDestroy(watcher, creature.Guid);
+                }
+
+                Hide(creature);
+                break;
+
+            case Creature.DeathTransition.Respawned:
+                Show(creature);
+
+                // Everyone in range learns about it the ordinary way, which is what makes a respawn
+                // indistinguishable from walking into view.
+                foreach (WorldObject other in FindInRangeCore(creature.Position, VisibilityDistance, creature))
+                {
+                    if (other is Player observer)
+                    {
+                        MakeVisible(observer, creature);
+                    }
+                }
+
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /// <summary>Kills a creature and tells everyone watching.</summary>
+    /// <remarks>
+    /// The health field is already zero by the time this returns, and the update flush that follows
+    /// is what the client actually plays the death animation from.
+    /// </remarks>
+    public void Kill(Creature creature)
+    {
+        ArgumentNullException.ThrowIfNull(creature);
+
+        if (!creature.IsAlive)
+        {
+            return;
+        }
+
+        creature.Kill();
+
+        // Everyone who was fighting it stops. Left alone they would keep swinging at a corpse,
+        // which the swing loop would reject every tick for as long as the corpse lay there.
+        foreach (Player player in Players)
+        {
+            if (ReferenceEquals(player.Victim, creature))
+            {
+                player.AttackStop();
+                player.Connection?.SendAttackState(player.Guid, creature.Guid, attacking: false, victimIsDead: true);
             }
         }
     }
@@ -481,6 +570,29 @@ public sealed class Map(
         }
     }
 
+    /// <summary>
+    /// Takes a despawned creature out of the world without forgetting it.
+    /// </summary>
+    /// <remarks>
+    /// Out of its cell so no range query finds it, and out of the guid index so nothing can target
+    /// it — but still in <see cref="_creatures"/>, which is what keeps its respawn timer running.
+    /// A full <see cref="Unfile"/> would take that away too, and the creature would never come back.
+    /// </remarks>
+    private void Hide(Creature creature)
+    {
+        _objects.Remove(creature.Guid);
+        CellFor(creature).Remove(creature);
+    }
+
+    /// <summary>Puts a respawned creature back into the world, at wherever it now stands.</summary>
+    private void Show(Creature creature)
+    {
+        creature.Cell = MapCoordinates.CellFor(creature.Position.X, creature.Position.Y);
+
+        _objects[creature.Guid] = creature;
+        CellAt(creature.Cell).Add(creature);
+    }
+
     private List<WorldObject> FindInRangeCore(Position position, float radius, WorldObject? exclude)
     {
         List<WorldObject> found = [];
@@ -557,7 +669,132 @@ public sealed class Map(
                 player.Connection?.SendSwingError(swing.Error);
             }
         }
+
+        UpdateCreatureCombat(gameplayDiff);
     }
+
+    /// <summary>
+    /// Runs every living creature's AI: notice, chase, swing, or give up.
+    /// </summary>
+    /// <remarks>
+    /// Aggro is scanned from the creature outwards rather than from the player, which is the wrong
+    /// way round for a naive reading — but there are far more creatures than players, and starting
+    /// from the creature means the aggro radius is the one already in hand.
+    /// </remarks>
+    private void UpdateCreatureCombat(uint gameplayDiff)
+    {
+        foreach (Creature creature in _creatures.ToList())
+        {
+            if (!creature.IsAlive)
+            {
+                continue;
+            }
+
+            creature.UpdateAttackTimers(gameplayDiff);
+
+            if (creature.Victim is null && creature.Threat.IsEmpty)
+            {
+                TryAggro(creature);
+            }
+
+            AiDecision decision = CreatureAi.Update(creature);
+
+            if (decision.Evaded)
+            {
+                SendCreatureMove(creature, creature.HomePosition);
+                continue;
+            }
+
+            if (decision.Victim is null)
+            {
+                continue;
+            }
+
+            if (decision.Chase is { } destination)
+            {
+                Chase(creature, destination);
+                continue;
+            }
+
+            // In reach and standing still — stop any chase that was in progress, or the client
+            // keeps sliding it past the target it has already caught.
+            SwingResult swing = MeleeSwing.Advance(creature, WeaponAttackType.BaseAttack, GameRandom.Urand);
+
+            if (swing.Swung)
+            {
+                ApplySwing(creature, decision.Victim, swing.Damage);
+            }
+        }
+    }
+
+    /// <summary>Looks for a nearby player to pick a fight with.</summary>
+    private void TryAggro(Creature creature)
+    {
+        if (creature.React != ReactState.Aggressive || Factions is null)
+        {
+            return;
+        }
+
+        foreach (Player candidate in Players)
+        {
+            bool hostile = CreatureAi.IsHostile(Factions, creature, candidate);
+
+            if (CreatureAi.CanStartAttack(creature, candidate, hostile, () => CanSee(creature, candidate)))
+            {
+                // Zero threat, so the fight starts without pretending damage was dealt. The victim
+                // selection that follows picks this up because being on the list is what counts.
+                creature.Threat.AddThreat(candidate, 0f);
+                return;
+            }
+        }
+    }
+
+    /// <summary>Walks a creature towards a point, telling everyone who can see it.</summary>
+    /// <remarks>
+    /// A fresh move every tick would be a packet per creature per tick. The move is only re-issued
+    /// when the destination has meaningfully changed, which for a player standing still is never.
+    /// </remarks>
+    private void Chase(Creature creature, Position destination)
+    {
+        const float RestartThreshold = 2.0f;
+
+        if (creature.IsMoving
+            && creature.CurrentMove.Destination.GetExactDist2dSq(destination) < RestartThreshold * RestartThreshold)
+        {
+            return;
+        }
+
+        SendCreatureMove(creature, destination);
+    }
+
+    /// <summary>Starts a creature on a move and broadcasts it.</summary>
+    private void SendCreatureMove(Creature creature, Position destination)
+    {
+        Movement.CreatureMove? move = creature.MoveTo(destination);
+
+        if (move is null)
+        {
+            return;
+        }
+
+        foreach (Player watcher in PlayersWhoSeeCore(creature.Guid))
+        {
+            watcher.Connection?.QueueMonsterMove(creature.Guid, move.Value, creature.SplineId);
+        }
+    }
+
+    /// <summary>Whether one unit can see another, for aggro purposes.</summary>
+    private bool CanSee(WorldObject from, WorldObject to) =>
+        IsInLineOfSight(
+            from.Position with { Z = from.Position.Z + SightHeight },
+            to.Position with { Z = to.Position.Z + SightHeight });
+
+    /// <summary>How far above its feet a unit is considered to see from.</summary>
+    /// <remarks>
+    /// Without it every ray starts at ground level and is blocked by the ground itself, so nothing
+    /// ever has line of sight to anything.
+    /// </remarks>
+    private const float SightHeight = 2.0f;
 
     /// <summary>Applies one landed swing and tells everyone who can see it.</summary>
     /// <remarks>
@@ -571,6 +808,17 @@ public sealed class Map(
         BroadcastMeleeSwing(attacker, victim, damage, healthBefore);
 
         victim.Health = damage.Damage >= healthBefore ? 0 : healthBefore - damage.Damage;
+
+        // One point of threat per point of damage — and the attacker goes on the list even when the
+        // swing did nothing, which is what makes a creature fight back after being missed.
+        victim.Threat.AddThreat(attacker, damage.Damage);
+
+        // Death is noticed here, where health changed, rather than polled somewhere later. A hit
+        // that takes the last point and a hit that takes ten times it are the same kill.
+        if (victim.Health == 0 && victim is Creature killed)
+        {
+            Kill(killed);
+        }
     }
 
     /// <summary>

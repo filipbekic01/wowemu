@@ -36,7 +36,8 @@ public readonly record struct CreatureSpawn(
     uint UnitFlags,
     uint DynamicFlags,
     float WanderDistance,
-    byte MovementType)
+    byte MovementType,
+    uint RespawnDelaySeconds)
 {
     /// <summary>
     /// Whether this spawn exists at a given difficulty.
@@ -84,7 +85,7 @@ public sealed class CreatureSpawnStore
             SELECT guid, id, map, spawnMask, phaseMask, modelid,
                    position_x, position_y, position_z, orientation,
                    curhealth, curmana, npcflag, unit_flags, dynamicflags,
-                   spawndist, MovementType
+                   spawndist, MovementType, spawntimesecs
             FROM creature
             """;
 
@@ -113,7 +114,8 @@ public sealed class CreatureSpawnStore
                 UnitFlags: reader.GetUInt32(13),
                 DynamicFlags: reader.GetUInt32(14),
                 WanderDistance: reader.GetFloat(15),
-                MovementType: reader.GetByte(16));
+                MovementType: reader.GetByte(16),
+                RespawnDelaySeconds: reader.GetUInt32(17));
 
             if (!_byMap.TryGetValue(mapId, out List<CreatureSpawn>? spawns))
             {

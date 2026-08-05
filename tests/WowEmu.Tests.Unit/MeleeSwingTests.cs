@@ -536,8 +536,11 @@ public sealed class MapCombatTests
         map.Update(gameplayDiff: 100, sessionDiff: 100);
 
         Assert.True(victim.Health < before, "the victim took no damage");
-        Assert.Single(link.Swings);
-        Assert.Equal((attacker.Guid, victim.Guid), (link.Swings[0].Attacker, link.Swings[0].Target));
+
+        // The player's swing specifically. There may be a second in the other direction — the
+        // creature answers on the same tick now that it has an AI — so this asks for the one it
+        // means rather than for the only one there is.
+        Assert.Contains(link.Swings, swing => swing.Attacker == attacker.Guid && swing.Target == victim.Guid);
     }
 
     /// <summary>
@@ -616,7 +619,7 @@ public sealed class MapCombatTests
 
         map.Update(gameplayDiff: 100, sessionDiff: 100);
 
-        Assert.Single(link.Swings);
+        Assert.NotEmpty(link.Swings);
         Assert.Equal([SwingError.None], link.SwingErrors);
     }
 }
@@ -626,8 +629,7 @@ internal static class MapCombatFixture
 {
     public static (Map Map, Player Attacker, Creature Victim, Link Connection) Engaged(float distance = 2f)
     {
-        Creature victim = CreatureFixture.Build();
-        victim.Position = new Position(distance, 0f, 0f, 0f);
+        Creature victim = CreatureFixture.Build(position: new Position(distance, 0f, 0f, 0f));
 
         // Creatures reach a map through the grid loader, not through Add — the same path the real
         // server uses, so the victim ends up filed in a cell and findable by a range query.
@@ -647,6 +649,11 @@ internal static class MapCombatFixture
         attacker.MaxDamage = 10f;
         attacker.SetAttackTime(WeaponAttackType.BaseAttack, 2000);
         attacker.Position = new Position(0f, 0f, 0f, 0f);
+
+        // The base stats give a level-1 character almost nothing, and a player at zero health is
+        // already dead — every "did it take damage" assertion would be vacuously false.
+        attacker.MaxHealth = 1000;
+        attacker.Health = 1000;
 
         map.Add(attacker);
 
@@ -671,13 +678,21 @@ internal static class MapCombatFixture
 
         public List<SwingError> SwingErrors { get; } = [];
 
+        public List<ObjectGuid> Created { get; } = [];
+
+        public List<ObjectGuid> Destroyed { get; } = [];
+
+        /// <summary>Attack starts and stops, with the guid each named.</summary>
+        public List<(ObjectGuid Victim, bool Attacking, bool VictimIsDead)> AttackStates { get; } = [];
+
         public void QueueCreate(WorldObject other)
         {
+            ArgumentNullException.ThrowIfNull(other);
+
+            Created.Add(other.Guid);
         }
 
-        public void QueueDestroy(ObjectGuid objectGuid)
-        {
-        }
+        public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
 
         public void FlushUpdates()
         {
@@ -695,9 +710,8 @@ internal static class MapCombatFixture
             ObjectGuid attacker, ObjectGuid target, MeleeDamageInfo info, uint targetHealthBeforeHit) =>
             Swings.Add((attacker, target, info));
 
-        public void SendAttackState(ObjectGuid attacker, ObjectGuid? victim, bool attacking, bool victimIsDead)
-        {
-        }
+        public void SendAttackState(ObjectGuid attacker, ObjectGuid? victim, bool attacking, bool victimIsDead) =>
+            AttackStates.Add((victim ?? ObjectGuid.Empty, attacking, victimIsDead));
 
         public void SendSwingError(SwingError reason) => SwingErrors.Add(reason);
 
