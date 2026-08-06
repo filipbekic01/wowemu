@@ -47,6 +47,10 @@ public static class WorldLiquid
     /// model's water arrives with no type — see <see cref="StaticMapTree.GetLiquid"/>. Terrain
     /// liquid is unaffected either way, because the extractor resolved its type at extraction time.
     /// </param>
+    /// <param name="areas">
+    /// <c>AreaTable.dbc</c>, for the zone liquid override. Optional; without it a zone that
+    /// substitutes its own liquid is not noticed and the geometry's own kind stands.
+    /// </param>
     public static LiquidData Get(
         TerrainMap? terrain,
         StaticMapTree? vmaps,
@@ -54,7 +58,8 @@ public static class WorldLiquid
         float y,
         float z,
         float collisionHeight,
-        DbcStore<LiquidTypeEntry>? liquidTypes = null)
+        DbcStore<LiquidTypeEntry>? liquidTypes = null,
+        DbcStore<AreaTableEntry>? areas = null)
     {
         ModelLiquid? model = vmaps?.GetLiquid(x, y, z, collisionHeight, liquidTypes);
 
@@ -86,7 +91,7 @@ public static class WorldLiquid
 
         if (!useTerrain || terrain is null)
         {
-            return found;
+            return Override(found, terrain, x, y, liquidTypes, areas);
         }
 
         LiquidData ground = terrain.GetLiquidData(x, y, z, collisionHeight);
@@ -95,9 +100,111 @@ public static class WorldLiquid
         // provided its surface clears the model floor the point was found standing on.
         if (ground.Status != LiquidStatus.NoWater && ground.Level > modelFloor)
         {
-            return ground;
+            return Override(ground, terrain, x, y, liquidTypes, areas);
         }
 
-        return found;
+        return Override(found, terrain, x, y, liquidTypes, areas);
     }
+
+    /// <summary>
+    /// Lets the zone substitute its own liquid for the one the geometry describes.
+    /// </summary>
+    /// <remarks>
+    /// Port of the override branch shared by <c>GridTerrainData::GetLiquidData</c> and
+    /// <c>Map::GetLiquidData</c>. This is how Naxxramas gets slime where the terrain says water, and
+    /// how Outland's lakes read differently from Azeroth's.
+    /// <para>
+    /// <b>Only entries below 21 are overridable.</b> Those are the generic ones — plain water, ocean,
+    /// magma, slime — and everything above is already a specific named liquid that a zone has no
+    /// business replacing. Dropping the test lets a zone override the very liquid it defined.
+    /// </para>
+    /// <para>
+    /// The subzone is asked first and the zone only if it declines, which is upstream's order: a
+    /// subzone may override where its parent does not.
+    /// </para>
+    /// <para>
+    /// Note what happens to the type bits: everything but dark water is discarded and rebuilt from
+    /// the sound bank. Dark water is a property of the liquid rather than a kind of it, so it
+    /// survives an override that changes what the liquid is.
+    /// </para>
+    /// </remarks>
+    private static LiquidData Override(
+        LiquidData liquid,
+        TerrainMap? terrain,
+        float x,
+        float y,
+        DbcStore<LiquidTypeEntry>? liquidTypes,
+        DbcStore<AreaTableEntry>? areas)
+    {
+        if (liquid.Status == LiquidStatus.NoWater || liquidTypes is null)
+        {
+            return liquid;
+        }
+
+        if (!liquidTypes.TryGet(liquid.Entry, out LiquidTypeEntry? entry) || entry is null)
+        {
+            // An entry the DBC does not describe keeps whatever the geometry said about it.
+            return liquid;
+        }
+
+        uint resolvedEntry = liquid.Entry;
+        uint soundBank = entry.SoundBank;
+
+        if (liquid.Entry < FirstSpecificLiquid && terrain is not null && areas is not null)
+        {
+            uint replacement = ZoneOverride(areas, terrain.GetAreaId(x, y), soundBank);
+
+            if (replacement != 0
+                && liquidTypes.TryGet(replacement, out LiquidTypeEntry? replaced)
+                && replaced is not null)
+            {
+                resolvedEntry = replacement;
+                soundBank = replaced.SoundBank;
+            }
+        }
+
+        LiquidTypeMask type = (liquid.Type & LiquidTypeMask.DarkWater) | SoundBankMask(soundBank);
+
+        return liquid with { Entry = resolvedEntry, Type = type };
+    }
+
+    /// <summary>
+    /// The first liquid entry a zone may not override.
+    /// </summary>
+    /// <remarks>
+    /// Upstream's bare <c>&lt; 21</c>. Below it are the generic liquids every zone shares; at and
+    /// above it are the specific ones — entry 21 is Naxxramas' own slime, which exists precisely
+    /// because a zone overrode something to reach it.
+    /// </remarks>
+    public const uint FirstSpecificLiquid = 21;
+
+    /// <summary>The zone's replacement for a liquid kind, asking the subzone before its parent.</summary>
+    private static uint ZoneOverride(DbcStore<AreaTableEntry> areas, ushort areaId, uint soundBank)
+    {
+        if (areaId == 0 || !areas.TryGet(areaId, out AreaTableEntry? area) || area is null)
+        {
+            return 0;
+        }
+
+        uint replacement = area.OverrideFor(soundBank);
+
+        if (replacement != 0 || area.ParentZoneId == 0)
+        {
+            return replacement;
+        }
+
+        return areas.TryGet(area.ParentZoneId, out AreaTableEntry? zone) && zone is not null
+            ? zone.OverrideFor(soundBank)
+            : 0;
+    }
+
+    /// <summary>The <c>MAP_LIQUID_TYPE_*</c> bit for a sound bank. <c>1 &lt;&lt; type</c>.</summary>
+    private static LiquidTypeMask SoundBankMask(uint soundBank) => soundBank switch
+    {
+        0 => LiquidTypeMask.Water,
+        1 => LiquidTypeMask.Ocean,
+        2 => LiquidTypeMask.Magma,
+        3 => LiquidTypeMask.Slime,
+        _ => LiquidTypeMask.None,
+    };
 }

@@ -128,7 +128,8 @@ public sealed class WorldContent(
 
         if (area != 0)
         {
-            player.ZoneId = area;
+            player.AreaId = area;
+            player.ZoneId = Stores.ZoneFor(area);
         }
 
         reason = null;

@@ -160,6 +160,44 @@ public sealed record QuestXpEntry(uint Level, uint[] ByDifficulty)
         difficulty < ByDifficulty.Length ? ByDifficulty[difficulty] : 0;
 }
 
+/// <summary>
+/// A row of <c>AreaTable.dbc</c>: one zone, or one subzone of a zone.
+/// </summary>
+/// <param name="Id">The area id, which is what terrain tiles store per chunk.</param>
+/// <param name="MapId">Which map it is on.</param>
+/// <param name="ParentZoneId">
+/// <b>Zero means this row IS a zone.</b> Otherwise it names the zone this subzone belongs to.
+/// Elwynn Forest is a zone and stores 0; Northshire Valley is a subzone of it and stores 12.
+/// </param>
+/// <param name="Flags">Sanctuary, capital city, and the rest. 312 for every city upstream notes.</param>
+/// <param name="AreaLevel">The suggested level, or 0 where there is none.</param>
+/// <param name="Name">The name the client shows.</param>
+/// <param name="Team">Alliance, Horde or neither, for the areas that belong to one.</param>
+/// <param name="LiquidTypeOverride">
+/// Four entries, one per liquid sound bank, letting a zone substitute its own liquid — which is how
+/// Naxxramas gets slime where the geometry says water. Zero means no override for that kind.
+/// </param>
+public sealed record AreaTableEntry(
+    uint Id,
+    uint MapId,
+    uint ParentZoneId,
+    uint Flags,
+    int AreaLevel,
+    string Name,
+    uint Team,
+    uint[] LiquidTypeOverride)
+{
+    /// <summary>How many liquid kinds a zone can override. One per sound bank.</summary>
+    public const int LiquidOverrideCount = 4;
+
+    /// <summary>Whether this row is a zone in its own right rather than part of one.</summary>
+    public bool IsZone => ParentZoneId == 0;
+
+    /// <summary>The override for one liquid kind, or 0.</summary>
+    public uint OverrideFor(uint soundBank) =>
+        soundBank < (uint)LiquidTypeOverride.Length ? LiquidTypeOverride[soundBank] : 0;
+}
+
 /// <summary>A row of <c>LiquidType.dbc</c>.</summary>
 /// <remarks>
 /// Two columns of forty-five. <see cref="SoundBank"/> is what upstream calls <c>Type</c>, and it is
@@ -249,6 +287,11 @@ public sealed class DbcStores
     /// <summary>Verbatim from <c>DBCfmt.h</c>: id, type and spell out of forty-five columns.</summary>
     private const string LiquidTypeFormat = "nxxixixxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
 
+    /// <summary>
+    /// Verbatim from <c>DBCfmt.h</c>. Thirty-six columns, sixteen of them the localised name.
+    /// </summary>
+    private const string AreaTableFormat = "niiiixxxxxissssssssssssssssxiiiiixxx";
+
     private DbcStores(
         DbcStore<ChrRacesEntry> races,
         DbcStore<ChrClassesEntry> classes,
@@ -256,10 +299,12 @@ public sealed class DbcStores
         DbcStore<FactionTemplateEntry> factionTemplates,
         DbcStore<WorldSafeLocsEntry> worldSafeLocs,
         DbcStore<QuestXpEntry> questXp,
-        DbcStore<LiquidTypeEntry> liquidTypes)
+        DbcStore<LiquidTypeEntry> liquidTypes,
+        DbcStore<AreaTableEntry> areas)
     {
         QuestXp = questXp;
         LiquidTypes = liquidTypes;
+        Areas = areas;
         Races = races;
         Classes = classes;
         Maps = maps;
@@ -291,10 +336,34 @@ public sealed class DbcStores
     /// <summary>What each liquid actually is. Without it a WMO's water has no type at all.</summary>
     public DbcStore<LiquidTypeEntry> LiquidTypes { get; }
 
+    /// <summary>
+    /// Zones and subzones. What turns the area id a terrain tile stores into a zone.
+    /// </summary>
+    /// <remarks>
+    /// The distinction matters more than it looks. A terrain chunk stores the <i>area</i>, and
+    /// everything keyed by zone — graveyards, the character list, the location display — wants the
+    /// zone. Using one for the other works everywhere a zone has no subzones and fails silently
+    /// everywhere it does.
+    /// </remarks>
+    public DbcStore<AreaTableEntry> Areas { get; }
+
+    /// <summary>
+    /// The zone an area belongs to, which is the area itself when it is already a zone.
+    /// </summary>
+    /// <remarks>
+    /// Falls back to the area id when the row is missing rather than answering zero: an unknown area
+    /// is better treated as its own zone than as no zone at all, which would silently disable
+    /// everything keyed by one.
+    /// </remarks>
+    public uint ZoneFor(uint areaId) =>
+        Areas.TryGet(areaId, out AreaTableEntry? area) && area is not null && area.ParentZoneId != 0
+            ? area.ParentZoneId
+            : areaId;
+
     /// <summary>Total rows loaded, for the startup log.</summary>
     public int TotalRows =>
         Races.Count + Classes.Count + Maps.Count + FactionTemplates.Count + WorldSafeLocs.Count
-        + QuestXp.Count + LiquidTypes.Count;
+        + QuestXp.Count + LiquidTypes.Count + Areas.Count;
 
     /// <summary>
     /// Loads every store from a directory of extracted <c>.dbc</c> files.
@@ -425,6 +494,30 @@ public sealed class DbcStores
                 (in DbcRecord record) => new LiquidTypeEntry(
                     Id: record.GetUInt32(0),
                     SoundBank: record.GetUInt32(3),
-                    SpellId: record.GetUInt32(5))));
+                    SpellId: record.GetUInt32(5))),
+
+            DbcStore<AreaTableEntry>.Load(
+                Path.Combine(directory, "AreaTable.dbc"),
+                AreaTableFormat,
+                idField: 0,
+                (in DbcRecord record) =>
+                {
+                    uint[] overrides = new uint[AreaTableEntry.LiquidOverrideCount];
+
+                    for (int i = 0; i < overrides.Length; i++)
+                    {
+                        overrides[i] = record.GetUInt32(29 + i);
+                    }
+
+                    return new AreaTableEntry(
+                        Id: record.GetUInt32(0),
+                        MapId: record.GetUInt32(1),
+                        ParentZoneId: record.GetUInt32(2),
+                        Flags: record.GetUInt32(4),
+                        AreaLevel: record.GetInt32(10),
+                        Name: record.GetLocalizedString(11, locale),
+                        Team: record.GetUInt32(28),
+                        LiquidTypeOverride: overrides);
+                }));
     }
 }

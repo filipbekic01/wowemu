@@ -357,8 +357,9 @@
               "text": "CharStartOutfit — starting gear per race/class"
             },
             {
-              "done": false,
-              "text": "AreaTable — zone lookup for the character list and login"
+              "done": true,
+              "text": "AreaTable — zone lookup, and the liquid zone override",
+              "note": "2,307 rows. Fixes a real bug on the way in: the terrain stores an AREA id and everything keyed by zone wanted the ZONE, which are different numbers for a subzone — Northshire Valley is area 9 inside zone 12. Graveyard lookup is keyed by zone, so a ghost dying in any subzone found no graveyard at all. WorldObject now carries both AreaId and ZoneId. Also wires the liquid override: only 5 of the 2,307 areas override anything, and NONE of them has terrain liquid — every one is an instance whose water lives in a WMO — so the override had to reach the model path or it would have been dead code. Verified end to end: a point in Naxxramas comes back as entry 21 (\"Naxxramas - Slime\") instead of the generic 20 (\"WMO Slime\")."
             },
             {
               "done": false,
@@ -2276,7 +2277,6 @@
         "Banned-addon list is always empty; client cache version is a static config value",
         "Logout is instant — upstream makes a player sit for 20 seconds unless resting or a GM",
         "SessionStatus.Transfer is never entered; nothing moves between maps yet",
-        "Liquid type overrides by zone are not applied. Upstream lets an area substitute its own liquid for entries below 21 (this is how Naxxramas gets slime where the geometry says water), which needs AreaTable.dbc. Everything else about liquid — terrain, WMO, type, depth and status — is resolved.",
         "The speed-change acknowledgement counter is sent and echoed back but never matched — the handler counts outstanding orders per move type rather than pairing each reply to its own order. Enough to know when the last reply has arrived, not enough to detect a client replaying an old one."
       ]
     },

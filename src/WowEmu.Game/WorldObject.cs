@@ -89,8 +89,25 @@ public abstract class WorldObject(ObjectGuid guid, TypeId typeId, int fieldCount
     /// <summary>Which map it is on.</summary>
     public uint MapId { get; set; }
 
-    /// <summary>Which zone, for the client's location display.</summary>
+    /// <summary>
+    /// Which zone, for the client's location display and everything keyed by zone.
+    /// </summary>
+    /// <remarks>
+    /// <b>The zone, not the area.</b> A terrain chunk stores an <i>area</i> id, and for a subzone
+    /// the two are different numbers — Northshire Valley is area 9 inside zone 12. Graveyard lookup,
+    /// the character list and the location display all want the zone, so putting an area id here
+    /// works everywhere a zone has no subzones and fails silently everywhere it does.
+    /// </remarks>
     public uint ZoneId { get; set; }
+
+    /// <summary>
+    /// Which area — the subzone, where there is one, and otherwise the same as the zone.
+    /// </summary>
+    /// <remarks>
+    /// Kept alongside rather than derived, because both are asked for: exploration and area triggers
+    /// want the finer one, and everything above wants the zone.
+    /// </remarks>
+    public uint AreaId { get; set; }
 
     /// <summary>Which cell the map currently has this object filed under.</summary>
     /// <remarks>

@@ -3290,9 +3290,14 @@ public sealed class WorldSession(
             .GetMap(_player.MapId)
             .GetAreaId(_player.Position.X, _player.Position.Y);
 
-        if (area != 0 && area != _player.ZoneId)
+        if (area != 0 && area != _player.AreaId)
         {
-            _player.ZoneId = area;
+            _player.AreaId = area;
+
+            // The zone is what everything above this cares about, and for a subzone it is a
+            // different number — Northshire Valley is area 9 inside zone 12.
+            _player.ZoneId = world.Stores.ZoneFor(area);
+
             Log.ZoneChanged(logger, _player.Name, area);
         }
 

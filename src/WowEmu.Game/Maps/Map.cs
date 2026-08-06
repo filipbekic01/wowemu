@@ -419,7 +419,7 @@ public sealed class Map(
     /// a building standing in a lake must not have the lake running through its ground floor.
     /// </remarks>
     public LiquidData GetLiquid(float x, float y, float z, float collisionHeight) =>
-        WorldLiquid.Get(Terrain, Collision, x, y, z, collisionHeight, LiquidTypes);
+        WorldLiquid.Get(Terrain, Collision, x, y, z, collisionHeight, LiquidTypes, Areas);
 
     /// <summary>
     /// <c>LiquidType.dbc</c>, which classifies the liquid inside a model.
@@ -430,6 +430,15 @@ public sealed class Map(
     /// Stormwind's canal, and any rule keyed on the type simply never fires.
     /// </remarks>
     public DbcStore<LiquidTypeEntry>? LiquidTypes { get; init; }
+
+    /// <summary>
+    /// <c>AreaTable.dbc</c>, for the zone liquid override and for area lookups.
+    /// </summary>
+    /// <remarks>
+    /// Optional, and its absence is quiet: a zone that substitutes its own liquid is simply not
+    /// noticed, and the geometry's own kind stands.
+    /// </remarks>
+    public DbcStore<AreaTableEntry>? Areas { get; init; }
 
     /// <summary>Whether one point on this map can see another.</summary>
     /// <remarks>Clear when there is no collision data: a missing file must not blind the world.</remarks>
