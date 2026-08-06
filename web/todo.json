@@ -1837,11 +1837,6 @@
             },
             {
               "done": false,
-              "text": "TRAINERS. npc_trainer is not read and no spell can be learned, because there is no spellbook",
-              "note": "The gossip line is drawn, because the NPC really has the flag, and clicking it closes the window. That is also what blocks dual wield, which is spell 674."
-            },
-            {
-              "done": false,
               "text": "Flight masters, bankers, innkeepers, auctioneers and stable masters",
               "note": "Same shape as trainers: the line appears and clicking it closes the window."
             },
@@ -1860,6 +1855,82 @@
             {
               "done": false,
               "text": "The conditions system, which is how upstream picks between a menu's several texts"
+            }
+          ]
+        },
+        {
+          "title": "Spellbook and trainers",
+          "items": [
+            {
+              "done": true,
+              "text": "playercreateinfo_spell, playercreateinfo_spell_custom and npc_trainer vendored"
+            },
+            {
+              "done": true,
+              "text": "THE STARTING SPELLS ARE IN playercreateinfo_spell, NOT THE _custom TABLE",
+              "note": "The current C++ reads _custom, and in our dump that table is empty — the 182 real rows are in the older one. Fourth divergence between the two checkouts. Both are read, so either dump works."
+            },
+            {
+              "done": true,
+              "text": "Race and class masks are bits over ONE-BASED ids, and zero means everyone",
+              "note": "Most of the table is zero-masked — the rows every character shares. Testing the bit without that shortcut leaves every character knowing nothing at all."
+            },
+            {
+              "done": true,
+              "text": "DUAL WIELD IS SPELL 674, NOT A CLASS TRAIT",
+              "note": "Rogues and death knights start with it, a warrior learns it at level 20. Making it a trait gives every level-1 warrior an off-hand. Before the spellbook the off-hand slot was refused for everybody."
+            },
+            {
+              "done": true,
+              "text": "It is recomputed from the book, never toggled on learn",
+              "note": "A toggle is one missed call away from a character who can dual wield because they once could."
+            },
+            {
+              "done": true,
+              "text": "SMSG_INITIAL_SPELLS — the count is SIXTEEN bits, and the cooldown count is not optional",
+              "note": "The client builds its spellbook and action bars from this and nothing else. Verified live: a human warrior logs in knowing 51 spells."
+            },
+            {
+              "done": true,
+              "text": "The starting list is re-applied on EVERY login, not only at creation",
+              "note": "The list grows. A character made before a spell was added would otherwise never get it, and learning is idempotent so it costs nothing."
+            },
+            {
+              "done": true,
+              "text": "CMSG_CAST_SPELL now refuses a spell the character has not learned",
+              "note": "Until the spellbook existed it was honoured for any id in Spell.dbc — which is every spell in the game, from level one."
+            },
+            {
+              "done": true,
+              "text": "npc_trainer: a NEGATIVE SpellID is a reference to another trainer's whole list",
+              "note": "The fifth table to overload a column's sign."
+            },
+            {
+              "done": true,
+              "text": "SMSG_TRAINER_LIST — each line carries two fixed arrays the client reads unconditionally",
+              "note": "Two words of point cost and three of prerequisite spells. Both are zero and both must still be written, or the next line is read twenty bytes early."
+            },
+            {
+              "done": true,
+              "text": "The trainer gossip line opens something, and the list is resent after a purchase",
+              "note": "So the line goes red rather than staying green until the window is reopened."
+            },
+            {
+              "done": true,
+              "text": "character_spell, saved whole like the inventory and the quest log"
+            },
+            {
+              "done": false,
+              "text": "Spell ranks — a higher rank does not supersede a lower one, so both stay in the book"
+            },
+            {
+              "done": false,
+              "text": "Skills, so a trainer's skill requirements always pass",
+              "note": "A profession trainer offers its whole list in green; only level and money refuse a purchase."
+            },
+            {
+              "done": false,
+              "text": "Talents, specs, glyphs and the action bars (playercreateinfo_action)"
             }
           ]
         },
@@ -2291,8 +2362,7 @@
     {
       "category": "Gossip and vendors",
       "items": [
-        "NO TRAINERS. npc_trainer is not read and nothing can be learned, because there is no spellbook. The gossip line is drawn — the NPC really has the flag — and clicking it closes the window. It is also what blocks dual wield, which is spell 674.",
-        "Flight masters, bankers, innkeepers, auctioneers and stable masters behave the same way: the line appears and does nothing.",
+        "Flight masters, bankers, innkeepers, auctioneers and stable masters still do nothing: the gossip line appears and clicking it closes the window. Trainers now work.",
         "Every vendor has infinite stock. maxcount and the restock timer are read and ignored.",
         "Items with an extended cost — honour, arena points, tokens — are listed and refused, because the cost is a row in a DBC nothing reads.",
         "No buyback, no repair, and no reputation discount on prices.",
@@ -2305,6 +2375,15 @@
         "Everything is saved on logout and on a dropped connection, never periodically. A server crash loses the whole session — position, bags, quests, money and experience alike.",
         "Confirming against a real 3.3.5a client is only just starting, and the first thing it found was an empty quest log — SMSG_QUEST_QUERY_RESPONSE was never answered. Five headless gates prove the server is self-consistent; none of them can prove the client agrees."
       ]
+    },
+    {
+      "category": "Spellbook",
+      "items": [
+        "No spell ranks. A higher rank does not supersede a lower one, so a player who learns rank 2 keeps rank 1 in the book as well.",
+        "NO SKILLS, so a trainer's skill requirements always pass. A profession trainer offers its whole list in green and only level and money refuse a purchase.",
+        "No talents, no specs, no glyphs. playercreateinfo_action is not read either, so the action bars start empty and the player has to drag everything out of the spellbook.",
+        "Spell cooldowns do not survive a logout — SMSG_INITIAL_SPELLS always reports none."
+      ]
     }
   ],
   "remember": [
@@ -2314,7 +2393,8 @@
     "sql/world/ is now ~65 MB: item_template (14 MB), quest_template (13 MB), creature (12 MB), creature_loot_template (9 MB), creature_template (7.6 MB), gameobject (7 MB), npc_text (2.6 MB). The vendoring rule says a fresh clone must be able to start, and that is the price.",
     "data/ is 3 GB of extracted client data and is not committed; a fresh clone needs the extractors run again.",
     "sql/world/ redistributes AGPL-3.0 content from AzerothCore's database. Deliberate — but it is a licence obligation worth being aware of.",
-    "FOUR TABLES NOW OVERLOAD A COLUMN'S SIGN TO MEAN 'REFERENCE': creature_loot_template's mincountOrRef, npc_vendor's item, quest_template's RequiredNpcOrGo (gameobject), and RewardOrRequiredMoney (a cost). Read any of them unsigned and the failure is silent in three cases out of four. Check the column's signedness before writing the reader."
+    "FIVE TABLES NOW OVERLOAD A COLUMN'S SIGN: creature_loot_template's mincountOrRef, npc_vendor's item, npc_trainer's SpellID, quest_template's RequiredNpcOrGo (gameobject) and RewardOrRequiredMoney (a cost). Read any unsigned and the failure is silent in most cases. Check the column's signedness before writing the reader.",
+    "FOUR TABLES NOW DIVERGE BETWEEN THE TWO REFERENCE TREES: creature_template_model vs modelid1..4, game_graveyard vs game_graveyard_zone, AreaDescription vs EndText, and playercreateinfo_spell vs playercreateinfo_spell_custom (the newer C++ reads the _custom table, which our dump leaves empty). Read the C++ for behaviour and the dump for column names."
   ],
   "conventions": [
     "Anything used from database-wotlk/ gets vendored into sql/world/ first, via tools/db/export-world.sh, with a note saying what reads it. The server never reads the reference checkout at runtime.",

@@ -26,6 +26,7 @@ public sealed class Player : Unit
     {
         Inventory = new Inventory(this);
         Quests = new QuestLog(this);
+        Spells = new SpellBook(this);
     }
 
     /// <summary>How to reach this player's client. Null for a player with no session.</summary>
@@ -36,6 +37,9 @@ public sealed class Player : Unit
 
     /// <summary>Every quest this character has taken, and what became of it.</summary>
     public QuestLog Quests { get; }
+
+    /// <summary>Every spell this character knows.</summary>
+    public SpellBook Spells { get; }
 
     /// <summary>
     /// The corpse whose loot window is open, or empty.

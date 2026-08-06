@@ -409,6 +409,14 @@ public sealed class WorldSession(
                 HandleSellItem(payload);
                 return;
 
+            case Opcode.CMSG_TRAINER_LIST:
+                HandleTrainerList(payload);
+                return;
+
+            case Opcode.CMSG_TRAINER_BUY_SPELL:
+                HandleTrainerBuySpell(payload);
+                return;
+
             default:
                 // Every movement opcode routes to one handler, exactly as upstream does — the
                 // opcode says what the client thinks it is doing, but the payload is identical.
@@ -932,6 +940,14 @@ public sealed class WorldSession(
         {
             // An id the client data does not describe. Nothing sensible to say about it, so the
             // client is told its attempt failed rather than left waiting.
+            SendCastFailed(castCount, spellId, SpellCastResult.NotKnown);
+            return;
+        }
+
+        // A spell the character has never learned. Until the spellbook existed this was honoured
+        // for any id in Spell.dbc, which is every spell in the game from level one.
+        if (!_player.Spells.Knows(spellId))
+        {
             SendCastFailed(castCount, spellId, SpellCastResult.NotKnown);
             return;
         }
@@ -1482,6 +1498,10 @@ public sealed class WorldSession(
                 SendVendorList(npc);
                 break;
 
+            case GossipOption.Trainer:
+                SendTrainerList(npc);
+                break;
+
             case GossipOption.Gossip when chosen.ActionMenuId != 0:
                 SendGossipMenu(npc, chosen.ActionMenuId);
                 break;
@@ -1631,6 +1651,145 @@ public sealed class WorldSession(
         }
     }
 
+    /// <summary>Opens a trainer's list. <c>CMSG_TRAINER_LIST</c>.</summary>
+    private void HandleTrainerList(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || FindInteractable(new ObjectGuid(rawGuid)) is not { } npc)
+        {
+            return;
+        }
+
+        SendTrainerList(npc);
+    }
+
+    /// <summary>
+    /// Learns a spell from a trainer. <c>CMSG_TRAINER_BUY_SPELL</c>.
+    /// </summary>
+    /// <remarks>
+    /// The trainer is checked to actually teach the spell. Without that, a client can learn
+    /// anything in <c>Spell.dbc</c> by naming its id at any trainer — the packet carries both.
+    /// </remarks>
+    private void HandleTrainerBuySpell(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || !reader.TryReadUInt32(out uint spellId))
+        {
+            return;
+        }
+
+        ObjectGuid trainerGuid = new(rawGuid);
+
+        if (FindInteractable(trainerGuid) is not { } npc || (npc.NpcFlags & NpcFlags.Trainer) == 0)
+        {
+            return;
+        }
+
+        TrainerSpell? offered = null;
+
+        foreach (TrainerSpell spell in world.Trainers.For(npc.Entry))
+        {
+            if (spell.SpellId == spellId)
+            {
+                offered = spell;
+                break;
+            }
+        }
+
+        if (offered is not { } teaching || StateOf(teaching) != TrainerSpellState.Green)
+        {
+            return;
+        }
+
+        if (_player.Money < teaching.MoneyCost)
+        {
+            return;
+        }
+
+        _player.Money -= teaching.MoneyCost;
+
+        if (_player.Spells.Learn(spellId))
+        {
+            ServerPacket learned = new(Opcode.SMSG_LEARNED_SPELL, 8);
+            InitialSpells.WriteLearned(learned.Body, spellId);
+
+            connection.Send(learned);
+
+            Log.SpellLearned(logger, _player.Name, spellId, connection.RemoteAddress);
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_TRAINER_BUY_SUCCEEDED, 16);
+        GossipPackets.WriteTrained(packet.Body, trainerGuid, spellId);
+
+        connection.Send(packet);
+
+        // The list is resent so the line goes red rather than staying green until the window is
+        // reopened.
+        SendTrainerList(npc);
+    }
+
+    private void SendTrainerList(Creature trainer)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        List<TrainerLine> lines = [];
+
+        foreach (TrainerSpell spell in world.Trainers.For(trainer.Entry))
+        {
+            lines.Add(new TrainerLine(
+                SpellId: spell.SpellId,
+                Usable: StateOf(spell),
+                MoneyCost: spell.MoneyCost,
+                RequiredLevel: spell.RequiredLevel,
+                RequiredSkill: spell.RequiredSkill,
+                RequiredSkillRank: spell.RequiredSkillRank));
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_TRAINER_LIST, 32 + (lines.Count * 40));
+
+        GossipPackets.WriteTrainerList(
+            packet.Body, trainer.Guid, trainerType: 2, greeting: string.Empty, lines);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>
+    /// Whether a trainer line is teachable, known, or out of reach.
+    /// </summary>
+    /// <remarks>
+    /// <b>Skill requirements always pass</b>, because there are no skills. A profession trainer
+    /// therefore offers its whole list in green, and buying is refused only by level and money.
+    /// </remarks>
+    private byte StateOf(in TrainerSpell spell)
+    {
+        if (_player is null)
+        {
+            return TrainerSpellState.Grey;
+        }
+
+        if (_player.Spells.Knows(spell.SpellId))
+        {
+            return TrainerSpellState.Red;
+        }
+
+        return _player.Level >= spell.RequiredLevel ? TrainerSpellState.Green : TrainerSpellState.Grey;
+    }
+
     /// <summary>Runs one purchase, reporting whatever went wrong.</summary>
     private void Buy(Creature vendor, ObjectGuid vendorGuid, uint itemId, uint oneBasedSlot, uint count)
     {
@@ -1723,6 +1882,12 @@ public sealed class WorldSession(
             if ((npc.NpcFlags & NpcFlags.Vendor) != 0)
             {
                 SendVendorList(npc);
+                return;
+            }
+
+            if ((npc.NpcFlags & NpcFlags.Trainer) != 0)
+            {
+                SendTrainerList(npc);
                 return;
             }
 
@@ -3206,6 +3371,10 @@ public sealed class WorldSession(
             .SaveQuestsAsync(player.Guid.Counter, QuestSnapshot(player), cancellationToken)
             .ConfigureAwait(true);
 
+        await inventory
+            .SaveSpellsAsync(player.Guid.Counter, [.. player.Spells.Known], cancellationToken)
+            .ConfigureAwait(true);
+
         Log.PlayerSaved(logger, player.Name, player.Position.X, player.Position.Y);
 
         // A dropped connection never sends a logout, so the map has to be told here too or the
@@ -3266,6 +3435,10 @@ public sealed class WorldSession(
         // After the inventory, and it has to be: a collection quest's progress is recounted from
         // the bags, and counting before they are filled marks every one of them unstarted.
         await LoadQuestsAsync(player, cancellationToken).ConfigureAwait(true);
+
+        // Before the create block: knowing Dual Wield changes what may be in the off hand, and the
+        // block carries the equipment.
+        await LoadSpellsAsync(player, cancellationToken).ConfigureAwait(true);
 
         _player = player;
         Status = SessionStatus.LoggedIn;
@@ -3355,6 +3528,15 @@ public sealed class WorldSession(
         }
 
         int placed = world.ApplyStartingGear(player, itemGuids.Next);
+
+        foreach (uint spellId in world.StartingSpells.For(player.Race, player.Class))
+        {
+            player.Spells.Learn(spellId);
+        }
+
+        await inventory
+            .SaveSpellsAsync(created.Id, [.. player.Spells.Known], cancellationToken)
+            .ConfigureAwait(true);
 
         if (placed == 0)
         {
@@ -3481,6 +3663,29 @@ public sealed class WorldSession(
             {
                 player.Quests.RecountItems(quest, progress);
             }
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds a character's spellbook, and gives it anything its race and class should know.
+    /// </summary>
+    /// <remarks>
+    /// The starting spells are re-applied on every login rather than only at creation, because the
+    /// list grows: a character made before a spell was added to <c>playercreateinfo_spell</c> would
+    /// otherwise never get it. Learning is idempotent, so this costs nothing when there is nothing
+    /// new.
+    /// </remarks>
+    private async Task LoadSpellsAsync(Player player, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<uint> stored = await inventory
+            .LoadSpellsAsync(player.Guid.Counter, cancellationToken)
+            .ConfigureAwait(true);
+
+        player.Spells.Restore(stored);
+
+        foreach (uint spellId in world.StartingSpells.For(player.Race, player.Class))
+        {
+            player.Spells.Learn(spellId);
         }
     }
 

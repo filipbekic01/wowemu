@@ -168,6 +168,15 @@ internal static partial class Log
     public static partial void QuestCompleted(
         ILogger logger, string name, string quest, uint questId, uint experience, string address);
 
+    [LoggerMessage(EventId = 2336, Level = LogLevel.Information,
+        Message = "Loaded {Starting} starting spell rows, {Rows} trainer rows across {Trainers} trainers")]
+    public static partial void SpellsAndTrainersLoaded(
+        ILogger logger, int starting, int rows, int trainers);
+
+    [LoggerMessage(EventId = 2337, Level = LogLevel.Debug,
+        Message = "'{Name}' learned spell {Spell} — {Address}")]
+    public static partial void SpellLearned(ILogger logger, string name, uint spell, string address);
+
     [LoggerMessage(EventId = 2335, Level = LogLevel.Information,
         Message = "Loaded {Menus} gossip menus, {Options} options, {Texts} texts, {Vendor} vendor rows")]
     public static partial void GossipLoaded(

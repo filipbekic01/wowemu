@@ -28,7 +28,9 @@ public sealed class WorldContent(
     [FromKeyedServices("quest_enders")] QuestRelationStore questEnders,
     PlayerXpStore experienceTable,
     GossipStore gossip,
-    VendorStore vendors)
+    VendorStore vendors,
+    PlayerSpellStore startingSpells,
+    TrainerStore trainers)
 {
     public TerrainManager Terrain { get; } = terrain;
 
@@ -58,6 +60,12 @@ public sealed class WorldContent(
 
     /// <summary>What each vendor sells.</summary>
     public VendorStore Vendors { get; } = vendors;
+
+    /// <summary>What each race and class begins able to cast.</summary>
+    public PlayerSpellStore StartingSpells { get; } = startingSpells;
+
+    /// <summary>What each trainer teaches.</summary>
+    public TrainerStore Trainers { get; } = trainers;
 
     public DbcStores Stores { get; } = stores;
 

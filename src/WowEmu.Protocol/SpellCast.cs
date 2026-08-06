@@ -607,6 +607,52 @@ public readonly record struct AuraSlotUpdate(
     int MaxDurationMs = 0,
     int RemainingMs = 0);
 
+/// <summary>
+/// Writes <c>SMSG_INITIAL_SPELLS</c> — the whole spellbook, in one packet at login.
+/// </summary>
+/// <remarks>
+/// Port of <c>Player::SendInitialSpells</c>. The client builds its spellbook and action bars from
+/// this and nothing else: without it a character knows nothing it can cast, whatever the server
+/// thinks.
+/// </remarks>
+public static class InitialSpells
+{
+    public static void Write(PacketWriter writer, IReadOnlyCollection<uint> spells)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(spells);
+
+        // A leading zero byte whose meaning nobody has established. The client reads it.
+        writer.WriteUInt8(0);
+
+        // Sixteen bits, not thirty-two. A spellbook of more than 65,535 is not a thing, but writing
+        // a word here shifts every spell that follows.
+        writer.WriteUInt16((ushort)spells.Count);
+
+        foreach (uint spellId in spells)
+        {
+            writer.WriteUInt32(spellId);
+
+            // Upstream's comment says "it's not slot id" and writes zero. Reproduced rather than
+            // guessed at.
+            writer.WriteUInt16(0);
+        }
+
+        // Spell cooldowns. None survive a logout here, so the count is always zero — but the count
+        // itself is not optional, and leaving it off truncates the packet.
+        writer.WriteUInt16(0);
+    }
+
+    /// <summary>Writes <c>SMSG_LEARNED_SPELL</c> — one spell, learned just now.</summary>
+    public static void WriteLearned(PacketWriter writer, uint spellId)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WriteUInt32(spellId);
+        writer.WriteUInt16(0);
+    }
+}
+
 /// <summary>One periodic aura tick, held until the session's next flush.</summary>
 /// <param name="Overflow">Overkill for a damage tick, overhealing for a heal.</param>
 public readonly record struct PeriodicAuraLog(

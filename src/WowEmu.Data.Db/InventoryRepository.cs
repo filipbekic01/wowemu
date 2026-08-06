@@ -58,6 +58,15 @@ public interface IInventoryRepository
         IReadOnlyList<StoredQuest> quests,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Every spell a character knows.</summary>
+    Task<IReadOnlyList<uint>> LoadSpellsAsync(uint characterId, CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="SaveAsync"/>
+    Task SaveSpellsAsync(
+        uint characterId,
+        IReadOnlyCollection<uint> spells,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// The highest item guid in use, so the in-memory allocator can carry on above it.
     /// </summary>
@@ -181,6 +190,11 @@ public sealed class InventoryRepository(IDbContextFactory<CharactersDbContext> c
             .Where(row => row.CharacterId == characterId)
             .ExecuteDeleteAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        await context.Spells
+            .Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<StoredQuest>> LoadQuestsAsync(
@@ -239,6 +253,44 @@ public sealed class InventoryRepository(IDbContextFactory<CharactersDbContext> c
                 Killed3 = At(quest.Killed, 2),
                 Killed4 = At(quest.Killed, 3),
             });
+        }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<uint>> LoadSpellsAsync(
+        uint characterId, CancellationToken cancellationToken = default)
+    {
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        return await context.Spells
+            .AsNoTracking()
+            .Where(row => row.CharacterId == characterId)
+            .Select(row => row.SpellId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    public async Task SaveSpellsAsync(
+        uint characterId,
+        IReadOnlyCollection<uint> spells,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(spells);
+
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        // Whole-set, like the inventory and the quest log: a spell unlearned has no row to update.
+        await context.Spells
+            .Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach (uint spellId in spells)
+        {
+            context.Spells.Add(new CharacterSpellEntity { CharacterId = characterId, SpellId = spellId });
         }
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

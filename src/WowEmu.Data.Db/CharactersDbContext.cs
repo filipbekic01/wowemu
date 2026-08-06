@@ -108,6 +108,8 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
 
     public DbSet<CharacterQuestEntity> Quests => Set<CharacterQuestEntity>();
 
+    public DbSet<CharacterSpellEntity> Spells => Set<CharacterSpellEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -202,6 +204,17 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
             entity.Property(row => row.Killed2).HasColumnName("mobcount2");
             entity.Property(row => row.Killed3).HasColumnName("mobcount3");
             entity.Property(row => row.Killed4).HasColumnName("mobcount4");
+        });
+
+        modelBuilder.Entity<CharacterSpellEntity>(entity =>
+        {
+            entity.ToTable("character_spell");
+
+            // Composite: a character knows a spell once or not at all.
+            entity.HasKey(row => new { row.CharacterId, row.SpellId });
+
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.SpellId).HasColumnName("spell");
         });
     }
 }

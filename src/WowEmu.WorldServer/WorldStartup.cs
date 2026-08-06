@@ -213,8 +213,13 @@ internal static class WorldStartup
         GossipStore gossip = services.GetRequiredService<GossipStore>();
         VendorStore vendors = services.GetRequiredService<VendorStore>();
 
+        PlayerSpellStore startingSpells = services.GetRequiredService<PlayerSpellStore>();
+        TrainerStore trainers = services.GetRequiredService<TrainerStore>();
+
         await gossip.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await vendors.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await startingSpells.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await trainers.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
         // Measured into a local rather than inline: the analyzer objects to work inside a log call,
         // and the elapsed time has to be taken at the same point whether or not anyone is listening.
@@ -232,6 +237,7 @@ internal static class WorldStartup
         Log.ItemTemplatesLoaded(logger, items.Count);
         Log.QuestsLoaded(logger, quests.Count, questStarters.RowCount, questEnders.RowCount);
         Log.GossipLoaded(logger, gossip.MenuCount, gossip.OptionCount, gossip.TextCount, vendors.RowCount);
+        Log.SpellsAndTrainersLoaded(logger, startingSpells.Count, trainers.RowCount, trainers.Count);
         Log.LootTemplatesLoaded(
             logger, creatureLoot.RowCount, creatureLoot.Count, lootReferences.RowCount, lootReferences.Count);
     }

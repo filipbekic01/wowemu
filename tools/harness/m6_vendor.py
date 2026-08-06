@@ -41,6 +41,7 @@ CMSG_BUY_ITEM = 0x1A2
 SMSG_BUY_ITEM = 0x1A4
 SMSG_BUY_FAILED = 0x1A5
 SMSG_ITEM_PUSH_RESULT = 0x166
+SMSG_INITIAL_SPELLS = 0x12A
 
 CMSG_PLAYER_LOGIN = 0x03D
 SMSG_LOGIN_VERIFY_WORLD = 0x236
@@ -136,16 +137,39 @@ def read_values(payload, cursor):
     return values, cursor
 
 
+def parse_initial_spells(payload):
+    """Decodes SMSG_INITIAL_SPELLS into the list of spell ids."""
+    count = struct.unpack("<H", payload[1:3])[0]
+    cursor = 3
+    spells = []
+
+    for _ in range(count):
+        spells.append(struct.unpack("<I", payload[cursor:cursor + 4])[0])
+        cursor += 6                                # the spell, then two bytes of not-a-slot-id
+
+    return spells
+
+
 def enter_world(client, guid):
-    """Logs in and returns (position, the player's own field values)."""
+    """Logs in and returns (position, the player's own field values).
+
+    Also stashes the spellbook on the client, because it arrives in the same burst and the caller
+    usually wants both.
+    """
     client.send(CMSG_PLAYER_LOGIN, struct.pack("<Q", guid))
 
     payload = client.expect(SMSG_LOGIN_VERIFY_WORLD, "SMSG_LOGIN_VERIFY_WORLD")
     _map, x, y, z, _o = struct.unpack("<Iffff", payload)
 
+    client.spells = []
+
     # The create burst. The player's own block carries its inventory slot guids.
     for _ in range(64):
         opcode, body = client.recv()
+
+        if opcode == SMSG_INITIAL_SPELLS:
+            client.spells = parse_initial_spells(body)
+            continue
 
         if opcode in (SMSG_UPDATE_OBJECT, SMSG_COMPRESSED_UPDATE_OBJECT):
             if opcode == SMSG_COMPRESSED_UPDATE_OBJECT:
@@ -156,7 +180,11 @@ def enter_world(client, guid):
             for block in blocks:
                 if block["typeId"] == 4:            # TYPEID_PLAYER
                     print(f"  in the world at ({x:.1f}, {y:.1f}, {z:.1f}), "
-                          f"{len(blocks) - 1} item(s) alongside")
+                          f"{len(blocks) - 1} item(s) alongside, "
+                          f"{len(client.spells)} spell(s) known")
+
+                    if not client.spells:
+                        fail("SMSG_INITIAL_SPELLS never arrived — the spellbook would be empty")
 
                     return (x, y, z), block["values"]
 

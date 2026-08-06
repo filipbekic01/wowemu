@@ -53,6 +53,11 @@ public static class PlayerLogin
         SendBindPoint(connection, player);
         SendInstanceDifficulty(connection);
         SendTimeSpeed(connection);
+
+        // Last of the burst, and before the create block. The client builds its spellbook and
+        // action bars from this and nothing else — without it a character knows nothing it can
+        // cast, whatever the server thinks.
+        SendInitialSpells(connection, player);
     }
 
     /// <summary>
@@ -143,6 +148,15 @@ public static class PlayerLogin
         packet.Body.WritePackedTime(DateTime.Now);
         packet.Body.WriteSingle(GameSpeed);
         packet.Body.WriteUInt32(0);   // added in 3.1.2
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Sends the whole spellbook in one packet.</summary>
+    private static void SendInitialSpells(WorldConnection connection, Player player)
+    {
+        ServerPacket packet = new(Opcode.SMSG_INITIAL_SPELLS, 8 + (player.Spells.Count * 6));
+        InitialSpells.Write(packet.Body, [.. player.Spells.Known]);
 
         connection.Send(packet);
     }

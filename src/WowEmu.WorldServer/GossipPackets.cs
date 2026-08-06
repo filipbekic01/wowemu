@@ -33,6 +33,27 @@ public readonly record struct VendorLine(
     uint BuyCount,
     uint ExtendedCost);
 
+/// <summary>One spell a trainer will teach, as the client draws it.</summary>
+/// <param name="Usable">
+/// <c>0</c> teachable now, <c>1</c> already known, <c>2</c> unavailable. It is what greys the line
+/// out; sending 0 for everything offers a player spells they cannot take.
+/// </param>
+public readonly record struct TrainerLine(
+    uint SpellId,
+    byte Usable,
+    uint MoneyCost,
+    byte RequiredLevel,
+    uint RequiredSkill,
+    uint RequiredSkillRank);
+
+/// <summary>Whether a trainer line can be taken. <c>TrainerSpellState</c>.</summary>
+public static class TrainerSpellState
+{
+    public const byte Green = 0;        // teachable now
+    public const byte Red = 1;          // known already
+    public const byte Grey = 2;         // not yet — level, skill or money
+}
+
 /// <summary>Why a purchase was refused. <c>BuyResult</c>.</summary>
 public enum BuyResult : byte
 {
@@ -223,6 +244,57 @@ public static class GossipPackets
         }
 
         writer.WriteUInt8((byte)reason);
+    }
+
+    /// <summary>
+    /// Writes <c>SMSG_TRAINER_LIST</c> — what a trainer will teach.
+    /// </summary>
+    /// <remarks>
+    /// Each line carries two fixed-size arrays the client reads unconditionally: two words of
+    /// point cost, and three of required abilities. Both are zero here — talent points and
+    /// prerequisite chains are not modelled — and both still have to be written, or the line after
+    /// is read twenty bytes early.
+    /// </remarks>
+    public static void WriteTrainerList(
+        PacketWriter writer, ObjectGuid trainer, uint trainerType, string greeting, IReadOnlyList<TrainerLine> spells)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(spells);
+
+        writer.WriteUInt64(trainer.Value);
+        writer.WriteUInt32(trainerType);
+        writer.WriteUInt32((uint)spells.Count);
+
+        foreach (TrainerLine spell in spells)
+        {
+            writer.WriteUInt32(spell.SpellId);
+            writer.WriteUInt8(spell.Usable);
+            writer.WriteUInt32(spell.MoneyCost);
+
+            // Talent and skill point cost, compared against PLAYER_CHARACTER_POINTS by the client.
+            writer.WriteUInt32(0);
+            writer.WriteUInt32(0);
+
+            writer.WriteUInt8(spell.RequiredLevel);
+            writer.WriteUInt32(spell.RequiredSkill);
+            writer.WriteUInt32(spell.RequiredSkillRank);
+
+            // Three prerequisite spells. The chain is not modelled, so nothing is required.
+            writer.WriteUInt32(0);
+            writer.WriteUInt32(0);
+            writer.WriteUInt32(0);
+        }
+
+        writer.WriteCString(greeting);
+    }
+
+    /// <summary>Writes <c>SMSG_TRAINER_BUY_SUCCEEDED</c> — the spell was taught.</summary>
+    public static void WriteTrained(PacketWriter writer, ObjectGuid trainer, uint spellId)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+
+        writer.WriteUInt64(trainer.Value);
+        writer.WriteUInt32(spellId);
     }
 
     /// <summary>Writes <c>SMSG_SELL_ITEM</c>, which is only ever a refusal.</summary>

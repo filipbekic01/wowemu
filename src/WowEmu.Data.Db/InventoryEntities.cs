@@ -112,3 +112,16 @@ public sealed class CharacterQuestEntity
 
     public ushort Killed4 { get; set; }
 }
+
+/// <summary>One spell a character knows.</summary>
+/// <remarks>
+/// A row per spell rather than a packed list: a spellbook is read whole and written whole, but it
+/// is also the sort of thing a support query wants to filter on — "who knows this?" — and a packed
+/// column cannot answer that.
+/// </remarks>
+public sealed class CharacterSpellEntity
+{
+    public uint CharacterId { get; set; }
+
+    public uint SpellId { get; set; }
+}
