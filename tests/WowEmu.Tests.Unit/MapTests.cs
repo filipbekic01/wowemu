@@ -405,6 +405,60 @@ public sealed class MapVisibilityTests
         Assert.Single(watcherLink.ValuesUpdates);
     }
 
+    /// <summary>
+    /// Environmental damage goes through the same death path as anything else.
+    /// </summary>
+    /// <remarks>
+    /// The map applies it rather than the environment code, for the same reason a spell's damage is
+    /// applied there: the one place health changes is the one place death gets noticed. A drowning
+    /// that bypassed it would leave a player at zero health, alive, and unable to release.
+    /// </remarks>
+    [Fact]
+    public void EnvironmentalDamage_KillsAndIsBroadcast()
+    {
+        Map map = NewMap();
+
+        (Player drowning, RecordingConnection drowningLink) = NewPlayer(1, 0f, 0f);
+        (Player watcher, RecordingConnection watcherLink) = NewPlayer(2, 10f, 0f);
+
+        map.Add(drowning);
+        map.Add(watcher);
+
+        drowning.MaxHealth = 100;
+        drowning.Health = 30;
+
+        map.ApplyEnvironmentalDamage(drowning, EnvironmentalDamageType.Drowning, 50);
+
+        Assert.Equal(0u, drowning.Health);
+        Assert.False(drowning.IsAlive);
+
+        // The victim is told it died, and everyone watching sees where the damage came from.
+        Assert.NotEmpty(drowningLink.Deaths);
+        Assert.Equal((EnvironmentalDamageType.Drowning, 30u), Assert.Single(drowningLink.EnvironmentalDamage));
+        Assert.Equal((EnvironmentalDamageType.Drowning, 30u), Assert.Single(watcherLink.EnvironmentalDamage));
+    }
+
+    /// <summary>The log reports what was actually taken, not what was asked for.</summary>
+    /// <remarks>
+    /// A player on 30 health hit for 50 loses 30. Reporting 50 shows a number larger than the health
+    /// bar had in it, which reads as a bug to anyone watching the combat log.
+    /// </remarks>
+    [Fact]
+    public void EnvironmentalDamage_IsClampedToWhatTheVictimHad()
+    {
+        Map map = NewMap();
+
+        (Player player, RecordingConnection link) = NewPlayer(1, 0f, 0f);
+        map.Add(player);
+
+        player.MaxHealth = 100;
+        player.Health = 30;
+
+        map.ApplyEnvironmentalDamage(player, EnvironmentalDamageType.Fall, 999);
+
+        Assert.Equal(30u, Assert.Single(link.EnvironmentalDamage).Amount);
+    }
+
     /// <summary>Hands one creature to whichever grid the player arrives in.</summary>
     private sealed class OneCreature(Creature creature) : IGridObjectLoader
     {
@@ -469,6 +523,18 @@ public sealed class MapVisibilityTests
         }
 
         public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
+
+        /// <summary>Mirror-timer bars this client was told to draw, update or remove.</summary>
+        public List<MirrorTimerUpdate> MirrorTimers { get; } = [];
+
+        /// <summary>Environmental damage this client was told about.</summary>
+        public List<(EnvironmentalDamageType Type, uint Amount)> EnvironmentalDamage { get; } = [];
+
+        public void SendMirrorTimer(MirrorTimerUpdate timer) => MirrorTimers.Add(timer);
+
+        public void QueueEnvironmentalDamage(ObjectGuid victim, EnvironmentalDamageType type, uint amount) =>
+            EnvironmentalDamage.Add((type, amount));
+
 
         /// <summary>Objects this client was told had changed, one entry per block.</summary>
         public List<ObjectGuid> ValuesUpdates { get; } = [];

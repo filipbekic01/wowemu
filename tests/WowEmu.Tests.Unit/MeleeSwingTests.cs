@@ -722,6 +722,18 @@ internal static class MapCombatFixture
 
         public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
 
+        /// <summary>Mirror-timer bars this client was told to draw, update or remove.</summary>
+        public List<MirrorTimerUpdate> MirrorTimers { get; } = [];
+
+        /// <summary>Environmental damage this client was told about.</summary>
+        public List<(EnvironmentalDamageType Type, uint Amount)> EnvironmentalDamage { get; } = [];
+
+        public void SendMirrorTimer(MirrorTimerUpdate timer) => MirrorTimers.Add(timer);
+
+        public void QueueEnvironmentalDamage(ObjectGuid victim, EnvironmentalDamageType type, uint amount) =>
+            EnvironmentalDamage.Add((type, amount));
+
+
         /// <summary>Objects this client was told had changed, one entry per block.</summary>
         public List<ObjectGuid> ValuesUpdates { get; } = [];
 

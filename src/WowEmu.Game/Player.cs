@@ -44,6 +44,19 @@ public sealed class Player : Unit
     /// <summary>What is on this character's action bars.</summary>
     public ActionBar Actions { get; } = new();
 
+    /// <summary>Drowning, fatigue and standing in lava.</summary>
+    public PlayerEnvironment Environment { get; } = new();
+
+    /// <summary>
+    /// The height this character was last standing at before it started falling.
+    /// </summary>
+    /// <remarks>
+    /// The fall is measured from here, not from where the client says the fall began: the client
+    /// reports its own <c>FallTime</c> and a fall-start position, and both are exactly what a client
+    /// wanting to avoid fall damage would understate. Upstream's <c>m_lastFallZ</c>.
+    /// </remarks>
+    public float LastFallZ { get; set; }
+
     /// <summary>
     /// The corpse whose loot window is open, or empty.
     /// </summary>

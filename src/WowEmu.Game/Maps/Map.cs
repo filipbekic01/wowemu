@@ -221,6 +221,24 @@ public interface IPlayerConnection
     /// <summary>Tells this client an item has arrived in its bags.</summary>
     void SendItemPushed(in ItemPushResult push);
 
+    /// <summary>
+    /// Tells this client to draw, update or remove one of the bars under its portrait.
+    /// </summary>
+    /// <remarks>
+    /// Immediate rather than queued. The bar is the player's warning that they are running out of
+    /// air, and holding it until the flush is the one packet where a tick of delay is felt.
+    /// </remarks>
+    void SendMirrorTimer(MirrorTimerUpdate timer);
+
+    /// <summary>
+    /// Relays damage the world itself dealt — drowning, lava, a long fall.
+    /// </summary>
+    /// <remarks>
+    /// Queued rather than sent, like the other combat-log lines: it names a victim, and one naming
+    /// a player the client has not been told about draws nothing.
+    /// </remarks>
+    void QueueEnvironmentalDamage(ObjectGuid victim, EnvironmentalDamageType type, uint amount);
+
     /// <summary>Tells this client one quest objective has moved.</summary>
     /// <param name="wireEntry">
     /// The creature entry, or a gameobject's with the high bit set. Passed already encoded because
@@ -472,6 +490,7 @@ public sealed class Map(
 
         UpdateCreatures(gameplayDiff);
         UpdateCombat(gameplayDiff);
+        UpdateEnvironment(gameplayDiff);
 
         // After everything that could change a field, before anything is flushed.
         BroadcastFieldChanges();
@@ -666,6 +685,88 @@ public sealed class Map(
             default:
                 break;
         }
+    }
+
+    /// <summary>
+    /// How tall a player is taken to be. <c>DEFAULT_COLLISION_HEIGHT</c>.
+    /// </summary>
+    /// <remarks>
+    /// Upstream derives it per race, gender and model scale; this is the most common value in the
+    /// DBC and stands in until those are loaded. It is the depth at which wading becomes swimming,
+    /// so the error it carries is a few inches of waterline on a tauren, not a wrong answer.
+    /// </remarks>
+    public const float DefaultCollisionHeight = 2.03128f;
+
+    /// <summary>
+    /// Drowns, exhausts and burns the players standing in things that do that.
+    /// </summary>
+    /// <remarks>
+    /// Runs after combat so that a player already at one hit point is killed by the water in the
+    /// same tick rather than the next, and before the update broadcast so the health change goes out
+    /// with everything else.
+    /// <para>
+    /// Nothing here is gated on activity: a player is always near a player. The liquid lookup is the
+    /// only real cost and it is a loaded tile plus arithmetic.
+    /// </para>
+    /// </remarks>
+    private void UpdateEnvironment(uint gameplayDiff)
+    {
+        if (gameplayDiff == 0)
+        {
+            return;
+        }
+
+        // Materialised: environmental damage can kill, and a death re-files cells.
+        foreach (Player player in Players)
+        {
+            LiquidData liquid = GetLiquid(
+                player.Position.X, player.Position.Y, player.Position.Z, DefaultCollisionHeight);
+
+            player.Environment.Refresh(liquid, player.IsAlive);
+
+            EnvironmentUpdate update = player.Environment.Update(
+                gameplayDiff, player.MaxHealth, player.Level, player.IsAlive, GameRandom.Urand);
+
+            foreach (MirrorTimerUpdate timer in update.Timers)
+            {
+                player.Connection?.SendMirrorTimer(timer);
+            }
+
+            foreach (EnvironmentalHit hit in update.Hits)
+            {
+                ApplyEnvironmentalDamage(player, hit.Type, hit.Amount);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Applies one helping of world damage and tells everyone who can see it.
+    /// </summary>
+    /// <remarks>
+    /// The log goes out before the health changes, for the same reason a spell's does: the client
+    /// draws the number from the log, and one that arrives after the death has been broadcast shows
+    /// a corpse taking damage.
+    /// </remarks>
+    public void ApplyEnvironmentalDamage(Player player, EnvironmentalDamageType type, uint amount)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        if (!player.IsAlive || amount == 0)
+        {
+            return;
+        }
+
+        uint healthBefore = player.Health;
+        uint dealt = Math.Min(amount, healthBefore);
+
+        foreach (Player watcher in WatchersOf(player))
+        {
+            watcher.Connection?.QueueEnvironmentalDamage(player.Guid, type, dealt);
+        }
+
+        player.Health = healthBefore - dealt;
+
+        NoticeDeath(player);
     }
 
     /// <summary>

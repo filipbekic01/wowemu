@@ -3266,6 +3266,10 @@ public sealed class WorldSession(
             return;
         }
 
+        // Before the position is overwritten: the fall is measured from the last height the server
+        // saw the player standing at, and this is the last moment that height is still known.
+        TrackFall(opcode, claimed);
+
         _lastMovementMs = now;
         _player.Movement.CopyFrom(claimed);
 
@@ -3287,6 +3291,59 @@ public sealed class WorldSession(
         // Relayed under the opcode the client used, so other clients animate it the same way —
         // a walk arrives as a walk, a jump as a jump.
         _map.BroadcastMovement(_player, opcode, _player.Movement);
+    }
+
+    /// <summary>
+    /// Remembers where a fall started, and bills the player when it ends.
+    /// </summary>
+    /// <remarks>
+    /// The height is recorded on every packet that is <i>not</i> a fall, so it is always the last
+    /// place the player was supported. Trusting the client's own <c>FallTime</c> or its reported
+    /// fall-start position instead would let any client fall any distance for free by understating
+    /// either.
+    /// <para>
+    /// <b>Landing in water costs nothing</b>, which is not a special case so much as the rule that
+    /// makes cliff-diving work. The check is on the liquid at the landing point rather than on the
+    /// swimming flag, because the client clears that flag while jumping under water.
+    /// </para>
+    /// </remarks>
+    private void TrackFall(Opcode opcode, MovementInfo claimed)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        if (opcode != Opcode.MSG_MOVE_FALL_LAND)
+        {
+            // Still on the way down: the start height stands. Anything else is a position the
+            // player was supported at, and becomes the new one to measure from.
+            if (!claimed.Flags.HasFlag(MovementFlag.Falling))
+            {
+                _player.LastFallZ = claimed.Position.Z;
+            }
+
+            return;
+        }
+
+        float distance = _player.LastFallZ - claimed.Position.Z;
+
+        _player.LastFallZ = claimed.Position.Z;
+
+        LiquidData liquid = _map.GetLiquid(
+            claimed.Position.X, claimed.Position.Y, claimed.Position.Z, Map.DefaultCollisionHeight);
+
+        if (liquid.IsInContact)
+        {
+            return;
+        }
+
+        uint damage = FallDamage.Calculate(distance, _player.MaxHealth);
+
+        if (damage > 0)
+        {
+            _map.ApplyEnvironmentalDamage(_player, EnvironmentalDamageType.Fall, damage);
+        }
     }
 
     /// <summary>
@@ -3800,6 +3857,54 @@ public sealed class WorldSession(
     /// failures by <see cref="_lastSwingError"/>, because the swing retries every 100 ms and the
     /// client prints the message every time it is told.
     /// </remarks>
+    /// <summary>
+    /// Draws, updates or removes one of the bars under the player's portrait.
+    /// </summary>
+    /// <remarks>
+    /// The client keeps its own copy and animates it from <c>Scale</c>, which is why the server does
+    /// not send one per tick: a start, a stop, and an update whenever the direction changes.
+    /// </remarks>
+    public void SendMirrorTimer(MirrorTimerUpdate timer)
+    {
+        if (timer.Stop)
+        {
+            ServerPacket stop = new(Opcode.SMSG_STOP_MIRROR_TIMER, 4);
+            stop.Body.WriteUInt32((uint)timer.Timer);
+
+            connection.Send(stop);
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_START_MIRROR_TIMER, 21);
+
+        packet.Body.WriteUInt32((uint)timer.Timer);
+        packet.Body.WriteUInt32((uint)timer.CurrentMs);
+        packet.Body.WriteUInt32((uint)timer.MaxMs);
+        packet.Body.WriteUInt32(unchecked((uint)timer.Scale));
+        packet.Body.WriteUInt8(0);      // not paused
+        packet.Body.WriteUInt32(0);     // no spell drives it
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Relays damage the world dealt, for the combat log and the floating number.</summary>
+    /// <remarks>
+    /// Absorb and resist are written as zero rather than omitted — the packet has a fixed shape, and
+    /// nothing absorbs environmental damage yet because that needs the resistance system.
+    /// </remarks>
+    public void QueueEnvironmentalDamage(ObjectGuid victim, EnvironmentalDamageType type, uint amount)
+    {
+        ServerPacket packet = new(Opcode.SMSG_ENVIRONMENTAL_DAMAGE_LOG, 21);
+
+        packet.Body.WriteUInt64(victim.Value);
+        packet.Body.WriteUInt8((byte)type);
+        packet.Body.WriteUInt32(amount);
+        packet.Body.WriteUInt32(0);   // resisted
+        packet.Body.WriteUInt32(0);   // absorbed
+
+        connection.Send(packet);
+    }
+
     public void SendSwingError(SwingError reason)
     {
         if (reason == _lastSwingError)

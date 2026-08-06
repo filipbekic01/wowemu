@@ -797,15 +797,21 @@
             {
               "done": false,
               "text": "Swim/fly distinction",
-              "note": "No longer blocked on data at all. WorldLiquid.Get answers for terrain and WMO liquid together, so \"claims to swim where there is no water\" is now a question with a real answer. What is left is the margin: a client reports position on its own schedule, so a player who just jumped clear of a lake is legitimately dry while still flagged swimming. That needs a tolerance in time and distance — design, not a lookup — and it belongs with fall damage, which needs the same state."
+              "note": "Swimming state is read and acted on — drowning, fatigue and lava all key off it. What is still not done is REFUSING a client that claims to swim where there is no water, and that is now purely a margin problem: a player who just jumped clear of a lake is legitimately dry at a position they send while still flagged swimming. Needs a tolerance in time and distance before it can reject anything."
             },
             {
               "done": false,
               "text": "Speed checks against applied speeds rather than a fixed ceiling — needs auras"
             },
             {
-              "done": false,
-              "text": "Fall damage"
+              "done": true,
+              "text": "Drowning, fatigue and lava damage",
+              "note": "Mirror timers: a breath bar under water, a fatigue bar in dark water, and a fire timer on contact with lava or slime. Each drains while its condition holds, refills ten times faster once it stops, and bills once a SECOND while empty rather than once a tick — the expiry adds a second back instead of resetting. Damage is returned to the map to apply, so death is still noticed in one place. Ghosts do not drown."
+            },
+            {
+              "done": true,
+              "text": "Fall damage",
+              "note": "FallDamage.Calculate is upstream's line — nothing under 13.48 yards hurts, then 1.8% of maximum health per yard, capped at maximum health and fatal around 70. Measured from the last height the SERVER saw the player supported at, not from the client's own FallTime or fall-start position, both of which are what a client dodging fall damage would understate. Landing in liquid costs nothing, checked against the liquid at the landing point rather than the swimming flag, which the client clears while jumping under water."
             },
             {
               "done": false,
