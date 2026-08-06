@@ -41,6 +41,9 @@ public sealed class Player : Unit
     /// <summary>Every spell this character knows.</summary>
     public SpellBook Spells { get; }
 
+    /// <summary>What is on this character's action bars.</summary>
+    public ActionBar Actions { get; } = new();
+
     /// <summary>
     /// The corpse whose loot window is open, or empty.
     /// </summary>

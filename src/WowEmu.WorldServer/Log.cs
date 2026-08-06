@@ -169,9 +169,10 @@ internal static partial class Log
         ILogger logger, string name, string quest, uint questId, uint experience, string address);
 
     [LoggerMessage(EventId = 2336, Level = LogLevel.Information,
-        Message = "Loaded {Starting} starting spell rows, {Rows} trainer rows across {Trainers} trainers")]
+        Message = "Loaded {Starting} starting spell rows, {Actions} action buttons, "
+                + "{Rows} trainer rows across {Trainers} trainers")]
     public static partial void SpellsAndTrainersLoaded(
-        ILogger logger, int starting, int rows, int trainers);
+        ILogger logger, int starting, int actions, int rows, int trainers);
 
     [LoggerMessage(EventId = 2337, Level = LogLevel.Debug,
         Message = "'{Name}' learned spell {Spell} — {Address}")]

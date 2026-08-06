@@ -125,3 +125,19 @@ public sealed class CharacterSpellEntity
 
     public uint SpellId { get; set; }
 }
+
+/// <summary>One button on a character's action bars.</summary>
+/// <remarks>
+/// The action and its type are stored apart even though the client wants them packed into one
+/// word: a column that has to be masked to be read is a column nothing can query on.
+/// </remarks>
+public sealed class CharacterActionEntity
+{
+    public uint CharacterId { get; set; }
+
+    public byte Button { get; set; }
+
+    public uint Action { get; set; }
+
+    public byte Type { get; set; }
+}

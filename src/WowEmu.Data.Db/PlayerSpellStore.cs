@@ -89,6 +89,84 @@ public sealed class PlayerSpellStore
     }
 }
 
+/// <summary>One button on a new character's action bars.</summary>
+/// <param name="Action">A spell id, an item entry or a macro — what it means depends on the type.</param>
+/// <param name="Type">
+/// <c>0</c> spell, <c>128</c> item, <c>64</c> macro, <c>144</c> equipment set. Packed into the top
+/// byte of the same word as the action, which is why the action is capped at 24 bits.
+/// </param>
+public readonly record struct PlayerCreateAction(byte Race, byte Class, byte Button, uint Action, byte Type)
+{
+    /// <summary>
+    /// The word the client reads: the action in the low 24 bits, the type in the top byte.
+    /// </summary>
+    /// <remarks>
+    /// Sending them as separate fields, or the type in the wrong byte, produces a bar of buttons
+    /// the client draws as empty — it decodes the type first and gives up on an unknown one.
+    /// </remarks>
+    public uint Packed => (Action & 0x00FFFFFF) | ((uint)Type << 24);
+}
+
+/// <summary><c>playercreateinfo_action</c>, loaded once at startup.</summary>
+/// <remarks>
+/// Without it a new character's bars are empty and every spell has to be dragged out of the
+/// spellbook by hand — which works, and looks broken.
+/// </remarks>
+public sealed class PlayerActionStore
+{
+    /// <summary>How many buttons the client has. <c>MAX_ACTION_BUTTONS</c>.</summary>
+    public const int MaxButtons = 144;
+
+    private readonly Dictionary<(byte Race, byte Class), List<PlayerCreateAction>> _byPair = [];
+
+    public int Count { get; private set; }
+
+    /// <summary>The buttons one race and class starts with.</summary>
+    public IReadOnlyList<PlayerCreateAction> For(byte race, byte characterClass) =>
+        _byPair.TryGetValue((race, characterClass), out List<PlayerCreateAction>? actions) ? actions : [];
+
+    public async Task LoadAsync(string connectionString, CancellationToken cancellationToken = default)
+    {
+        await using MySqlConnection connection = new(connectionString);
+        await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+
+        _byPair.Clear();
+        Count = 0;
+
+        await using MySqlCommand command = connection.CreateCommand();
+        command.CommandText = "SELECT race, class, button, action, type FROM playercreateinfo_action";
+
+        await using MySqlDataReader reader =
+            (MySqlDataReader)await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+
+        while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+        {
+            byte race = reader.GetByte(0);
+            byte characterClass = reader.GetByte(1);
+            byte button = (byte)reader.GetUInt16(2);
+
+            if (button >= MaxButtons)
+            {
+                continue;
+            }
+
+            if (!_byPair.TryGetValue((race, characterClass), out List<PlayerCreateAction>? actions))
+            {
+                actions = [];
+                _byPair[(race, characterClass)] = actions;
+            }
+
+            actions.Add(new PlayerCreateAction(
+                race, characterClass, button, reader.GetUInt32(3), (byte)reader.GetUInt16(4)));
+
+            Count++;
+        }
+    }
+
+    public override string ToString() =>
+        string.Create(CultureInfo.InvariantCulture, $"{Count} starting action buttons");
+}
+
 /// <summary>One spell a trainer will teach.</summary>
 /// <param name="RequiredSpellId">
 /// The previous rank, which must already be known. <b>Stored as a negative <c>SpellID</c></b> on

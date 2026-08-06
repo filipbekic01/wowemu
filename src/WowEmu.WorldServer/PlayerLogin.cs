@@ -58,6 +58,7 @@ public static class PlayerLogin
         // action bars from this and nothing else — without it a character knows nothing it can
         // cast, whatever the server thinks.
         SendInitialSpells(connection, player);
+        SendActionButtons(connection, player);
     }
 
     /// <summary>
@@ -157,6 +158,18 @@ public static class PlayerLogin
     {
         ServerPacket packet = new(Opcode.SMSG_INITIAL_SPELLS, 8 + (player.Spells.Count * 6));
         InitialSpells.Write(packet.Body, [.. player.Spells.Known]);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Sends the action bars.</summary>
+    /// <remarks>
+    /// All 144 buttons go out, empty ones included — the client reads them positionally.
+    /// </remarks>
+    private static void SendActionButtons(WorldConnection connection, Player player)
+    {
+        ServerPacket packet = new(Opcode.SMSG_ACTION_BUTTONS, 1 + (ActionButtons.MaxButtons * 4));
+        ActionButtons.Write(packet.Body, player.Actions.Buttons);
 
         connection.Send(packet);
     }

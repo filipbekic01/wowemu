@@ -1929,8 +1929,32 @@
               "note": "A profession trainer offers its whole list in green; only level and money refuse a purchase."
             },
             {
+              "done": true,
+              "text": "playercreateinfo_action vendored, and SMSG_ACTION_BUTTONS at login",
+              "note": "Without it the bars start empty and every spell has to be dragged out of the spellbook by hand — which works, and looks broken. Verified live: a level-1 human warrior logs in with 7 buttons."
+            },
+            {
+              "done": true,
+              "text": "ALL 144 BUTTONS ARE WRITTEN, empty ones included",
+              "note": "There is no count and no index; the client reads them positionally, so a short packet fills the tail of the bars with whatever came next."
+            },
+            {
+              "done": true,
+              "text": "The action is the low 24 bits and the type the top byte of one word",
+              "note": "Sent as separate fields, or with the type in the wrong byte, the client decodes an unknown type and draws the button as empty."
+            },
+            {
+              "done": true,
+              "text": "A packed action of ZERO clears the button — there is no separate opcode"
+            },
+            {
+              "done": true,
+              "text": "The starting layout is applied only when nothing is saved",
+              "note": "Unlike the starting spells, which are re-applied every login. A player who deliberately cleared a button would otherwise find it back."
+            },
+            {
               "done": false,
-              "text": "Talents, specs, glyphs and the action bars (playercreateinfo_action)"
+              "text": "Talents, specs and glyphs"
             }
           ]
         },
@@ -2381,7 +2405,7 @@
       "items": [
         "No spell ranks. A higher rank does not supersede a lower one, so a player who learns rank 2 keeps rank 1 in the book as well.",
         "NO SKILLS, so a trainer's skill requirements always pass. A profession trainer offers its whole list in green and only level and money refuse a purchase.",
-        "No talents, no specs, no glyphs. playercreateinfo_action is not read either, so the action bars start empty and the player has to drag everything out of the spellbook.",
+        "No talents, no specs, no glyphs.",
         "Spell cooldowns do not survive a logout — SMSG_INITIAL_SPELLS always reports none."
       ]
     }

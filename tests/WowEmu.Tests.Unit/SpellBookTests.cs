@@ -261,6 +261,95 @@ public sealed class SpellBookPacketTests
     }
 }
 
+/// <summary>The action bars.</summary>
+public sealed class ActionBarTests
+{
+    /// <summary>
+    /// The action goes in the low 24 bits and the type in the top byte.
+    /// </summary>
+    /// <remarks>
+    /// Sending them as separate fields, or the type in the wrong byte, gives the client a bar of
+    /// buttons it draws as empty: it decodes the type first and gives up on an unknown one.
+    /// </remarks>
+    [Fact]
+    public void AnAction_PacksTheTypeIntoTheTopByte()
+    {
+        // Type 0 is a spell, 128 an item.
+        Assert.Equal(78u, new PlayerCreateAction(1, 1, 0, Action: 78, Type: 0).Packed);
+        Assert.Equal(6948u | (128u << 24), new PlayerCreateAction(1, 1, 1, 6948, 128).Packed);
+    }
+
+    /// <summary>
+    /// A packed action of zero clears the button.
+    /// </summary>
+    /// <remarks>
+    /// That is how the client reports one dragged off the bar; there is no separate opcode for it.
+    /// Storing the zero instead leaves a button the client draws as an unknown spell.
+    /// </remarks>
+    [Fact]
+    public void AZeroAction_ClearsTheButton()
+    {
+        Player player = InventoryFixture.Player();
+
+        player.Actions.Set(0, 78);
+
+        Assert.Equal(1, player.Actions.Count);
+
+        player.Actions.Set(0, 0);
+
+        Assert.Equal(0, player.Actions.Count);
+        Assert.Equal(0u, player.Actions[0]);
+    }
+
+    /// <summary>A button past the client's 144 is ignored rather than stored.</summary>
+    [Fact]
+    public void AButtonPastTheEnd_IsIgnored()
+    {
+        Player player = InventoryFixture.Player();
+
+        player.Actions.Set(200, 78);
+
+        Assert.Equal(0, player.Actions.Count);
+    }
+
+    /// <summary>
+    /// All 144 buttons are written, empty ones included.
+    /// </summary>
+    /// <remarks>
+    /// There is no count and no index — the client reads them positionally, so a short packet
+    /// leaves the tail of the bars filled with whatever came next.
+    /// </remarks>
+    [Fact]
+    public void TheBars_AreAlwaysFullLength()
+    {
+        PacketWriter writer = new();
+        ActionButtons.Write(writer, new Dictionary<byte, uint> { [3] = 78 });
+
+        Assert.Equal(1 + (ActionButtons.MaxButtons * 4), writer.WrittenSpan.Length);
+
+        PacketReader reader = new(writer.WrittenSpan.ToArray());
+
+        Assert.True(reader.TryReadUInt8(out byte state));
+        Assert.Equal(ActionButtons.StateInitial, state);
+
+        // Buttons 0, 1 and 2 are empty; 3 holds the spell.
+        reader.Skip(3 * 4);
+
+        Assert.True(reader.TryReadUInt32(out uint action));
+        Assert.Equal(78u, action);
+    }
+
+    /// <summary>A clear carries the state byte and nothing else.</summary>
+    [Fact]
+    public void AClear_IsOneByte()
+    {
+        PacketWriter writer = new();
+        ActionButtons.Write(writer, new Dictionary<byte, uint> { [3] = 78 }, ActionButtons.StateClear);
+
+        Assert.Equal(1, writer.WrittenSpan.Length);
+    }
+}
+
 /// <summary>The starting-spell and trainer tables, over the real vendored rows.</summary>
 public sealed class SpellStoreDataTests(ITestOutputHelper output)
 {
@@ -371,6 +460,49 @@ public sealed class SpellStoreDataTests(ITestOutputHelper output)
         Assert.True(expanded > 0, "no trainer rows at all");
 
         output.WriteLine($"{expanded} flattened rows from {trainers.RowCount} table rows");
+    }
+
+    /// <summary>Every playable race and class starts with something on its bars.</summary>
+    /// <remarks>
+    /// An empty bar is not fatal — the player can drag spells out of the spellbook — but it looks
+    /// exactly like a broken login, which is worse.
+    /// </remarks>
+    [RequiresWorldDatabaseFact]
+    public async Task EveryRaceAndClass_StartsWithActionButtons()
+    {
+        PlayerActionStore actions = new();
+        PlayerCreateInfoStore createInfo = new();
+
+        await actions.LoadAsync(WorldDatabase.ConnectionString, TestToken);
+        await createInfo.LoadAsync(WorldDatabase.ConnectionString, TestToken);
+
+        List<string> empty = [];
+        int checkedPairs = 0;
+
+        for (byte race = 1; race <= 11; race++)
+        {
+            for (byte characterClass = 1; characterClass <= 11; characterClass++)
+            {
+                if (!createInfo.TryGet(race, characterClass, out _))
+                {
+                    continue;
+                }
+
+                checkedPairs++;
+
+                if (actions.For(race, characterClass).Count == 0)
+                {
+                    empty.Add($"race {race} class {characterClass}");
+                }
+            }
+        }
+
+        Assert.True(checkedPairs > 50, $"only {checkedPairs} playable combinations");
+
+        output.WriteLine(
+            $"{checkedPairs} playable combinations, {empty.Count} with no starting buttons");
+
+        Assert.Empty(empty);
     }
 
     /// <summary>Every spell a trainer teaches is one the client knows about.</summary>

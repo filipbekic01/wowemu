@@ -218,7 +218,10 @@ internal static class WorldStartup
 
         await gossip.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await vendors.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        PlayerActionStore startingActions = services.GetRequiredService<PlayerActionStore>();
+
         await startingSpells.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await startingActions.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await trainers.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
         // Measured into a local rather than inline: the analyzer objects to work inside a log call,
@@ -237,7 +240,8 @@ internal static class WorldStartup
         Log.ItemTemplatesLoaded(logger, items.Count);
         Log.QuestsLoaded(logger, quests.Count, questStarters.RowCount, questEnders.RowCount);
         Log.GossipLoaded(logger, gossip.MenuCount, gossip.OptionCount, gossip.TextCount, vendors.RowCount);
-        Log.SpellsAndTrainersLoaded(logger, startingSpells.Count, trainers.RowCount, trainers.Count);
+        Log.SpellsAndTrainersLoaded(
+            logger, startingSpells.Count, startingActions.Count, trainers.RowCount, trainers.Count);
         Log.LootTemplatesLoaded(
             logger, creatureLoot.RowCount, creatureLoot.Count, lootReferences.RowCount, lootReferences.Count);
     }

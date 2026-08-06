@@ -52,6 +52,7 @@ SMSG_COMPRESSED_UPDATE_OBJECT = 0x1F6
 SMSG_MONSTER_MOVE = 0x0DD
 SMSG_TIME_SYNC_REQ = 0x390
 SMSG_INITIAL_SPELLS = 0x12A
+SMSG_ACTION_BUTTONS = 0x129
 CMSG_ITEM_QUERY_SINGLE = 0x056
 SMSG_ITEM_QUERY_SINGLE_RESPONSE = 0x058
 
@@ -475,10 +476,13 @@ def enter_world(client, guid, name, expected_x, expected_y, expected_z):
         # The spellbook, last of the burst and before the create block. The client builds its
         # spellbook and action bars from this and nothing else.
         (SMSG_INITIAL_SPELLS, "SMSG_INITIAL_SPELLS"),
+
+        # And the bars the spellbook fills. All 144 buttons, empty ones included.
+        (SMSG_ACTION_BUTTONS, "SMSG_ACTION_BUTTONS"),
     ]:
         client.expect(opcode, label)
 
-    print("  login burst ok (8 packets in order)")
+    print("  login burst ok (9 packets in order)")
 
     opcode, payload = client.recv()
 

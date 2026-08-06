@@ -653,6 +653,50 @@ public static class InitialSpells
     }
 }
 
+/// <summary>
+/// Writes <c>SMSG_ACTION_BUTTONS</c>.
+/// </summary>
+/// <remarks>
+/// Port of <c>Player::SendActionButtons</c>. <b>All 144 buttons are written, empty ones included</b>
+/// — there is no count and no index, so the client reads them positionally and a short packet
+/// leaves the tail of the bars filled with whatever came next.
+/// </remarks>
+public static class ActionButtons
+{
+    /// <summary>How many buttons the client has. <c>MAX_ACTION_BUTTONS</c>.</summary>
+    public const int MaxButtons = 144;
+
+    /// <summary>
+    /// The state byte. <c>1</c> is what upstream sends with real data.
+    /// </summary>
+    /// <remarks>
+    /// Zero is the documented "initial" value and upstream notes it "had some difficulties", so it
+    /// sends 1 in both cases. Two clears the bars and is followed by no data at all.
+    /// </remarks>
+    public const byte StateInitial = 1;
+
+    /// <inheritdoc cref="StateInitial"/>
+    public const byte StateClear = 2;
+
+    public static void Write(PacketWriter writer, IReadOnlyDictionary<byte, uint> buttons, byte state = StateInitial)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(buttons);
+
+        writer.WriteUInt8(state);
+
+        if (state == StateClear)
+        {
+            return;
+        }
+
+        for (int button = 0; button < MaxButtons; button++)
+        {
+            writer.WriteUInt32(buttons.GetValueOrDefault((byte)button));
+        }
+    }
+}
+
 /// <summary>One periodic aura tick, held until the session's next flush.</summary>
 /// <param name="Overflow">Overkill for a damage tick, overhealing for a heal.</param>
 public readonly record struct PeriodicAuraLog(

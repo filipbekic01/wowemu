@@ -47,6 +47,7 @@ builder.Services.AddKeyedSingleton("reference_loot", (_, _) => new LootStore("re
 builder.Services.AddSingleton<QuestStore>();
 builder.Services.AddSingleton<GossipStore>();
 builder.Services.AddSingleton<PlayerSpellStore>();
+builder.Services.AddSingleton<PlayerActionStore>();
 builder.Services.AddSingleton<TrainerStore>();
 builder.Services.AddSingleton<VendorStore>();
 

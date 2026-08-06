@@ -110,6 +110,8 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
 
     public DbSet<CharacterSpellEntity> Spells => Set<CharacterSpellEntity>();
 
+    public DbSet<CharacterActionEntity> Actions => Set<CharacterActionEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -215,6 +217,17 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
 
             entity.Property(row => row.CharacterId).HasColumnName("guid");
             entity.Property(row => row.SpellId).HasColumnName("spell");
+        });
+
+        modelBuilder.Entity<CharacterActionEntity>(entity =>
+        {
+            entity.ToTable("character_action");
+            entity.HasKey(row => new { row.CharacterId, row.Button });
+
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.Button).HasColumnName("button");
+            entity.Property(row => row.Action).HasColumnName("action");
+            entity.Property(row => row.Type).HasColumnName("type");
         });
     }
 }

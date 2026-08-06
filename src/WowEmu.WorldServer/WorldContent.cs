@@ -30,6 +30,7 @@ public sealed class WorldContent(
     GossipStore gossip,
     VendorStore vendors,
     PlayerSpellStore startingSpells,
+    PlayerActionStore startingActions,
     TrainerStore trainers)
 {
     public TerrainManager Terrain { get; } = terrain;
@@ -66,6 +67,9 @@ public sealed class WorldContent(
 
     /// <summary>What each trainer teaches.</summary>
     public TrainerStore Trainers { get; } = trainers;
+
+    /// <summary>What is on a new character's action bars.</summary>
+    public PlayerActionStore StartingActions { get; } = startingActions;
 
     public DbcStores Stores { get; } = stores;
 

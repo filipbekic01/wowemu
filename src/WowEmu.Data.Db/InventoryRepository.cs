@@ -67,6 +67,16 @@ public interface IInventoryRepository
         IReadOnlyCollection<uint> spells,
         CancellationToken cancellationToken = default);
 
+    /// <summary>What is on a character's action bars, as (button, packed action) pairs.</summary>
+    Task<IReadOnlyList<(byte Button, uint Packed)>> LoadActionsAsync(
+        uint characterId, CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="SaveAsync"/>
+    Task SaveActionsAsync(
+        uint characterId,
+        IReadOnlyDictionary<byte, uint> buttons,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// The highest item guid in use, so the in-memory allocator can carry on above it.
     /// </summary>
@@ -195,6 +205,11 @@ public sealed class InventoryRepository(IDbContextFactory<CharactersDbContext> c
             .Where(row => row.CharacterId == characterId)
             .ExecuteDeleteAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        await context.Actions
+            .Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
     }
 
     public async Task<IReadOnlyList<StoredQuest>> LoadQuestsAsync(
@@ -291,6 +306,58 @@ public sealed class InventoryRepository(IDbContextFactory<CharactersDbContext> c
         foreach (uint spellId in spells)
         {
             context.Spells.Add(new CharacterSpellEntity { CharacterId = characterId, SpellId = spellId });
+        }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<(byte Button, uint Packed)>> LoadActionsAsync(
+        uint characterId, CancellationToken cancellationToken = default)
+    {
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        List<CharacterActionEntity> rows = await context.Actions
+            .AsNoTracking()
+            .Where(row => row.CharacterId == characterId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        List<(byte, uint)> loaded = new(rows.Count);
+
+        foreach (CharacterActionEntity row in rows)
+        {
+            // Repacked on the way out: the two are stored apart so a query can read either.
+            loaded.Add((row.Button, (row.Action & 0x00FFFFFF) | ((uint)row.Type << 24)));
+        }
+
+        return loaded;
+    }
+
+    public async Task SaveActionsAsync(
+        uint characterId,
+        IReadOnlyDictionary<byte, uint> buttons,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(buttons);
+
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        await context.Actions
+            .Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach ((byte button, uint packed) in buttons)
+        {
+            context.Actions.Add(new CharacterActionEntity
+            {
+                CharacterId = characterId,
+                Button = button,
+                Action = packed & 0x00FFFFFF,
+                Type = (byte)(packed >> 24),
+            });
         }
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

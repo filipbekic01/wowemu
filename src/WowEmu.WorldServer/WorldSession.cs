@@ -409,6 +409,10 @@ public sealed class WorldSession(
                 HandleSellItem(payload);
                 return;
 
+            case Opcode.CMSG_SET_ACTION_BUTTON:
+                HandleSetActionButton(payload);
+                return;
+
             case Opcode.CMSG_TRAINER_LIST:
                 HandleTrainerList(payload);
                 return;
@@ -3375,6 +3379,10 @@ public sealed class WorldSession(
             .SaveSpellsAsync(player.Guid.Counter, [.. player.Spells.Known], cancellationToken)
             .ConfigureAwait(true);
 
+        await inventory
+            .SaveActionsAsync(player.Guid.Counter, player.Actions.Buttons, cancellationToken)
+            .ConfigureAwait(true);
+
         Log.PlayerSaved(logger, player.Name, player.Position.X, player.Position.Y);
 
         // A dropped connection never sends a logout, so the map has to be told here too or the
@@ -3439,6 +3447,7 @@ public sealed class WorldSession(
         // Before the create block: knowing Dual Wield changes what may be in the off hand, and the
         // block carries the equipment.
         await LoadSpellsAsync(player, cancellationToken).ConfigureAwait(true);
+        await LoadActionsAsync(player, cancellationToken).ConfigureAwait(true);
 
         _player = player;
         Status = SessionStatus.LoggedIn;
@@ -3534,8 +3543,17 @@ public sealed class WorldSession(
             player.Spells.Learn(spellId);
         }
 
+        foreach (PlayerCreateAction button in world.StartingActions.For(player.Race, player.Class))
+        {
+            player.Actions.Set(button.Button, button.Packed);
+        }
+
         await inventory
             .SaveSpellsAsync(created.Id, [.. player.Spells.Known], cancellationToken)
+            .ConfigureAwait(true);
+
+        await inventory
+            .SaveActionsAsync(created.Id, player.Actions.Buttons, cancellationToken)
             .ConfigureAwait(true);
 
         if (placed == 0)
@@ -3687,6 +3705,56 @@ public sealed class WorldSession(
         {
             player.Spells.Learn(spellId);
         }
+    }
+
+    /// <summary>
+    /// Rebuilds a character's action bars.
+    /// </summary>
+    /// <remarks>
+    /// The starting layout is applied only when there is nothing saved, unlike the starting spells.
+    /// A player who deliberately cleared a button would otherwise find it back every login.
+    /// </remarks>
+    private async Task LoadActionsAsync(Player player, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<(byte Button, uint Packed)> stored = await inventory
+            .LoadActionsAsync(player.Guid.Counter, cancellationToken)
+            .ConfigureAwait(true);
+
+        if (stored.Count > 0)
+        {
+            player.Actions.Restore(stored);
+
+            return;
+        }
+
+        foreach (PlayerCreateAction button in world.StartingActions.For(player.Race, player.Class))
+        {
+            player.Actions.Set(button.Button, button.Packed);
+        }
+    }
+
+    /// <summary>
+    /// Moves something on or off an action button. <c>CMSG_SET_ACTION_BUTTON</c>.
+    /// </summary>
+    /// <remarks>
+    /// A packed action of zero is the client reporting a button dragged <i>off</i> the bar. There
+    /// is no separate opcode for clearing one.
+    /// </remarks>
+    private void HandleSetActionButton(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt8(out byte button) || !reader.TryReadUInt32(out uint packed))
+        {
+            return;
+        }
+
+        _player.Actions.Set(button, packed);
     }
 
     /// <summary>What a character's quest log holds, in the shape the database stores.</summary>

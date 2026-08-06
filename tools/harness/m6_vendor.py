@@ -42,6 +42,7 @@ SMSG_BUY_ITEM = 0x1A4
 SMSG_BUY_FAILED = 0x1A5
 SMSG_ITEM_PUSH_RESULT = 0x166
 SMSG_INITIAL_SPELLS = 0x12A
+SMSG_ACTION_BUTTONS = 0x129
 
 CMSG_PLAYER_LOGIN = 0x03D
 SMSG_LOGIN_VERIFY_WORLD = 0x236
@@ -162,6 +163,7 @@ def enter_world(client, guid):
     _map, x, y, z, _o = struct.unpack("<Iffff", payload)
 
     client.spells = []
+    client.actions = []
 
     # The create burst. The player's own block carries its inventory slot guids.
     for _ in range(64):
@@ -169,6 +171,15 @@ def enter_world(client, guid):
 
         if opcode == SMSG_INITIAL_SPELLS:
             client.spells = parse_initial_spells(body)
+            continue
+
+        if opcode == SMSG_ACTION_BUTTONS:
+            # All 144 go out, empty ones included -- the client reads them positionally.
+            if len(body) != 1 + (144 * 4):
+                fail(f"the action bars are {len(body)} bytes, expected {1 + 144 * 4}")
+
+            client.actions = [
+                struct.unpack("<I", body[1 + i * 4:5 + i * 4])[0] for i in range(144)]
             continue
 
         if opcode in (SMSG_UPDATE_OBJECT, SMSG_COMPRESSED_UPDATE_OBJECT):
@@ -181,10 +192,15 @@ def enter_world(client, guid):
                 if block["typeId"] == 4:            # TYPEID_PLAYER
                     print(f"  in the world at ({x:.1f}, {y:.1f}, {z:.1f}), "
                           f"{len(blocks) - 1} item(s) alongside, "
-                          f"{len(client.spells)} spell(s) known")
+                          f"{len(client.spells)} spell(s) known, "
+                          f"{sum(1 for a in client.actions if a)} action button(s)")
 
                     if not client.spells:
                         fail("SMSG_INITIAL_SPELLS never arrived — the spellbook would be empty")
+
+                    if not any(client.actions):
+                        fail("the action bars are empty — every spell would have to be dragged out "
+                             "of the spellbook by hand")
 
                     return (x, y, z), block["values"]
 
