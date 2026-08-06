@@ -40,6 +40,13 @@ QUEST_TITLE = "Eagan Peltskinner"
 DEPUTY_WILLEM = 823                       # offers it, two yards from the human spawn point
 EAGAN_PELTSKINNER = 196                   # takes it back, about ninety yards away
 
+# 5261 sits second in its chain: quest_template.PrevQuestId says 783 "A Threat Within" must have
+# been handed in first, and a server that honours that will not offer 5261 to a fresh character.
+# So the gate does the chain, which is what a player does.
+PREREQUISITE_ID = 783
+PREREQUISITE_TITLE = "A Threat Within"
+MARSHAL_MCBRIDE = 197                     # takes 783 back
+
 # ---- opcodes
 
 CMSG_QUESTGIVER_STATUS_QUERY = 0x182
@@ -57,6 +64,15 @@ SMSG_QUESTGIVER_QUEST_COMPLETE = 0x191
 SMSG_QUESTUPDATE_COMPLETE = 0x198
 CMSG_QUEST_QUERY = 0x05C
 SMSG_QUEST_QUERY_RESPONSE = 0x05D
+
+SMSG_UPDATE_OBJECT = 0x0A9
+SMSG_COMPRESSED_UPDATE_OBJECT = 0x1F6
+
+PLAYER_QUEST_LOG_1_1 = 158
+QUEST_LOG_SLOT_WIDTH = 5
+
+# QuestSlotStateMask. The second of a slot's five words.
+QUEST_STATE_COMPLETE = 0x0001
 
 SMSG_UPDATE_OBJECT = 0x0A9
 SMSG_COMPRESSED_UPDATE_OBJECT = 0x1F6
@@ -79,6 +95,41 @@ def await_opcode(client, wanted, name, limit=512):
             return payload
 
     fail(f"expected {name} (0x{wanted:03X}) and it never arrived")
+
+
+def await_quest_slot(client, quest_id, limit=256):
+    """Reads until an update block carries a quest log slot holding `quest_id`.
+
+    Returns {wordIndex: value} for that slot's five words. Words the server did not send are
+    absent, which is exactly what this is here to catch.
+    """
+    import zlib
+
+    from m6_vendor import parse_update
+
+    for _ in range(limit):
+        opcode, body = client.recv()
+
+        if opcode not in (SMSG_UPDATE_OBJECT, SMSG_COMPRESSED_UPDATE_OBJECT):
+            continue
+
+        if opcode == SMSG_COMPRESSED_UPDATE_OBJECT:
+            body = zlib.decompress(body[4:])
+
+        for block in parse_update(body):
+            for index in range(25):
+                base = PLAYER_QUEST_LOG_1_1 + (index * QUEST_LOG_SLOT_WIDTH)
+
+                if block["values"].get(base) != quest_id:
+                    continue
+
+                return {
+                    word: block["values"][base + word]
+                    for word in range(QUEST_LOG_SLOT_WIDTH)
+                    if base + word in block["values"]
+                }
+
+    fail(f"no update block ever carried a quest log slot for quest {quest_id}")
 
 
 def read_cstring(payload, cursor):
@@ -197,6 +248,41 @@ def parse_offer_reward(payload):
     return {"id": quest_id, "title": title, "text": text}
 
 
+def clear_prerequisite(client, character, start, willem):
+    """Runs quest 783 end to end, because 5261 is gated behind it.
+
+    Leaner than the main sequence deliberately — this is setup, and everything it would assert is
+    asserted again on the quest the gate is actually about.
+    """
+    mcbride_spawn, mcbride_at = find_spawn(client, MARSHAL_MCBRIDE)
+    mcbride = creature_guid(MARSHAL_MCBRIDE, mcbride_spawn)
+
+    client.send(CMSG_QUESTGIVER_QUERY_QUEST, struct.pack("<QIB", willem, PREREQUISITE_ID, 0))
+
+    details = parse_quest_details(
+        await_opcode(client, SMSG_QUESTGIVER_QUEST_DETAILS, "SMSG_QUESTGIVER_QUEST_DETAILS"))
+
+    if details["id"] != PREREQUISITE_ID:
+        fail(f"the prerequisite opened as quest {details['id']}, expected {PREREQUISITE_ID}")
+
+    client.send(CMSG_QUESTGIVER_ACCEPT_QUEST, struct.pack("<QII", willem, PREREQUISITE_ID, 0))
+    await_opcode(client, SMSG_QUESTUPDATE_COMPLETE, "SMSG_QUESTUPDATE_COMPLETE")
+
+    walk_to(client, character["guid"], start, mcbride_at)
+
+    client.send(CMSG_QUESTGIVER_COMPLETE_QUEST, struct.pack("<QI", mcbride, PREREQUISITE_ID))
+    await_opcode(client, SMSG_QUESTGIVER_OFFER_REWARD, "SMSG_QUESTGIVER_OFFER_REWARD")
+
+    client.send(CMSG_QUESTGIVER_CHOOSE_REWARD, struct.pack("<QII", mcbride, PREREQUISITE_ID, 0))
+    await_opcode(client, SMSG_QUESTGIVER_QUEST_COMPLETE, "SMSG_QUESTGIVER_QUEST_COMPLETE")
+
+    # Back to where the run expects to be standing.
+    walk_to(client, character["guid"], mcbride_at, start)
+
+    print(f"  prerequisite '{PREREQUISITE_TITLE}' ({PREREQUISITE_ID}) done — "
+          f"{QUEST_ID} is gated behind it")
+
+
 def run(client, character, start):
     """The whole loop: hello, accept, walk, hand in."""
     willem_spawn, willem_at = find_spawn(client, DEPUTY_WILLEM)
@@ -207,6 +293,9 @@ def run(client, character, start):
 
     print(f"  Deputy Willem is spawn {willem_spawn} at ({willem_at[0]:.1f}, {willem_at[1]:.1f})")
     print(f"  Eagan Peltskinner is spawn {eagan_spawn} at ({eagan_at[0]:.1f}, {eagan_at[1]:.1f})")
+
+    # ---- clear the prerequisite first
+    clear_prerequisite(client, character, start, willem)
 
     # ---- the mark over his head, before anything has been taken
     status = quest_giver_status(client, willem)
@@ -253,6 +342,25 @@ def run(client, character, start):
         fail(f"the server said quest {completed} completed, not {QUEST_ID}")
 
     print(f"  accepted, and it is complete already (no objectives)")
+
+    # ---- the log slot itself, which is what the client's quest log is drawn from
+    #
+    # All FIVE words have to arrive, not just the quest id. They are one unit to the client, and a
+    # slot whose state word never came is a quest the log has no state for. This was silently
+    # broken for a while: the server skips writes that change nothing, and four of the five words
+    # are zero on a fresh slot, so only the id went out.
+    slot = await_quest_slot(client, QUEST_ID)
+
+    for word in range(QUEST_LOG_SLOT_WIDTH):
+        if word not in slot:
+            fail(f"log slot word {word} never reached the client — the client has a quest "
+                 f"with no state for it")
+
+    if slot[1] != QUEST_STATE_COMPLETE:
+        fail(f"the slot state word is {slot[1]}, expected {QUEST_STATE_COMPLETE} (complete) "
+             f"for a quest with no objectives")
+
+    print(f"  log slot ok: all {QUEST_LOG_SLOT_WIDTH} words arrived, state = complete")
 
     # ---- what the client does next, and what the quest log is drawn from
     #

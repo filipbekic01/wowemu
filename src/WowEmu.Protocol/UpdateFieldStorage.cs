@@ -144,6 +144,22 @@ public sealed class UpdateFieldStorage
     public bool IsFieldDirty(int index) => _dirty[index];
 
     /// <summary>
+    /// Marks a field for sending even though its value has not changed.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="SetUInt32"/> deliberately ignores a write that changes nothing, which is what
+    /// stops a system rewriting the same value every tick from broadcasting every tick. That is
+    /// right for a field that stands alone and wrong for one that belongs to a group the client
+    /// reads as a unit — a quest log slot is five consecutive words, and sending only the ones
+    /// that happen to be non-zero tells the client about a slot it has no state for.
+    /// </remarks>
+    public void MarkDirty(int index)
+    {
+        _dirty[index] = true;
+        IsDirty = true;
+    }
+
+    /// <summary>
     /// Forgets every pending change. Called once the changes have been sent.
     /// </summary>
     public void ClearDirty()

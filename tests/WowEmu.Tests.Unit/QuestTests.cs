@@ -24,6 +24,9 @@ internal static class QuestFixture
         byte rewardXpDifficulty = 1,
         int rewardOrRequiredMoney = 0,
         uint flags = 0,
+        uint specialFlags = 0,
+        int prevQuestId = 0,
+        byte requiredPlayerKills = 0,
         QuestObjective[]? objectives = null,
         QuestItem[]? requiredItems = null,
         QuestItem[]? rewards = null,
@@ -39,7 +42,7 @@ internal static class QuestFixture
             SuggestedPlayers: 0,
             RequiredClasses: requiredClasses,
             RequiredRaces: requiredRaces,
-            PrevQuestId: 0,
+            PrevQuestId: prevQuestId,
             NextQuestId: 0,
             NextQuestIdChain: 0,
             RewardXpDifficulty: rewardXpDifficulty,
@@ -50,7 +53,7 @@ internal static class QuestFixture
             SourceItemId: 0,
             SourceItemCount: 0,
             Flags: flags,
-            SpecialFlags: 0,
+            SpecialFlags: specialFlags,
             Rewards: Pad(rewards, QuestConstants.MaxRewards),
             RewardChoices: Pad(rewardChoices, QuestConstants.MaxRewardChoices),
             Objectives: PadObjectives(objectives),
@@ -63,7 +66,8 @@ internal static class QuestFixture
             CompletedText: "The thing is done.",
             OfferRewardText: "You did the thing.",
             RequestItemsText: "Have you done the thing?",
-            ObjectiveText: ["", "", "", ""]);
+            ObjectiveText: ["", "", "", ""],
+            RequiredPlayerKills: requiredPlayerKills);
 
     private static QuestItem[] Pad(QuestItem[]? items, int width)
     {
@@ -515,7 +519,7 @@ public sealed class QuestLogTests
     public void ARepeatableQuest_CanBeRetaken()
     {
         Player player = InventoryFixture.Player(level: 5);
-        QuestTemplate quest = QuestFixture.Build(flags: QuestFlags.Repeatable);
+        QuestTemplate quest = QuestFixture.Build(specialFlags: QuestSpecialFlags.Repeatable);
 
         player.Quests.Reward(player.Quests.Accept(quest)!);
 
@@ -1054,5 +1058,197 @@ public sealed class QuestStoreTests(ITestOutputHelper output)
 
         Assert.True(checkedLinks > 10_000, $"only {checkedLinks} links walked");
         Assert.Empty(dangling);
+    }
+}
+
+/// <summary>
+/// The flag columns, the chain prerequisites, and what the query response does with both.
+/// </summary>
+public sealed class QuestFlagTests
+{
+    private static readonly QuestObjective[] KillFiveWolves = [new QuestObjective(299, 5)];
+
+    /// <summary>
+    /// The two flag columns carry the values the C++ enums do.
+    /// </summary>
+    /// <remarks>
+    /// Pinned because the two sets overlap numerically and nothing else would notice a swap: reading
+    /// <c>Flags</c> with a <c>SpecialFlags</c> constant returns a plausible boolean about the wrong
+    /// property of every quest in the game.
+    /// </remarks>
+    [Fact]
+    public void TheFlagConstants_MatchTheEnums()
+    {
+        Assert.Equal(0x00000200u, QuestFlags.HiddenRewards);
+        Assert.Equal(0x00000400u, QuestFlags.Tracking);
+        Assert.Equal(0x00001000u, QuestFlags.Daily);
+        Assert.Equal(0x00008000u, QuestFlags.Weekly);
+        Assert.Equal(0x00010000u, QuestFlags.AutoComplete);
+
+        Assert.Equal(0x0001u, QuestSpecialFlags.Repeatable);
+        Assert.Equal(0x0002u, QuestSpecialFlags.ExplorationOrEvent);
+        Assert.Equal(0x0004u, QuestSpecialFlags.AutoAccept);
+        Assert.Equal(0x0010u, QuestSpecialFlags.Monthly);
+    }
+
+    /// <summary>Repeatable is read from SpecialFlags, and the same bit in Flags does not set it.</summary>
+    [Fact]
+    public void Repeatable_ComesFromSpecialFlagsAlone()
+    {
+        Assert.True(QuestFixture.Build(specialFlags: QuestSpecialFlags.Repeatable).IsRepeatable);
+
+        // 0x0001 in the other column is QUEST_FLAGS_STAY_ALIVE, which says nothing about repeating.
+        Assert.False(QuestFixture.Build(flags: 0x0001).IsRepeatable);
+    }
+
+    /// <summary>A quest whose chain predecessor is unfinished is not on offer.</summary>
+    /// <remarks>
+    /// Without this a questgiver hands a fresh character its whole chain at once, and the second
+    /// quest in a line can be taken before the first.
+    /// </remarks>
+    [Fact]
+    public void AQuestWithAPrerequisite_NeedsItRewardedFirst()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+
+        QuestTemplate first = QuestFixture.Build(id: 783);
+        QuestTemplate second = QuestFixture.Build(id: 5261, prevQuestId: 783);
+
+        Assert.Equal(QuestTakeResult.MissingPrerequisite, player.Quests.CanTake(second));
+
+        // Holding it is not enough — the positive form wants it handed in.
+        player.Quests.Accept(first);
+        Assert.Equal(QuestTakeResult.MissingPrerequisite, player.Quests.CanTake(second));
+
+        player.Quests.Reward(player.Quests.Find(783)!);
+        Assert.Equal(QuestTakeResult.Ok, player.Quests.CanTake(second));
+    }
+
+    /// <summary>A negative prerequisite only wants the earlier quest started.</summary>
+    [Fact]
+    public void ANegativePrerequisite_IsSatisfiedByHoldingTheEarlierQuest()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+
+        QuestTemplate second = QuestFixture.Build(id: 5261, prevQuestId: -783);
+
+        Assert.Equal(QuestTakeResult.MissingPrerequisite, player.Quests.CanTake(second));
+
+        player.Quests.Accept(QuestFixture.Build(id: 783, objectives: KillFiveWolves));
+
+        Assert.Equal(QuestTakeResult.Ok, player.Quests.CanTake(second));
+    }
+
+    /// <summary>
+    /// An exploration-or-event quest is not finished the moment it is taken.
+    /// </summary>
+    /// <remarks>
+    /// It has no objective columns, so it looks objective-less; what completes it is a script. 443
+    /// quests in the vendored dump would otherwise be handed in without being done.
+    /// </remarks>
+    [Fact]
+    public void AnExplorationQuest_IsIncompleteOnAccept()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+
+        QuestTemplate scripted =
+            QuestFixture.Build(specialFlags: QuestSpecialFlags.ExplorationOrEvent);
+
+        Assert.NotNull(player.Quests.Accept(scripted));
+        Assert.Equal(QuestStatus.Incomplete, player.Quests.StatusOf(scripted.Id));
+
+        // And with no objectives to satisfy, it stays that way.
+        Assert.False(player.Quests.IsSatisfied(scripted, player.Quests.Find(scripted.Id)!));
+    }
+
+    /// <summary>An objective-less quest with no such flag still completes on accept.</summary>
+    [Fact]
+    public void AnErrand_IsStillCompleteOnAccept()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+
+        Assert.NotNull(player.Quests.Accept(QuestFixture.Build()));
+        Assert.Equal(QuestStatus.Complete, player.Quests.StatusOf(1));
+    }
+
+    /// <summary>
+    /// The query response writes the money column signed.
+    /// </summary>
+    /// <remarks>
+    /// The column is money paid when positive and money charged when negative. Clamping it to zero
+    /// loses the "required" line on the 109 quests that charge.
+    /// </remarks>
+    [Fact]
+    public void TheQueryResponse_WritesACostAsANegative()
+    {
+        PacketWriter writer = new();
+        QuestPackets.WriteQueryResponse(writer, QuestFixture.Build(rewardOrRequiredMoney: -3000));
+
+        PacketReader reader = new(writer.WrittenSpan.ToArray());
+
+        // Thirteen words in: id, method, level, minLevel, sortId, type, suggested, four reputation
+        // objective words, the next quest in chain, and the xp id.
+        reader.Skip(13 * 4);
+
+        Assert.True(reader.TryReadUInt32(out uint money));
+        Assert.Equal(-3000, unchecked((int)money));
+    }
+
+    /// <summary>A hidden-rewards quest sends zeroes, but still sends every slot.</summary>
+    [Fact]
+    public void TheQueryResponse_ZeroesHiddenRewardsWithoutShrinking()
+    {
+        QuestItem[] rewards = [new QuestItem(2589, 4)];
+
+        PacketWriter shown = new();
+        QuestPackets.WriteQueryResponse(
+            shown, QuestFixture.Build(rewards: rewards, rewardOrRequiredMoney: 500));
+
+        PacketWriter hidden = new();
+        QuestPackets.WriteQueryResponse(
+            hidden, QuestFixture.Build(
+                rewards: rewards, rewardOrRequiredMoney: 500, flags: QuestFlags.HiddenRewards));
+
+        // Same length: the client reads a fixed count of reward slots either way.
+        Assert.Equal(shown.WrittenSpan.Length, hidden.WrittenSpan.Length);
+
+        PacketReader reader = new(hidden.WrittenSpan.ToArray());
+        reader.Skip(13 * 4);
+
+        Assert.True(reader.TryReadUInt32(out uint money));
+        Assert.Equal(0u, money);
+
+        reader.Skip(12 * 4);        // the rest of the scalar block
+
+        Assert.True(reader.TryReadUInt32(out uint firstRewardItem));
+        Assert.Equal(0u, firstRewardItem);
+    }
+
+    /// <summary>The players-to-slay word carries the column rather than a hardcoded zero.</summary>
+    [Fact]
+    public void TheQueryResponse_CarriesTheRequiredPlayerKills()
+    {
+        PacketWriter writer = new();
+        QuestPackets.WriteQueryResponse(writer, QuestFixture.Build(requiredPlayerKills: 20));
+
+        PacketReader reader = new(writer.WrittenSpan.ToArray());
+
+        // Twenty-two words in: the thirteen above, then money, moneyMax, spell, spellCast, honour,
+        // honour multiplier, source item, flags and the title id.
+        reader.Skip(22 * 4);
+
+        Assert.True(reader.TryReadUInt32(out uint slain));
+        Assert.Equal(20u, slain);
+    }
+
+    /// <summary>A quest that wants player kills is not completable, since nothing counts them.</summary>
+    [Fact]
+    public void APlayerKillQuest_DoesNotCompleteOnAccept()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+        QuestTemplate pvp = QuestFixture.Build(requiredPlayerKills: 10);
+
+        Assert.NotNull(player.Quests.Accept(pvp));
+        Assert.Equal(QuestStatus.Incomplete, player.Quests.StatusOf(pvp.Id));
     }
 }

@@ -1930,22 +1930,7 @@ public sealed class WorldSession(
                 BoxText: option.BoxText));
         }
 
-        List<QuestMenuEntry> quests = [];
-
-        foreach (uint questId in QuestsFor(npc))
-        {
-            if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
-            {
-                continue;
-            }
-
-            uint icon = MenuIconFor(quest);
-
-            if (icon != QuestGiverStatus.None)
-            {
-                quests.Add(new QuestMenuEntry(quest.Id, icon, quest.Level, quest.Flags, quest.LogTitle));
-            }
-        }
+        List<QuestMenuEntry> quests = BuildQuestMenu(npc);
 
         ServerPacket packet = new(
             Opcode.SMSG_GOSSIP_MESSAGE, 32 + (lines.Count * 128) + (quests.Count * 96));
@@ -2142,30 +2127,12 @@ public sealed class WorldSession(
             return;
         }
 
-        List<QuestMenuEntry> menu = [];
-        QuestTemplate? only = null;
+        List<QuestMenuEntry> menu = BuildQuestMenu(npc);
 
-        foreach (uint questId in QuestsFor(npc))
+        if (menu.Count == 1
+            && world.Quests.TryGet(menu[0].QuestId, out QuestTemplate? only) && only is not null)
         {
-            if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
-            {
-                continue;
-            }
-
-            uint icon = MenuIconFor(quest!);
-
-            if (icon == QuestGiverStatus.None)
-            {
-                continue;
-            }
-
-            only = quest;
-            menu.Add(new QuestMenuEntry(quest.Id, icon, quest.Level, quest.Flags, quest.LogTitle));
-        }
-
-        if (menu.Count == 1 && only is not null)
-        {
-            OpenQuest(npc.Guid, only);
+            OpenQuest(npc, only);
 
             return;
         }
@@ -2177,9 +2144,13 @@ public sealed class WorldSession(
     }
 
     /// <summary>Opens one quest from the menu. <c>CMSG_QUESTGIVER_QUERY_QUEST</c>.</summary>
+    /// <remarks>
+    /// The NPC is resolved rather than trusted, because which window to show depends on whether
+    /// this particular one takes the quest back.
+    /// </remarks>
     private void HandleQuestGiverQueryQuest(ReadOnlyMemory<byte> payload)
     {
-        if (_player is null)
+        if (_player is null || _map is null)
         {
             return;
         }
@@ -2191,9 +2162,14 @@ public sealed class WorldSession(
             return;
         }
 
+        if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } npc)
+        {
+            return;
+        }
+
         if (world.Quests.TryGet(questId, out QuestTemplate? quest) && quest is not null)
         {
-            OpenQuest(new ObjectGuid(rawGuid), quest!);
+            OpenQuest(npc, quest);
         }
     }
 
@@ -2229,8 +2205,19 @@ public sealed class WorldSession(
 
         if (_player.Quests.Accept(quest) is not { } progress)
         {
+            // Upstream closes the window on every failure path too, so a refused accept does not
+            // leave the client sitting on a dialog it thinks is still live.
+            CloseGossip();
+
             return;
         }
+
+        // Some quests hand over an item when taken — a note to deliver, a tool to use. Nothing in
+        // the log depends on it, but the quest is unfinishable without it.
+        GiveQuestSourceItem(quest);
+
+        // Always, exactly as upstream does. The client keeps the quest dialog open until told.
+        CloseGossip();
 
         Log.QuestAccepted(logger, _player.Name, quest.LogTitle, questId, connection.RemoteAddress);
 
@@ -2242,10 +2229,57 @@ public sealed class WorldSession(
         }
     }
 
+    /// <summary>
+    /// Hands over the item a quest gives out when it is taken.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>GiveQuestSourceItem</c>. A full bag is not fatal — upstream reports the error and
+    /// still lets the quest be taken — so this does not refuse the accept.
+    /// </remarks>
+    private void GiveQuestSourceItem(QuestTemplate quest)
+    {
+        if (_player is null || quest.SourceItemId == 0)
+        {
+            return;
+        }
+
+        if (!world.Items.TryGet(quest.SourceItemId, out ItemTemplate? template) || template is null)
+        {
+            return;
+        }
+
+        uint count = Math.Max(quest.SourceItemCount, (byte)1);
+
+        if (_player.Inventory.CanStore(template, count, out _) != InventoryResult.Ok)
+        {
+            SendEquipError(InventoryResult.InventoryFull);
+
+            return;
+        }
+
+        _player.Inventory.Store(template, count, itemGuids.Next, out IReadOnlyList<Item> given);
+
+        foreach (Item item in given)
+        {
+            ItemPosition? where = _player.Inventory.PositionOf(item);
+
+            SendItemPushed(new ItemPushResult(
+                Player: _player.Guid,
+                FromNpc: true,
+                Created: false,
+                ShowInChat: true,
+                Bag: where?.Bag ?? InventorySlots.Backpack,
+                Slot: where?.Slot ?? 0,
+                Entry: quest.SourceItemId,
+                Count: count,
+                TotalOfEntry: _player.Inventory.CountOf(quest.SourceItemId)));
+        }
+    }
+
     /// <summary>Asks to hand a quest in. <c>CMSG_QUESTGIVER_COMPLETE_QUEST</c>.</summary>
     private void HandleQuestGiverCompleteQuest(ReadOnlyMemory<byte> payload)
     {
-        if (_player is null)
+        if (_player is null || _map is null)
         {
             return;
         }
@@ -2262,7 +2296,15 @@ public sealed class WorldSession(
             return;
         }
 
-        ObjectGuid npc = new(rawGuid);
+        // Only the ender takes a quest back. Without this a "go and speak to someone" errand can be
+        // handed straight back to the person who gave it.
+        if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } giver
+            || !world.QuestEnders.For(giver.Entry).Contains(questId))
+        {
+            return;
+        }
+
+        ObjectGuid npc = giver.Guid;
         bool canComplete = _player.Quests.StatusOf(questId) == QuestStatus.Complete;
 
         // A quest with no item objectives skips the "have you got them?" window entirely — it would
@@ -2299,6 +2341,15 @@ public sealed class WorldSession(
 
         if (!reader.TryReadUInt64(out ulong rawGuid) || !reader.TryReadUInt32(out uint questId)
             || !reader.TryReadUInt32(out uint choice))
+        {
+            return;
+        }
+
+        // The same check the complete handler makes, for the same reason. This is the handler that
+        // actually pays, so without it a reward can be claimed from any guid the client names —
+        // including the NPC that gave the quest, which is one click away in the reward window.
+        if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } giver
+            || !world.QuestEnders.For(giver.Entry).Contains(questId))
         {
             return;
         }
@@ -2368,24 +2419,44 @@ public sealed class WorldSession(
     }
 
     /// <summary>Shows a quest's details, or its hand-in window if it is already complete.</summary>
-    private void OpenQuest(ObjectGuid npc, QuestTemplate quest)
+    /// <summary>
+    /// Shows a quest at one NPC: its details, or its hand-in window.
+    /// </summary>
+    /// <remarks>
+    /// <b>The reward window is only ever shown by the quest's ender.</b> Starter and ender are
+    /// separate tables and very often different NPCs, and offering the reward at whichever
+    /// questgiver happens to be in front of the player lets a "go and speak to someone" quest be
+    /// handed straight back to the person who gave it — the client shows "Quest Completed" at the
+    /// wrong NPC, and the errand is finished without going anywhere.
+    /// </remarks>
+    private void OpenQuest(Creature npc, QuestTemplate quest)
     {
         if (_player is null)
         {
             return;
         }
 
-        if (_player.Quests.StatusOf(quest.Id) == QuestStatus.Complete)
+        bool takesItBack = world.QuestEnders.For(npc.Entry).Contains(quest.Id);
+
+        if (takesItBack && _player.Quests.StatusOf(quest.Id) == QuestStatus.Complete)
         {
-            SendOfferReward(npc, quest);
+            SendOfferReward(npc.Guid, quest);
 
             return;
         }
 
+        // NOTE: upstream opens the request-items window rather than this one when
+        // quest.IsAutoComplete, on the first click as much as any later one. Deliberately not done:
+        // that path ends in RewardQuest paying out a quest that was never in the log, which is not
+        // built, so it would replace 1240 working accept-then-hand-in flows with a dead end. The
+        // window is the wrong one; the quest is completable, which matters more.
+
+        // Already carrying it, and this NPC cannot take it back: there is nothing to show but the
+        // text again, which is what the client asks for when a log entry is clicked.
         ServerPacket packet = new(Opcode.SMSG_QUESTGIVER_QUEST_DETAILS, 512);
 
         QuestPackets.WriteDetails(
-            packet.Body, npc, quest, quest.RewardMoney,
+            packet.Body, npc.Guid, quest, quest.RewardMoney,
             QuestReward.Experience(quest, _player.Level, world.Stores.QuestXp), DisplayIdFor);
 
         connection.Send(packet);
@@ -2557,22 +2628,80 @@ public sealed class WorldSession(
         return best;
     }
 
-    /// <summary>The icon one quest gets in the menu, or None if it should not be listed.</summary>
-    private uint MenuIconFor(QuestTemplate quest)
+    /// <summary>
+    /// The lines an NPC's quest menu shows this player.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Port of <c>Player::PrepareQuestMenu</c>. <b>The per-line icon is not a
+    /// <see cref="QuestGiverStatus"/></b> — that enum is the mark floating over the NPC's head, and
+    /// this is the much smaller <c>QuestMenuItem::QuestIcon</c>, which the client reads to sort each
+    /// line into the "available" or the "currently on" half of the window. Feeding it the other
+    /// enum draws a quest that is ready to hand in as though it were a fresh offer.
+    /// </para>
+    /// <para>
+    /// The two loops are upstream's, in upstream's order: what the NPC takes back first, then what
+    /// it hands out. A quest already in the log is listed only by the NPC that ends it — the one
+    /// that gave it has nothing left to say about it.
+    /// </para>
+    /// </remarks>
+    private List<QuestMenuEntry> BuildQuestMenu(Creature npc)
     {
+        List<QuestMenuEntry> menu = [];
+
         if (_player is null)
         {
-            return QuestGiverStatus.None;
+            return menu;
         }
 
-        return _player.Quests.StatusOf(quest.Id) switch
+        foreach (uint questId in world.QuestEnders.For(npc.Entry))
         {
-            QuestStatus.Complete => QuestGiverStatus.Reward,
-            QuestStatus.Incomplete => QuestGiverStatus.Incomplete,
-            _ => _player.Quests.CanTake(quest) == QuestTakeResult.Ok
-                ? QuestGiverStatus.Available
-                : QuestGiverStatus.None,
-        };
+            if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
+            {
+                continue;
+            }
+
+            // Complete and incomplete both draw the same icon: the client shows an unfinished quest
+            // in the list so the player can re-read what is left to do.
+            if (_player.Quests.StatusOf(questId) is QuestStatus.Complete or QuestStatus.Incomplete)
+            {
+                menu.Add(Entry(quest, QuestMenuIcon.Active));
+            }
+        }
+
+        foreach (uint questId in world.QuestStarters.For(npc.Entry))
+        {
+            if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null
+                || _player.Quests.CanTake(quest) != QuestTakeResult.Ok)
+            {
+                continue;
+            }
+
+            if (quest.IsAutoComplete && (!quest.IsRepeatable || quest.IsDailyOrWeeklyOrMonthly))
+            {
+                menu.Add(Entry(quest, QuestMenuIcon.Silent));
+            }
+            else if (quest.IsAutoComplete)
+            {
+                menu.Add(Entry(quest, QuestMenuIcon.Active));
+            }
+            else if (_player.Quests.StatusOf(questId) == QuestStatus.None)
+            {
+                menu.Add(Entry(quest, QuestMenuIcon.Available));
+            }
+        }
+
+        return menu;
+
+        static QuestMenuEntry Entry(QuestTemplate quest, uint icon) => new(
+            quest.Id,
+            icon,
+            quest.Level,
+            quest.Flags,
+            // Swaps the yellow exclamation for a blue question mark. A daily is repeatable and
+            // still gets the exclamation, so the flag alone is the wrong answer.
+            Repeatable: quest.IsRepeatable && !quest.IsDailyOrWeeklyOrMonthly,
+            quest.LogTitle);
     }
 
     /// <summary>Every quest an NPC is involved in, starter and ender alike.</summary>

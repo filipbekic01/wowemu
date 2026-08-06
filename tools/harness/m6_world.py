@@ -32,8 +32,8 @@ from m2_world import (
 )
 from m5_combat import cleanup, connect, creature_guid, ensure_character, walk_to
 from m6_quest import (
-    await_opcode, find_spawn, open_quest_giver, parse_quest_details, parse_offer_reward,
-    quest_giver_status,
+    await_opcode, clear_prerequisite, find_spawn, open_quest_giver, parse_quest_details,
+    parse_offer_reward, quest_giver_status, MARSHAL_MCBRIDE,
     CMSG_QUESTGIVER_ACCEPT_QUEST, CMSG_QUESTGIVER_CHOOSE_REWARD, CMSG_QUESTGIVER_COMPLETE_QUEST,
     CMSG_QUESTGIVER_QUERY_QUEST, SMSG_QUESTGIVER_OFFER_REWARD, SMSG_QUESTGIVER_QUEST_COMPLETE,
     SMSG_QUESTGIVER_QUEST_DETAILS, SMSG_QUESTUPDATE_COMPLETE,
@@ -54,9 +54,14 @@ EAGAN_PELTSKINNER = 196
 # complete on acceptance — which makes it the one that can be finished after the relogin.
 QUEST_ERRAND = 5261
 
-# Also from Eagan: collect eight Diseased Wolf Pelts. Taken and deliberately left unfinished, so the
+# From Marshal McBride: kill eight Kobold Vermin. Taken and deliberately left unfinished, so the
 # relogin has an incomplete quest to bring back as well as a complete one.
-QUEST_WOLVES = 33
+#
+# Northshire is one long chain and nothing in it starts from nothing: both of these sit behind
+# "A Threat Within" (783), which the gate clears first. The obvious second quest here used to be 33
+# "Wolves Across the Border", but that one is chained behind QUEST_ERRAND itself — it cannot be held
+# at the same time, which is exactly what this gate needs two quests for.
+QUEST_KOBOLDS = 7
 
 PLAYER_QUEST_LOG_1_1 = 158
 QUEST_LOG_SLOT_WIDTH = 5
@@ -125,21 +130,26 @@ def run(client, character):
     willem_spawn, willem_at = find_spawn(client, DEPUTY_WILLEM)
     eagan_spawn, eagan_at = find_spawn(client, EAGAN_PELTSKINNER)
     danil_spawn, danil_at = find_spawn(client, BROTHER_DANIL)
+    mcbride_spawn, mcbride_at = find_spawn(client, MARSHAL_MCBRIDE)
 
     willem = creature_guid(DEPUTY_WILLEM, willem_spawn)
     eagan = creature_guid(EAGAN_PELTSKINNER, eagan_spawn)
     danil = creature_guid(BROTHER_DANIL, danil_spawn)
+    mcbride = creature_guid(MARSHAL_MCBRIDE, mcbride_spawn)
+
+    # ---- both of the quests below are chained behind this one
+    clear_prerequisite(client, character, start, willem)
 
     # ---- take the errand from Willem, two yards away
     open_quest_giver(client, willem)
     accept_quest(client, willem, QUEST_ERRAND, expect_complete=True)
 
-    # ---- and the collection quest from Eagan
-    walk_to(client, guid, start, eagan_at)
-    position = eagan_at
+    # ---- and the kill quest from McBride
+    walk_to(client, guid, start, mcbride_at)
+    position = mcbride_at
 
-    open_quest_giver(client, eagan)
-    accept_quest(client, eagan, QUEST_WOLVES, expect_complete=False)
+    open_quest_giver(client, mcbride)
+    accept_quest(client, mcbride, QUEST_KOBOLDS, expect_complete=False)
 
     # ---- earn something, so there is money to check afterwards
     walk_to(client, guid, position, danil_at)
@@ -174,14 +184,14 @@ def run(client, character):
     if QUEST_ERRAND not in log:
         fail(f"quest {QUEST_ERRAND} was not in the log after logging back in")
 
-    if QUEST_WOLVES not in log:
-        fail(f"quest {QUEST_WOLVES} was not in the log after logging back in")
+    if QUEST_KOBOLDS not in log:
+        fail(f"quest {QUEST_KOBOLDS} was not in the log after logging back in")
 
     if equipped_item_guids(after):
         fail("the character is still wearing what it sold")
 
     print(f"  both quests came back: {QUEST_ERRAND} at slot {log[QUEST_ERRAND]}, "
-          f"{QUEST_WOLVES} at slot {log[QUEST_WOLVES]}")
+          f"{QUEST_KOBOLDS} at slot {log[QUEST_KOBOLDS]}")
 
     # ---- the complete one should still be handed in
     walk_to(client, guid, position, eagan_at)
@@ -218,7 +228,7 @@ def run(client, character):
     if QUEST_ERRAND in final_log:
         fail("the finished quest is still in the log")
 
-    if QUEST_WOLVES not in final_log:
+    if QUEST_KOBOLDS not in final_log:
         fail("the unfinished quest fell out of the log")
 
     print("  the finished quest left the log; the unfinished one stayed")

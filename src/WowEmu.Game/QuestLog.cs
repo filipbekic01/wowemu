@@ -5,6 +5,21 @@ using WowEmu.Protocol;
 namespace WowEmu.Game;
 
 /// <summary>
+/// The client-facing state of a quest log slot. <c>QuestSlotStateMask</c>.
+/// </summary>
+/// <remarks>
+/// A different thing from <see cref="QuestStatus"/>, which is the server's own record. This is the
+/// second of a slot's five words, and it is what the client's log reads to decide whether to draw
+/// a quest as finished.
+/// </remarks>
+public static class QuestSlotState
+{
+    public const uint None = 0x0000;
+    public const uint Complete = 0x0001;
+    public const uint Failed = 0x0002;
+}
+
+/// <summary>
 /// One quest a player is carrying, or has carried.
 /// </summary>
 /// <remarks>
@@ -94,6 +109,7 @@ public sealed class QuestLog(Player owner)
     /// timers and exclusive groups are absent and <b>pass</b>, so a quest gated on any of them is
     /// offered when it should not be.
     /// </remarks>
+    /// <seealso cref="SatisfiesPreviousQuest"/>
     public QuestTakeResult CanTake(QuestTemplate quest)
     {
         ArgumentNullException.ThrowIfNull(quest);
@@ -108,6 +124,11 @@ public sealed class QuestLog(Player owner)
         if (status == QuestStatus.Rewarded && !quest.IsRepeatable)
         {
             return QuestTakeResult.AlreadyDone;
+        }
+
+        if (!SatisfiesPreviousQuest(quest))
+        {
+            return QuestTakeResult.MissingPrerequisite;
         }
 
         if (owner.Level < quest.MinLevel)
@@ -144,8 +165,11 @@ public sealed class QuestLog(Player owner)
     /// Puts a quest in the log.
     /// </summary>
     /// <remarks>
-    /// A quest with no objectives at all is complete the moment it is taken — a "go and speak to
-    /// someone" quest — and marking it incomplete would leave it uncompletable.
+    /// Goes in incomplete and is then asked the ordinary completion question, exactly as
+    /// <c>Player::AddQuestAndCheckCompletion</c> does. That is how a "go and speak to someone"
+    /// errand — no objectives, nothing to do but hand it back — comes out complete, without
+    /// treating every objective-less row the same way: a scripted or PvP quest has no objective
+    /// columns either, and is nowhere near done.
     /// </remarks>
     public QuestProgress? Accept(QuestTemplate quest)
     {
@@ -168,11 +192,17 @@ public sealed class QuestLog(Player owner)
         _quests[quest.Id] = progress;
         WriteSlot(progress);
 
-        progress.Status = quest.HasObjectives ? QuestStatus.Incomplete : QuestStatus.Complete;
+        progress.Status = QuestStatus.Incomplete;
 
         // Counting what is already in the bags: a player who happens to be carrying the items is
         // done the instant they take the quest, and upstream checks the same way.
         RecountItems(quest, progress);
+
+        // And a quest with nothing to do at all is finished on the spot. Going through the same
+        // predicate as every later check, rather than testing for "no objectives" here, is what
+        // keeps the two answers from drifting — a scripted or PvP quest has no objective columns
+        // either, and is nowhere near done.
+        RefreshCompletion(quest, progress);
 
         return progress;
     }
@@ -281,11 +311,26 @@ public sealed class QuestLog(Player owner)
         return nowComplete;
     }
 
-    /// <summary>Whether every objective is met.</summary>
+    /// <summary>
+    /// Whether every objective is met.
+    /// </summary>
+    /// <remarks>
+    /// Port of the second half of <c>Player::CanCompleteQuest</c>. Two of its gates are here as
+    /// flat refusals rather than as counters, because what would move them does not exist: an
+    /// exploration-or-event quest is finished by a script, and a player-kill quest by PvP credit.
+    /// Answering yes for either hands the player a quest they have not done; answering no leaves
+    /// two quests in the game uncompletable and every scripted one waiting on a script. That is the
+    /// side to be wrong on.
+    /// </remarks>
     public bool IsSatisfied(QuestTemplate quest, QuestProgress progress)
     {
         ArgumentNullException.ThrowIfNull(quest);
         ArgumentNullException.ThrowIfNull(progress);
+
+        if (quest.IsExplorationOrEvent || quest.RequiredPlayerKills > 0)
+        {
+            return false;
+        }
 
         for (int i = 0; i < quest.Objectives.Length; i++)
         {
@@ -349,9 +394,22 @@ public sealed class QuestLog(Player owner)
 
         _quests[progress.QuestId] = progress;
 
-        if (progress.IsInLog)
+        if (!progress.IsInLog)
         {
-            WriteSlot(progress);
+            return;
+        }
+
+        WriteSlot(progress);
+
+        // The slot state is derived rather than stored: it is a view of the status, and two
+        // records of the same fact are two records that can disagree.
+        if (progress.Status == QuestStatus.Complete)
+        {
+            WriteSlotState(progress, QuestSlotState.Complete);
+        }
+        else if (progress.Status == QuestStatus.Failed)
+        {
+            WriteSlotState(progress, QuestSlotState.Failed);
         }
     }
 
@@ -377,15 +435,29 @@ public sealed class QuestLog(Player owner)
         return null;
     }
 
+    /// <summary>
+    /// Writes a whole log slot — all five words, whatever they hold.
+    /// </summary>
+    /// <remarks>
+    /// <b>Every word is marked for sending even when it is already zero.</b> The five are one unit
+    /// as far as the client is concerned, and <c>SetUInt32</c> ignores a write that changes
+    /// nothing — so a fresh slot would otherwise put only the quest id on the wire and leave the
+    /// client with a quest whose state, counters and timer it has never been told.
+    /// </remarks>
     private void WriteSlot(QuestProgress progress)
     {
         int field = SlotField(progress.Slot);
 
         owner.Fields.SetUInt32(field, progress.QuestId);
-        owner.Fields.SetUInt32(field + 1, 0);       // state flags
+        owner.Fields.SetUInt32(field + 1, QuestSlotState.None);
         owner.Fields.SetUInt32(field + 2, 0);       // counters, low
         owner.Fields.SetUInt32(field + 3, 0);       // counters, high
         owner.Fields.SetUInt32(field + 4, 0);       // timer
+
+        for (int i = 0; i < QuestConstants.LogSlotWidth; i++)
+        {
+            owner.Fields.MarkDirty(field + i);
+        }
 
         for (int i = 0; i < progress.Killed.Length; i++)
         {
@@ -394,6 +466,24 @@ public sealed class QuestLog(Player owner)
                 WriteCounter(progress, i, progress.Killed[i]);
             }
         }
+    }
+
+    /// <summary>
+    /// Sets the client-facing state of a slot.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>SetQuestSlotState</c>, which upstream calls from <c>CompleteQuest</c>. A quest
+    /// the server treats as complete but whose slot state is still zero is drawn by the client as
+    /// still in progress.
+    /// </remarks>
+    private void WriteSlotState(QuestProgress progress, uint state)
+    {
+        if (!progress.IsInLog)
+        {
+            return;
+        }
+
+        owner.Fields.SetUInt32(SlotField(progress.Slot) + 1, state);
     }
 
     private void ClearSlot(byte slot)
@@ -448,8 +538,51 @@ public sealed class QuestLog(Player owner)
     {
         if (progress.Status == QuestStatus.Incomplete && IsSatisfied(quest, progress))
         {
-            progress.Status = QuestStatus.Complete;
+            MarkComplete(progress);
         }
+    }
+
+    /// <summary>Marks a quest finished, in the server's record and in the client's slot.</summary>
+    /// <remarks>
+    /// One place, because the two have to move together: a status of complete with a slot state of
+    /// zero is a quest the client keeps drawing as unfinished.
+    /// </remarks>
+    private void MarkComplete(QuestProgress progress)
+    {
+        progress.Status = QuestStatus.Complete;
+
+        WriteSlotState(progress, QuestSlotState.Complete);
+    }
+
+    /// <summary>
+    /// Whether the quest ahead of this one in its chain has been done.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Port of <c>Player::SatisfyQuestPreviousQuest</c>, reduced to the single-prerequisite case.
+    /// <b>The sign of <c>PrevQuestId</c> chooses the test</b>: a positive id must have been handed
+    /// in, a negative one need only have been started. The C++ reads a whole list of them, built
+    /// from <c>PrevQuestId</c> plus every quest whose <c>ExclusiveGroup</c> ties it in; only the one
+    /// column is loaded here, so a quest gated on a group is admitted on its first prerequisite.
+    /// </para>
+    /// <para>
+    /// Without this check a questgiver offers its entire chain at once. That is how a fresh level-1
+    /// character can take the second quest in a line before the first, which then reads as the
+    /// wrong quest appearing in the log.
+    /// </para>
+    /// </remarks>
+    private bool SatisfiesPreviousQuest(QuestTemplate quest)
+    {
+        if (quest.PrevQuestId == 0)
+        {
+            return true;
+        }
+
+        uint previous = (uint)Math.Abs(quest.PrevQuestId);
+
+        return quest.PrevQuestId > 0
+            ? IsRewarded(previous)
+            : StatusOf(previous) != QuestStatus.None;
     }
 
     /// <summary>
@@ -473,6 +606,9 @@ public enum QuestTakeResult
     Ok,
     AlreadyOn,
     AlreadyDone,
+
+    /// <summary>The quest before this one in its chain has not been done.</summary>
+    MissingPrerequisite,
     TooLowLevel,
     TooHighLevel,
     WrongClass,

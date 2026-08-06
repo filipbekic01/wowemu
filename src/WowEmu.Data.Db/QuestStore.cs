@@ -66,21 +66,78 @@ public static class QuestGiverStatus
     public const uint Reward = 10;
 }
 
-/// <summary>Flags on a quest. <c>QuestFlags</c>. Only the ones this phase reads.</summary>
+/// <summary>
+/// The icon on one line of a questgiver's menu. <c>QuestMenuItem::QuestIcon</c>.
+/// </summary>
+/// <remarks>
+/// <b>A different, much smaller set of numbers from <see cref="QuestGiverStatus"/>.</b> That one is
+/// the mark floating over the NPC in the world; this one sorts a line inside the window the player
+/// has already opened. Writing a <c>QuestGiverStatus</c> here is not caught by anything — the field
+/// is a <c>uint32</c> either way — and the client quietly files a finished quest under "available".
+/// </remarks>
+public static class QuestMenuIcon
+{
+    /// <summary>Neither half of the window: the giver just hands it over on click.</summary>
+    public const uint Silent = 0;
+
+    /// <summary>On offer. The yellow exclamation.</summary>
+    public const uint Available = 2;
+
+    /// <summary>Already in the log. The question mark.</summary>
+    public const uint Active = 4;
+}
+
+/// <summary>
+/// The <c>Flags</c> column. <c>QuestFlags</c>. Only the bits this phase reads.
+/// </summary>
+/// <remarks>
+/// <b>There are two independent flag columns and they are easy to confuse.</b> Repeatable and
+/// monthly live in <see cref="QuestSpecialFlags"/>, not here, and their values collide with real
+/// bits in this set — <c>0x0001</c> here is "stay alive", not "repeatable". Reading one column with
+/// the other's constants silently answers a different question about every quest in the game.
+/// </remarks>
 public static class QuestFlags
 {
-    /// <summary>Staying in the log after completion — a daily, or a grind.</summary>
+    /// <summary>Rewards appear only in the offer window — not in the details, not in the log.</summary>
+    public const uint HiddenRewards = 0x00000200;
+
+    /// <summary>Handed in the moment it completes, and never drawn in the client's log.</summary>
+    public const uint Tracking = 0x00000400;
+
+    public const uint Daily = 0x00001000;
+    public const uint Weekly = 0x00008000;
+
+    /// <summary>Completable without meeting its objectives — the giver just hands it over.</summary>
+    public const uint AutoComplete = 0x00010000;
+
+    /// <summary>Taken by clicking the giver, with no details window first.</summary>
+    public const uint AutoAccept = 0x00080000;
+}
+
+/// <summary>
+/// The <c>SpecialFlags</c> column. <c>QuestSpecialFlags</c>, the DB-allowed bits only.
+/// </summary>
+/// <remarks>
+/// A separate, much smaller set from <see cref="QuestFlags"/>; the C++ keeps them in one enum whose
+/// low half is this column and whose high half is computed at load. Bits above <c>0x0100</c> are
+/// derived from the objective columns and are never stored, so they are not modelled here.
+/// </remarks>
+public static class QuestSpecialFlags
+{
+    /// <summary>Can be taken again after being handed in.</summary>
     public const uint Repeatable = 0x0001;
 
-    /// <summary>Hands itself in the moment the objectives are met.</summary>
-    public const uint AutoComplete = 0x0004;
+    /// <summary>
+    /// Completed by exploring somewhere or by a script firing, <b>not</b> by its own objectives.
+    /// </summary>
+    public const uint ExplorationOrEvent = 0x0002;
 
-    /// <summary>The rewards are not shown in the details window.</summary>
-    public const uint HiddenRewards = 0x0100;
+    public const uint AutoAccept = 0x0004;
+    public const uint DungeonFinder = 0x0008;
+    public const uint Monthly = 0x0010;
 
-    public const uint Daily = 0x1000;
-    public const uint Weekly = 0x8000;
-    public const uint Monthly = 0x400000;
+    /// <summary>Credit comes from casting a spell on the target rather than killing it.</summary>
+    public const uint Cast = 0x0020;
 }
 
 /// <summary>One creature or gameobject a quest asks the player to deal with.</summary>
@@ -164,7 +221,18 @@ public sealed record QuestTemplate(
     uint SourceItemId,
     byte SourceItemCount,
     uint Flags,
-    byte SpecialFlags,
+
+    /// <summary>
+    /// The second flag column. See <see cref="QuestSpecialFlags"/>.
+    /// </summary>
+    /// <remarks>
+    /// <b>Its width differs between the two reference trees</b> — <c>tinyint</c> in the vendored
+    /// dump's <c>quest_template</c>, <c>int unsigned</c> in the current C++'s
+    /// <c>quest_template_addon</c>, whose DB-allowed bits run past 255. The fifth such divergence,
+    /// after <c>creature_template_model</c>, <c>game_graveyard</c>, <c>EndText</c> and
+    /// <c>playercreateinfo_spell</c>. Held at the wider of the two so either dump loads.
+    /// </remarks>
+    uint SpecialFlags,
     QuestItem[] Rewards,
     QuestItem[] RewardChoices,
     QuestObjective[] Objectives,
@@ -196,14 +264,52 @@ public sealed record QuestTemplate(
     string CompletedText,
     string OfferRewardText,
     string RequestItemsText,
-    string[] ObjectiveText)
+    string[] ObjectiveText,
+
+    /// <summary>
+    /// How many enemy players must be killed. <c>RequiredPlayerKills</c>.
+    /// </summary>
+    /// <remarks>
+    /// Two quests in the whole game set it, and both are PvP. It is here because the client reads
+    /// the field regardless and draws an objective line from it — a quest that asks for kills and
+    /// reports zero shows a line the player can never satisfy.
+    /// </remarks>
+    byte RequiredPlayerKills = 0)
 {
-    /// <summary>Whether it stays available after being handed in.</summary>
-    public bool IsRepeatable => (Flags & QuestFlags.Repeatable) != 0;
+    /// <summary>Whether it stays available after being handed in. <b>A SpecialFlags bit.</b></summary>
+    public bool IsRepeatable => (SpecialFlags & QuestSpecialFlags.Repeatable) != 0;
 
     /// <summary>Whether it resets on a schedule rather than being freely repeatable.</summary>
+    /// <remarks>Daily and weekly are Flags bits; monthly is a SpecialFlags one.</remarks>
     public bool IsDailyOrWeeklyOrMonthly =>
-        (Flags & (QuestFlags.Daily | QuestFlags.Weekly | QuestFlags.Monthly)) != 0;
+        (Flags & (QuestFlags.Daily | QuestFlags.Weekly)) != 0
+        || (SpecialFlags & QuestSpecialFlags.Monthly) != 0;
+
+    /// <summary>
+    /// Whether the giver can hand it in without its objectives being met.
+    /// </summary>
+    /// <remarks>
+    /// <c>Method == 0</c> counts too, everywhere the C++ asks this question — the two are always
+    /// tested together, as <c>quest->IsAutoComplete() || !quest->GetQuestMethod()</c>. Such a quest
+    /// opens the <i>request items</i> window rather than the details one, even on the first click.
+    /// </remarks>
+    public bool IsAutoComplete => (Flags & QuestFlags.AutoComplete) != 0 || Method == 0;
+
+    /// <summary>Whether it is taken by clicking the giver, with no details window first.</summary>
+    public bool IsAutoAccept => (SpecialFlags & QuestSpecialFlags.AutoAccept) != 0;
+
+    /// <summary>
+    /// Whether something outside the objective columns finishes it.
+    /// </summary>
+    /// <remarks>
+    /// An area to walk into, or a script. Neither is modelled, so a quest with this bit and no
+    /// objectives can never be completed — which is the right answer: treating it as complete on
+    /// accept lets the player hand in 443 quests they have not done.
+    /// </remarks>
+    public bool IsExplorationOrEvent => (SpecialFlags & QuestSpecialFlags.ExplorationOrEvent) != 0;
+
+    /// <summary>Whether it is only ever finished by a script this server does not run.</summary>
+    public bool IsTracking => (Flags & QuestFlags.Tracking) != 0;
 
     /// <summary>Money the player is <i>paid</i>. Zero when the quest costs money instead.</summary>
     public uint RewardMoney => RewardOrRequiredMoney > 0 ? (uint)RewardOrRequiredMoney : 0;
@@ -373,7 +479,8 @@ public sealed class QuestStore
                IFNULL(EndText, ''), IFNULL(QuestCompletionLog, ''),
                IFNULL(OfferRewardText, ''), IFNULL(RequestItemsText, ''),
                IFNULL(ObjectiveText1, ''), IFNULL(ObjectiveText2, ''),
-               IFNULL(ObjectiveText3, ''), IFNULL(ObjectiveText4, '')
+               IFNULL(ObjectiveText3, ''), IFNULL(ObjectiveText4, ''),
+               RequiredPlayerKills
         FROM quest_template
         """;
 
@@ -443,7 +550,7 @@ public sealed class QuestStore
             SourceItemId: reader.GetUInt32(18),
             SourceItemCount: reader.GetByte(19),
             Flags: reader.GetUInt32(20),
-            SpecialFlags: reader.GetByte(21),
+            SpecialFlags: reader.GetUInt32(21),
             Rewards: rewards,
             RewardChoices: choices,
             Objectives: objectives,
@@ -456,6 +563,7 @@ public sealed class QuestStore
             CompletedText: reader.GetString(70),
             OfferRewardText: reader.GetString(71),
             RequestItemsText: reader.GetString(72),
-            ObjectiveText: objectiveText);
+            ObjectiveText: objectiveText,
+            RequiredPlayerKills: reader.GetByte(77));
     }
 }

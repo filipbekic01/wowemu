@@ -74,7 +74,7 @@ public sealed class GossipPacketTests
 
         GossipPackets.WriteGossipMenu(
             withQuest, Npc, 21, 518, [],
-            [new QuestMenuEntry(5261, 8, 2, 0, "Eagan Peltskinner")]);
+            [new QuestMenuEntry(5261, QuestMenuIcon.Available, 2, 0, false, "Eagan Peltskinner")]);
 
         PacketReader reader = new(withQuest.WrittenSpan.ToArray());
         reader.Skip(8 + 4 + 4 + 4);

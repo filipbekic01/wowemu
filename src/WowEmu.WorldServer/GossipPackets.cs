@@ -131,7 +131,7 @@ public static class GossipPackets
             writer.WriteUInt32(quest.Icon);
             writer.WriteUInt32((uint)quest.Level);
             writer.WriteUInt32(quest.Flags);
-            writer.WriteUInt8(0);       // repeatable, which changes the icon
+            writer.WriteUInt8(quest.Repeatable ? (byte)1 : (byte)0);
             writer.WriteCString(quest.Title);
         }
     }

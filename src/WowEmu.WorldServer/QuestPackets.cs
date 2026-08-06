@@ -4,8 +4,17 @@ using WowEmu.Protocol;
 
 namespace WowEmu.WorldServer;
 
-/// <summary>One line in the "which of these?" list a multi-quest NPC shows.</summary>
-public readonly record struct QuestMenuEntry(uint QuestId, uint Icon, int Level, uint Flags, string Title);
+/// <summary>One line of an NPC's quest menu, as the client draws it.</summary>
+/// <param name="Icon">
+/// <see cref="QuestMenuIcon"/>, <b>not <see cref="QuestGiverStatus"/></b>. It sorts the line into
+/// the available or the active half of the window.
+/// </param>
+/// <param name="Repeatable">
+/// Whether the line gets a blue question mark instead of a yellow exclamation. A daily is
+/// repeatable and still gets the exclamation, so it is not simply the flag.
+/// </param>
+public readonly record struct QuestMenuEntry(
+    uint QuestId, uint Icon, int Level, uint Flags, bool Repeatable, string Title);
 
 /// <summary>
 /// Writes the quest packets.
@@ -64,10 +73,7 @@ public static class QuestPackets
             writer.WriteUInt32((uint)entry.Level);
             writer.WriteUInt32(entry.Flags);
 
-            // Whether the icon is a blue question mark rather than a yellow exclamation. Dailies
-            // are repeatable and still get the exclamation, which is why this is not just the flag.
-            writer.WriteUInt8(0);
-
+            writer.WriteUInt8(entry.Repeatable ? (byte)1 : (byte)0);
             writer.WriteCString(entry.Title);
         }
     }
@@ -243,6 +249,10 @@ public static class QuestPackets
         ArgumentNullException.ThrowIfNull(writer);
         ArgumentNullException.ThrowIfNull(quest);
 
+        // A quest that keeps its rewards secret until hand-in: the money and both item arrays go
+        // out as zeroes here and are filled in by the offer packet instead.
+        bool hideRewards = (quest.Flags & QuestFlags.HiddenRewards) != 0;
+
         writer.WriteUInt32(quest.Id);
         writer.WriteUInt32(quest.Method);
 
@@ -266,7 +276,9 @@ public static class QuestPackets
         writer.WriteUInt32(quest.NextQuestIdChain);
         writer.WriteUInt32(quest.RewardXpDifficulty);
 
-        writer.WriteUInt32(quest.RewardMoney);
+        // Signed and raw: a negative value is money the quest *costs*, and the client draws it as a
+        // "required" line. Clamping it to zero here loses that line on the 109 quests that have one.
+        writer.WriteUInt32(hideRewards ? 0u : unchecked((uint)quest.RewardOrRequiredMoney));
         writer.WriteUInt32(quest.RewardMoneyMaxLevel);
         writer.WriteUInt32(quest.RewardSpell);
         writer.WriteUInt32(unchecked((uint)quest.RewardSpellCast));
@@ -279,21 +291,23 @@ public static class QuestPackets
         writer.WriteUInt32(quest.Flags & 0xFFFF);
 
         writer.WriteUInt32(0);          // title
-        writer.WriteUInt32(0);          // players to slay
+        writer.WriteUInt32(quest.RequiredPlayerKills);
         writer.WriteUInt32(0);          // bonus talents
         writer.WriteUInt32(0);          // arena points
         writer.WriteUInt32(0);          // review reputation mask
 
+        // Both blocks are still written when the rewards are hidden — as zeroes. The client reads a
+        // fixed count either way, so leaving them out shifts everything after by eighty bytes.
         for (int i = 0; i < QuestConstants.MaxRewards; i++)
         {
-            writer.WriteUInt32(quest.Rewards[i].ItemId);
-            writer.WriteUInt32(quest.Rewards[i].Count);
+            writer.WriteUInt32(hideRewards ? 0 : quest.Rewards[i].ItemId);
+            writer.WriteUInt32(hideRewards ? 0 : quest.Rewards[i].Count);
         }
 
         for (int i = 0; i < QuestConstants.MaxRewardChoices; i++)
         {
-            writer.WriteUInt32(quest.RewardChoices[i].ItemId);
-            writer.WriteUInt32(quest.RewardChoices[i].Count);
+            writer.WriteUInt32(hideRewards ? 0 : quest.RewardChoices[i].ItemId);
+            writer.WriteUInt32(hideRewards ? 0 : quest.RewardChoices[i].Count);
         }
 
         WriteReputationBlock(writer);

@@ -2376,11 +2376,13 @@
     {
       "category": "Quests",
       "items": [
-        "QUEST CHAINS ARE NOT ENFORCED. PrevQuestId, NextQuestId and ExclusiveGroup are read into the template and nothing checks them, so a chain's second quest is offered before its first.",
+        "PrevQuestId is now enforced, in its positive and negative forms. ExclusiveGroup and the multi-prerequisite list the C++ builds from it are still not read, so a quest gated on a group is admitted on its first prerequisite alone. NextQuestId is read and unused.",
         "No timed quests, no area-trigger objectives, no escorts and no event objectives. Only creature kills and carried items count.",
         "Reputation and skill requirements pass, and reputation, spell and title rewards are not paid.",
         "Only creatures give quests — gameobject_queststarter and _questender are not read.",
-        "Daily and weekly quests do not reset; a repeatable one can be taken again immediately."
+        "Daily and weekly quests do not reset; a repeatable one can be taken again immediately.",
+        "An autocomplete quest (Flags 0x00010000, or Method 0) opens the details window instead of the request-items one. It is still completable — accept, then hand in — but the first click shows the wrong dialog. The blizzlike path ends in RewardQuest paying out a quest that was never in the log, which is not built.",
+        "A quest whose SpecialFlags carry EXPLORATION_OR_EVENT, and the two that require player kills, are now permanently incomplete rather than wrongly complete. What would finish them is a script and a PvP-kill hook, neither of which exists."
       ]
     },
     {
@@ -2418,7 +2420,9 @@
     "data/ is 3 GB of extracted client data and is not committed; a fresh clone needs the extractors run again.",
     "sql/world/ redistributes AGPL-3.0 content from AzerothCore's database. Deliberate — but it is a licence obligation worth being aware of.",
     "FIVE TABLES NOW OVERLOAD A COLUMN'S SIGN: creature_loot_template's mincountOrRef, npc_vendor's item, npc_trainer's SpellID, quest_template's RequiredNpcOrGo (gameobject) and RewardOrRequiredMoney (a cost). Read any unsigned and the failure is silent in most cases. Check the column's signedness before writing the reader.",
-    "FOUR TABLES NOW DIVERGE BETWEEN THE TWO REFERENCE TREES: creature_template_model vs modelid1..4, game_graveyard vs game_graveyard_zone, AreaDescription vs EndText, and playercreateinfo_spell vs playercreateinfo_spell_custom (the newer C++ reads the _custom table, which our dump leaves empty). Read the C++ for behaviour and the dump for column names."
+    "FIVE TABLES NOW DIVERGE BETWEEN THE TWO REFERENCE TREES: creature_template_model vs modelid1..4, game_graveyard vs game_graveyard_zone, AreaDescription vs EndText, playercreateinfo_spell vs playercreateinfo_spell_custom (the newer C++ reads the _custom table, which our dump leaves empty), and quest_template.SpecialFlags (tinyint, in quest_template) vs quest_template_addon.SpecialFlags (int unsigned, whose allowed bits run past 255). Read the C++ for behaviour and the dump for column names — and for column WIDTHS.",
+    "A QUEST HAS TWO INDEPENDENT FLAG COLUMNS and their bits collide numerically. Repeatable and Monthly are SpecialFlags (0x0001 / 0x0010); AutoComplete is Flags 0x00010000 and HiddenRewards is Flags 0x0200. Reading one column with the other's constants compiles, runs, and silently answers a different question about every quest in the game. The same trap sits on the wire: QuestGiverStatus (0/1/2/5/8/9/10, the mark over the NPC) is NOT QuestMenuItem::QuestIcon (0/2/4, which half of the window a line files under), and both are written as a uint32.",
+    "NORTHSHIRE IS ONE LONG CHAIN. quest_template.PrevQuestId gates nearly every quest in the human start zone: 783 -> 5261 -> 33, and 783 -> 7 -> 15 -> 21. Any harness that takes a quest there has to walk the chain, and two quests picked at random usually cannot be held at the same time."
   ],
   "conventions": [
     "Anything used from database-wotlk/ gets vendored into sql/world/ first, via tools/db/export-world.sh, with a note saying what reads it. The server never reads the reference checkout at runtime.",
