@@ -1218,7 +1218,10 @@ public sealed class Map(
 
             if (decision.Evaded)
             {
-                SendCreatureMove(creature, creature.HomePosition);
+                // The walk home is not issued here. Evade pushed a HomeMovementGenerator, and the
+                // creature's own update takes the destination from it on the next tick — which is
+                // also what broadcasts the move and what pops the generator on arrival. Sending one
+                // here as well would put two moves on the wire for one journey.
                 continue;
             }
 

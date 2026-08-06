@@ -154,6 +154,12 @@ internal static partial class Log
     public static partial void CreatureContentLoaded(
         ILogger logger, int templates, int models, int spawns, int maps, double elapsedMs);
 
+    [LoggerMessage(EventId = 2330, Level = LogLevel.Information,
+        Message = "Loaded {Waypoints} waypoints across {Paths} paths, and {Addons} creature addons "
+                + "of which {WithPath} name one")]
+    public static partial void WaypointContentLoaded(
+        ILogger logger, int waypoints, int paths, int addons, int withPath);
+
     [LoggerMessage(EventId = 2315, Level = LogLevel.Error,
         Message = "Handler for {Opcode} threw ({Address})")]
     public static partial void PacketHandlerFailed(

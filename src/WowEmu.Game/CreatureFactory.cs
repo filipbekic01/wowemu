@@ -17,7 +17,11 @@ namespace WowEmu.Game;
 /// <c>Creature::InitEntry</c>.
 /// </para>
 /// </remarks>
-public sealed class CreatureFactory(CreatureTemplateStore templates, CreatureStatsStore stats)
+public sealed class CreatureFactory(
+    CreatureTemplateStore templates,
+    CreatureStatsStore stats,
+    WaypointStore? waypoints = null,
+    CreatureAddonStore? addons = null)
 {
     /// <summary>
     /// Builds one creature, or explains why it cannot be built.
@@ -63,7 +67,8 @@ public sealed class CreatureFactory(CreatureTemplateStore templates, CreatureSta
         bool useOppositeGenderModel = GameRandom.Urand(0, 1) == 0;
 
         creature = Creature.Create(
-            spawn, template, templates, baseStats, level, useOppositeGenderModel, displayId);
+            spawn, template, templates, baseStats, level, useOppositeGenderModel, displayId,
+            PathFor(spawn));
 
         if (creature is null)
         {
@@ -73,6 +78,31 @@ public sealed class CreatureFactory(CreatureTemplateStore templates, CreatureSta
 
         reason = null;
         return true;
+    }
+
+    /// <summary>
+    /// The route a spawn patrols, or null.
+    /// </summary>
+    /// <remarks>
+    /// Two lookups, not one. A spawn's route is named by <c>creature_addon.path_id</c> rather than
+    /// by its own guid — the two agree for most patrols, which is exactly why keying on the guid
+    /// would appear to work and quietly give the wrong route to the ones where they differ.
+    /// <para>
+    /// Both stores are optional so that a creature can still be built without a database behind it,
+    /// the same way the rest of this class is arranged. A patrolling spawn built without them stands
+    /// still rather than failing.
+    /// </para>
+    /// </remarks>
+    private IReadOnlyList<Waypoint>? PathFor(CreatureSpawn spawn)
+    {
+        if (waypoints is null || addons is null)
+        {
+            return null;
+        }
+
+        uint pathId = addons.PathFor(spawn.SpawnId);
+
+        return pathId == 0 ? null : waypoints.Path(pathId);
     }
 
     /// <summary>

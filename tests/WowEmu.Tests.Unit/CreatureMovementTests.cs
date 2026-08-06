@@ -102,9 +102,10 @@ public sealed class MovementGeneratorTests
         for (int i = 0; i < 200; i++)
         {
             // A diff past the longest possible wait, so every call produces a destination.
-            Assert.True(generator.TryGetDestination(creature, RandomMovementGenerator.MaxWaitMs + 1, out Position destination));
+            Assert.True(generator.TryGetDestination(
+                creature, RandomMovementGenerator.MaxWaitMs + 1, out MovementDecision decision));
 
-            float distance = creature.HomePosition.GetExactDist2d(destination);
+            float distance = creature.HomePosition.GetExactDist2d(decision.Destination);
             Assert.True(distance <= 5f + 0.001f, $"wandered {distance} yards from home");
         }
     }
@@ -477,7 +478,8 @@ internal static class CreatureFixture
         uint lootId = 0,
         uint minGold = 0,
         uint maxGold = 0,
-        uint gossipMenuId = 0)
+        uint gossipMenuId = 0,
+        IReadOnlyList<Waypoint>? path = null)
     {
         StubModels models = new();
         models.Add(new CreatureModelInfo(4481, 0.372f, 1.5f, 0, 0));
@@ -547,7 +549,8 @@ internal static class CreatureFixture
         CreatureBaseStats stats = new(100, 200, 300, 50, 60, 20, 5, 1.5f, 2f, 3f);
 
         Creature? creature = Creature.Create(
-            spawn, template, models, stats, level: 5, useOppositeGenderModel: false, displayId: 4481);
+            spawn, template, models, stats, level: 5, useOppositeGenderModel: false, displayId: 4481,
+            path: path);
 
         Assert.NotNull(creature);
         return creature;

@@ -1,5 +1,6 @@
 using WowEmu.Core;
 using WowEmu.Data.Client;
+using WowEmu.Game.Movement;
 
 namespace WowEmu.Game.Combat;
 
@@ -255,6 +256,17 @@ public static class CreatureAi
         creature.Threat.Clear();
         creature.AttackStop();
         creature.IsInCombat = false;
+
+        // Full health, as upstream's EnterEvadeMode does. Without it a creature keeps whatever
+        // damage it took, so a player who pulls it, runs out of range and comes back finds it
+        // already half dead — every mob in the game becomes killable by walking away enough times.
+        creature.Health = creature.MaxHealth;
+        creature.Power = creature.MaxPower;
+
+        // Pushed rather than issued: the walk home is a movement generator on top of whatever the
+        // creature was doing, and it pops itself on arrival so the wander or patrol it was
+        // interrupted from resumes without anyone having to remember what it was.
+        creature.Motion.Push(new HomeMovementGenerator());
     }
 
     /// <summary>

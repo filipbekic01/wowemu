@@ -728,13 +728,14 @@
               "text": "Moves are queued behind the create block for the same creature, never ahead of it"
             },
             {
-              "done": false,
-              "text": "HomeMovementGenerator"
+              "done": true,
+              "text": "HomeMovementGenerator",
+              "note": "Pushed onto the motion stack by evade and pops itself on arrival, so the wander or patrol it interrupted resumes with nothing having had to remember it. Evade now also restores health and power, as upstream does — without that a player could pull a creature, walk away, come back and find it still wounded, and kill anything in the game by repeating. A zero-length journey home counts as arriving, or a creature that evades on its own spawn point waits forever for an arrival no move can produce."
             },
             {
-              "done": false,
+              "done": true,
               "text": "WaypointMovementGenerator",
-              "note": "12,000-odd spawns ask for it and currently stand still."
+              "note": "waypoint_data and creature_addon vendored (112,797 points across 5,516 paths; 34,311 addon rows). 5,290 spawns patrol, of which 5,255 resolve to a real path — the other 35 name one that does not exist and fall back to idle, as upstream does. Routes repeat, honour per-point delays (2,973 of them) and per-point run/walk (7,299 run). NOTE: the old estimate of \"12,000-odd spawns\" here was wrong; the vendored table says 5,290."
             },
             {
               "done": false,
@@ -746,7 +747,8 @@
             },
             {
               "done": false,
-              "text": "Creature movement does not update UNIT_FIELD_BYTES_1 stand state or emit walk/run flags"
+              "text": "Creature movement does not update UNIT_FIELD_BYTES_1 stand state or emit walk/run flags",
+              "note": "Run versus walk is now chosen per leg — a waypoint's move_type picks the speed. What is still missing is the stand state and the movement flags on the wire, so the client picks the animation from the spline speed rather than being told."
             }
           ]
         },
@@ -2296,10 +2298,10 @@
       "items": [
         "There is no real Corpse object. A dead player's body is a remembered position, not something another player can see or walk up to — and the reclaim delay is sent to the client but never enforced, so reclaiming is allowed immediately.",
         "UNIT_DYNFLAG_LOOTABLE is set on a corpse that has loot and cleared when it is emptied, and — since values blocks are broadcast — it now actually reaches the client, which is what makes a corpse sparkle and accept a right click. It is not yet rewritten per observer, so everyone in sight sees the sparkle rather than only whoever may loot it.",
-        "creature_addon is not vendored, so every creature is ReactState.Aggressive. A passive quest prop currently behaves like anything else and will fight back.",
         "A creature's facing is server-side only. CreatureAi.FaceTowards decides whether a swing lands, but the client is not told — that needs the facing-target form of SMSG_MONSTER_MOVE.",
         "Glancing blows exclude a pet victim upstream; pets do not exist here, so only the player half of that condition is modelled.",
-        "Threat has no taunt, no redirection and no aura modifiers, and MeleeChances has no aura or expertise terms."
+        "Threat has no taunt, no redirection and no aura modifiers, and MeleeChances has no aura or expertise terms.",
+        "creature_addon is vendored now, but only its path_id is read. Mount, emote, stand state and the spawn aura list are still ignored, so a creature that should spawn mounted or kneeling does neither."
       ]
     },
     {

@@ -1,4 +1,5 @@
 using WowEmu.Core;
+using WowEmu.Data.Db;
 
 namespace WowEmu.Game.Movement;
 
@@ -24,6 +25,16 @@ public enum MovementGeneratorType : byte
     Distract = 10,
     Follow = 12,
 }
+
+/// <summary>
+/// Where a generator wants the creature to go, and how fast.
+/// </summary>
+/// <param name="Destination">The point to head for.</param>
+/// <param name="Run">
+/// Whether to run rather than walk. A wandering animal ambles; a patrol on a run-flagged leg does
+/// not, and 7,299 of the 112,797 stored waypoints are flagged that way.
+/// </param>
+public readonly record struct MovementDecision(Position Destination, bool Run);
 
 /// <summary>
 /// Decides where a creature is trying to go.
@@ -79,11 +90,27 @@ public sealed class MotionMaster(MovementGeneratorType defaultType)
     /// Asks the current generator where the creature should go next.
     /// </summary>
     /// <returns>False when it has nowhere for the creature to be, which is the usual answer.</returns>
-    public bool TryGetDestination(Creature creature, uint diffMs, out Position destination)
+    public bool TryGetDestination(Creature creature, uint diffMs, out MovementDecision decision)
     {
-        destination = default;
+        decision = default;
 
-        return _slots.Count > 0 && _slots.Peek().TryGetDestination(creature, diffMs, out destination);
+        return _slots.Count > 0 && _slots.Peek().TryGetDestination(creature, diffMs, out decision);
+    }
+
+    /// <summary>
+    /// Tells the top generator the creature has arrived, and removes it if it is finished.
+    /// </summary>
+    /// <remarks>
+    /// The only way a pushed generator ever comes off the stack. Going home is the first thing that
+    /// needs it: the creature heads for its spawn point, reaches it, and the route or wander it was
+    /// doing before the fight resumes on its own.
+    /// </remarks>
+    public void NotifyArrived(Creature creature)
+    {
+        if (_slots.Count > 0 && _slots.Peek().OnArrived(creature))
+        {
+            _slots.Pop();
+        }
     }
 }
 
@@ -98,9 +125,19 @@ public interface IMovementGenerator
     /// </summary>
     /// <param name="creature">The creature deciding. Read, never moved.</param>
     /// <param name="diffMs">Milliseconds since the last call, for generators that wait.</param>
-    /// <param name="destination">Where to go.</param>
+    /// <param name="decision">Where to go, and whether to run.</param>
     /// <returns>False to leave the creature where it is.</returns>
-    bool TryGetDestination(Creature creature, uint diffMs, out Position destination);
+    bool TryGetDestination(Creature creature, uint diffMs, out MovementDecision decision);
+
+    /// <summary>
+    /// Called when the creature finishes a move this generator asked for.
+    /// </summary>
+    /// <returns>True when the generator is done and should be taken off the stack.</returns>
+    /// <remarks>
+    /// Default false: a generator that runs forever — idling, wandering, patrolling — is never
+    /// finished, and only a temporary one pushed on top of it has anywhere to go afterwards.
+    /// </remarks>
+    bool OnArrived(Creature creature) => false;
 }
 
 /// <summary>A creature that stays exactly where it was put.</summary>
@@ -115,9 +152,9 @@ public sealed class IdleMovementGenerator : IMovementGenerator
 
     public MovementGeneratorType Type => MovementGeneratorType.Idle;
 
-    public bool TryGetDestination(Creature creature, uint diffMs, out Position destination)
+    public bool TryGetDestination(Creature creature, uint diffMs, out MovementDecision decision)
     {
-        destination = default;
+        decision = default;
         return false;
     }
 }
@@ -143,11 +180,11 @@ public sealed class RandomMovementGenerator(float wanderDistance) : IMovementGen
 
     public MovementGeneratorType Type => MovementGeneratorType.Random;
 
-    public bool TryGetDestination(Creature creature, uint diffMs, out Position destination)
+    public bool TryGetDestination(Creature creature, uint diffMs, out MovementDecision decision)
     {
         ArgumentNullException.ThrowIfNull(creature);
 
-        destination = default;
+        decision = default;
 
         if (_waitRemainingMs > diffMs)
         {
@@ -170,7 +207,7 @@ public sealed class RandomMovementGenerator(float wanderDistance) : IMovementGen
 
         Position home = creature.HomePosition;
 
-        destination = new Position(
+        Position destination = new(
             home.X + (radius * MathF.Cos(angle)),
             home.Y + (radius * MathF.Sin(angle)),
 
@@ -184,6 +221,7 @@ public sealed class RandomMovementGenerator(float wanderDistance) : IMovementGen
         // generator needs no arrival callback to stay in step.
         _waitRemainingMs = GameRandom.Urand(MinWaitMs, MaxWaitMs);
 
+        decision = new MovementDecision(destination, Run: false);
         return true;
     }
 
@@ -192,4 +230,123 @@ public sealed class RandomMovementGenerator(float wanderDistance) : IMovementGen
 
     /// <inheritdoc cref="MinWaitMs"/>
     public const uint MaxWaitMs = 10_000;
+}
+
+/// <summary>
+/// A creature that walks a fixed route, over and over.
+/// </summary>
+/// <remarks>
+/// Port of <c>WaypointMovementGenerator&lt;Creature&gt;</c>. 5,290 spawns use it — the guards
+/// pacing a wall, the patrols circling a camp, the boats and zeppelins' crews. Before this they
+/// stood exactly where the database put them.
+/// <para>
+/// The route is shared and never mutated: one path can be walked by several spawns at once, and the
+/// only per-creature state is where along it this one has got to.
+/// </para>
+/// </remarks>
+public sealed class WaypointMovementGenerator(IReadOnlyList<Waypoint> path) : IMovementGenerator
+{
+    private int _next;
+    private uint _pauseRemainingMs;
+
+    /// <summary>The route, in the order it is walked.</summary>
+    public IReadOnlyList<Waypoint> Path { get; } = path;
+
+    /// <summary>Which point the creature is heading for, or has just reached.</summary>
+    public int NextIndex => _next;
+
+    public MovementGeneratorType Type => MovementGeneratorType.Waypoint;
+
+    /// <summary>
+    /// Picks the next point, unless the creature is still waiting at the last one.
+    /// </summary>
+    /// <remarks>
+    /// <b>The wait is armed when the move is issued, not when it completes.</b> This is only called
+    /// once a move has finished — a creature mid-walk never reaches here — so a pause armed at issue
+    /// time is first counted down on the call after arrival, which is exactly when it should be.
+    /// <para>
+    /// Starts at point 0 wherever the creature happens to be standing, so its first leg is a walk
+    /// from its spawn point to the start of the route. Upstream instead resumes from the
+    /// <c>creature.currentwaypoint</c> column, which we do not read; the difference is one leg, once,
+    /// at startup.
+    /// </para>
+    /// </remarks>
+    public bool TryGetDestination(Creature creature, uint diffMs, out MovementDecision decision)
+    {
+        decision = default;
+
+        if (Path.Count == 0)
+        {
+            return false;
+        }
+
+        // The same shape the wander generator uses, and upstream's: the tick that exhausts the wait
+        // is the tick that moves. Burning a further call to notice the wait had ended would add a
+        // whole tick of standing still to every pause on every patrol.
+        if (_pauseRemainingMs > diffMs)
+        {
+            _pauseRemainingMs -= diffMs;
+            return false;
+        }
+
+        _pauseRemainingMs = 0;
+
+        Waypoint point = Path[_next];
+
+        // Wraps, because a patrol is a loop: upstream's creature paths are all repeating, and one
+        // that stopped at the end would leave a guard standing at the far end of its beat forever.
+        _next = (_next + 1) % Path.Count;
+
+        _pauseRemainingMs = point.DelayMs;
+
+        decision = new MovementDecision(point.Position, point.IsRun);
+        return true;
+    }
+}
+
+/// <summary>
+/// A creature walking back to where it spawned after giving up on a fight.
+/// </summary>
+/// <remarks>
+/// Port of <c>HomeMovementGenerator</c>. Pushed on top of whatever the creature was doing, and pops
+/// itself the moment it arrives — so the wander or the patrol it was interrupted from resumes on its
+/// own, with no one having to remember what it was.
+/// <para>
+/// It runs. A creature that has just disengaged jogs back rather than ambling, which is both what
+/// upstream does and what stops a player kiting it away and strolling alongside it.
+/// </para>
+/// </remarks>
+public sealed class HomeMovementGenerator : IMovementGenerator
+{
+    private bool _issued;
+
+    public MovementGeneratorType Type => MovementGeneratorType.Home;
+
+    public bool TryGetDestination(Creature creature, uint diffMs, out MovementDecision decision)
+    {
+        ArgumentNullException.ThrowIfNull(creature);
+
+        decision = default;
+
+        if (_issued)
+        {
+            return false;
+        }
+
+        _issued = true;
+        decision = new MovementDecision(creature.HomePosition, Run: true);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Arriving home ends the generator — but only once it has actually set off.
+    /// </summary>
+    /// <remarks>
+    /// The <c>_issued</c> guard matters: a creature that evades while standing on its own spawn
+    /// point has no distance to cover, so the move is refused as pointless and the arrival fires
+    /// against a generator that never issued anything. Popping on that would be right; popping on an
+    /// unrelated earlier arrival would leave the creature never going home at all.
+    /// </remarks>
+    public bool OnArrived(Creature creature) => _issued;
 }

@@ -203,6 +203,10 @@ public sealed class Creature : Unit
             {
                 return null;
             }
+
+            // It has arrived. A generator pushed for one journey — going home — takes this as its
+            // cue to stand down, revealing whatever it interrupted.
+            Motion.NotifyArrived(this);
         }
 
         // In a fight the AI decides where to go, so the wander generator is not consulted. Letting
@@ -213,7 +217,7 @@ public sealed class Creature : Unit
             return null;
         }
 
-        if (!Motion.TryGetDestination(this, diffMs, out Position destination))
+        if (!Motion.TryGetDestination(this, diffMs, out MovementDecision decision))
         {
             return null;
         }
@@ -221,10 +225,16 @@ public sealed class Creature : Unit
         // The move starts from where the creature actually is, not from where the generator thinks
         // it should be. Upstream overwrites its path's first point with the unit's real position for
         // this reason — anything else makes the creature snap before it walks.
-        CreatureMove? move = CreatureMove.Create(Position, destination, Speeds.Walk);
+        CreatureMove? move = CreatureMove.Create(
+            Position, decision.Destination, decision.Run ? Speeds.Run : Speeds.Walk);
 
         if (move is null)
         {
+            // Already close enough that the walk is not worth a packet — but the journey is over
+            // all the same, and the generator has to be told. A creature that evades while standing
+            // on its own spawn point would otherwise wait forever for an arrival that no move can
+            // produce, and never wander or patrol again.
+            Motion.NotifyArrived(this);
             return null;
         }
 
@@ -474,7 +484,8 @@ public sealed class Creature : Unit
         CreatureBaseStats stats,
         byte level,
         bool useOppositeGenderModel,
-        uint displayId)
+        uint displayId,
+        IReadOnlyList<Waypoint>? path = null)
     {
         ArgumentNullException.ThrowIfNull(template);
         ArgumentNullException.ThrowIfNull(models);
@@ -513,7 +524,7 @@ public sealed class Creature : Unit
             Position = spawn.Position,
             HomePosition = spawn.Position,
             WanderDistance = spawn.WanderDistance,
-            Motion = BuildMotionMaster(spawn),
+            Motion = BuildMotionMaster(spawn, path),
         };
 
         creature.Name = template.Name;
@@ -593,14 +604,27 @@ public sealed class Creature : Unit
     /// </summary>
     /// <remarks>
     /// A random-movement row with no wander distance would walk on the spot forever, so it falls
-    /// back to idle — upstream does the same in <c>InitEntry</c>. Waypoint and the rarer types are
-    /// idle for now, which leaves those creatures standing rather than moving wrongly.
+    /// back to idle — upstream does the same in <c>InitEntry</c>.
+    /// <para>
+    /// So does a waypoint row with no route. 35 of the 5,290 patrolling spawns name a path that is
+    /// not in <c>waypoint_data</c>, and a waypoint generator over an empty list would be asked for a
+    /// destination on every tick forever. Standing still is what upstream does with them too.
+    /// </para>
+    /// <para>
+    /// The remaining types — flight, and the two fleeing rows — are idle, which leaves those three
+    /// creatures standing rather than moving wrongly.
+    /// </para>
     /// </remarks>
-    private static MotionMaster BuildMotionMaster(CreatureSpawn spawn)
+    private static MotionMaster BuildMotionMaster(CreatureSpawn spawn, IReadOnlyList<Waypoint>? path)
     {
         MovementGeneratorType type = (MovementGeneratorType)spawn.MovementType;
 
         if (type == MovementGeneratorType.Random && spawn.WanderDistance <= 0f)
+        {
+            type = MovementGeneratorType.Idle;
+        }
+
+        if (type == MovementGeneratorType.Waypoint && (path is null || path.Count == 0))
         {
             type = MovementGeneratorType.Idle;
         }
@@ -610,6 +634,7 @@ public sealed class Creature : Unit
         motion.Initialize(type switch
         {
             MovementGeneratorType.Random => new RandomMovementGenerator(spawn.WanderDistance),
+            MovementGeneratorType.Waypoint => new WaypointMovementGenerator(path!),
             _ => IdleMovementGenerator.Instance,
         });
 

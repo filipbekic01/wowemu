@@ -155,6 +155,15 @@ internal static class WorldStartup
         CreatureSpawnStore spawns = services.GetRequiredService<CreatureSpawnStore>();
         await spawns.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
+        // Patrol routes, and the addon rows that say which spawn walks which. Not fatal when
+        // empty: a world with no waypoints is a world where 5,290 guards stand still, which is
+        // exactly what it was before these were vendored — a degraded world, not a broken one.
+        WaypointStore waypoints = services.GetRequiredService<WaypointStore>();
+        await waypoints.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        CreatureAddonStore addons = services.GetRequiredService<CreatureAddonStore>();
+        await addons.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
         if (templates.TemplateCount == 0 || spawns.Count == 0 || creatureStats.Count == 0)
         {
             throw new InvalidOperationException(
@@ -242,6 +251,8 @@ internal static class WorldStartup
             elapsedMs);
 
         Log.GameObjectContentLoaded(logger, objectTemplates.Count, objectSpawns.Count, objectSpawns.MapCount);
+
+        Log.WaypointContentLoaded(logger, waypoints.Count, waypoints.PathCount, addons.Count, addons.PathCount);
 
         // Grid indexes up front, now that the spawns they read are in memory. Built lazily this used
         // to land on whichever tick a player first reached a map — ~20 ms inside a 50 ms login tick,
