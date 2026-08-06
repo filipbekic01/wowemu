@@ -295,8 +295,17 @@ public sealed record QuestTemplate(
     /// </remarks>
     public bool IsAutoComplete => (Flags & QuestFlags.AutoComplete) != 0 || Method == 0;
 
-    /// <summary>Whether it is taken by clicking the giver, with no details window first.</summary>
-    public bool IsAutoAccept => (SpecialFlags & QuestSpecialFlags.AutoAccept) != 0;
+    /// <summary>
+    /// Whether the server puts it in the log as soon as the client asks about it.
+    /// </summary>
+    /// <remarks>
+    /// <b>A <see cref="QuestFlags"/> bit, despite <c>QuestSpecialFlags.AutoAccept</c> existing and
+    /// being set on far more rows.</b> <c>Quest::IsAutoAccept</c> reads
+    /// <c>QUEST_FLAGS_AUTO_ACCEPT</c> and nothing reads the SpecialFlags one. The client knows this
+    /// flag too and accepts on its own, so a server that ignores it is a step behind the window the
+    /// player is looking at.
+    /// </remarks>
+    public bool IsAutoAccept => (Flags & QuestFlags.AutoAccept) != 0;
 
     /// <summary>
     /// Whether something outside the objective columns finishes it.
@@ -420,6 +429,18 @@ public sealed class QuestRelationStore(string tableName)
 /// <summary><c>quest_template</c>, loaded once at startup.</summary>
 public sealed class QuestStore
 {
+    /// <summary>
+    /// Whether to strip <see cref="QuestFlags.AutoAccept"/> from every quest at load.
+    /// </summary>
+    /// <remarks>
+    /// <c>Quests.IgnoreAutoAccept</c>, and the C++ default is <c>false</c> — the flag is honoured.
+    /// A quest that carries it is put in the log by the <i>server</i> the moment its window opens,
+    /// because the client reads the same flag and will never send an accept for it. That surprises
+    /// people, which is exactly why upstream ships a switch: turning this on makes the client ask
+    /// before taking anything, at the cost of no longer matching a stock realm.
+    /// </remarks>
+    public bool IgnoreAutoAccept { get; set; }
+
     private readonly Dictionary<uint, QuestTemplate> _quests = [];
 
     public int Count => _quests.Count;
@@ -484,7 +505,28 @@ public sealed class QuestStore
         FROM quest_template
         """;
 
-    private static QuestTemplate Read(MySqlDataReader reader)
+    /// <summary>
+    /// Applies the two load-time adjustments the C++ makes to <c>Flags</c>.
+    /// </summary>
+    /// <remarks>
+    /// <c>Quest::Quest</c> strips the auto-accept bit when the config says to, and
+    /// <c>Quest::LoadQuestTemplateAddon</c> puts it back for any quest whose <c>SpecialFlags</c>
+    /// asks for it. Two columns feed one behaviour, and reading either alone gets some quests
+    /// wrong: our dump happens to set both on quest 783, but they do not always agree.
+    /// </remarks>
+    private uint ResolveFlags(uint flags, uint specialFlags)
+    {
+        if (IgnoreAutoAccept)
+        {
+            return flags & ~QuestFlags.AutoAccept;
+        }
+
+        return (specialFlags & QuestSpecialFlags.AutoAccept) != 0
+            ? flags | QuestFlags.AutoAccept
+            : flags;
+    }
+
+    private QuestTemplate Read(MySqlDataReader reader)
     {
         QuestItem[] rewards = new QuestItem[QuestConstants.MaxRewards];
 
@@ -549,7 +591,7 @@ public sealed class QuestStore
             RewardSpellCast: reader.GetInt32(17),
             SourceItemId: reader.GetUInt32(18),
             SourceItemCount: reader.GetByte(19),
-            Flags: reader.GetUInt32(20),
+            Flags: ResolveFlags(reader.GetUInt32(20), reader.GetUInt32(21)),
             SpecialFlags: reader.GetUInt32(21),
             Rewards: rewards,
             RewardChoices: choices,

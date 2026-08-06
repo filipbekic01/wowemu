@@ -36,7 +36,8 @@ from m6_quest import (
     parse_offer_reward, quest_giver_status, MARSHAL_MCBRIDE,
     CMSG_QUESTGIVER_ACCEPT_QUEST, CMSG_QUESTGIVER_CHOOSE_REWARD, CMSG_QUESTGIVER_COMPLETE_QUEST,
     CMSG_QUESTGIVER_QUERY_QUEST, SMSG_QUESTGIVER_OFFER_REWARD, SMSG_QUESTGIVER_QUEST_COMPLETE,
-    SMSG_QUESTGIVER_QUEST_DETAILS, SMSG_QUESTUPDATE_COMPLETE,
+    SMSG_QUESTGIVER_QUEST_DETAILS, await_quest_slot, QUEST_STATE_COMPLETE,
+    QUEST_FLAGS_AUTO_ACCEPT, CMSG_QUESTGIVER_HELLO,
     STATUS_REWARD,
 )
 from m6_vendor import (
@@ -83,7 +84,12 @@ def quest_log(values):
 
 
 def accept_quest(client, npc_guid, quest_id, expect_complete):
-    """Opens one quest and takes it."""
+    """Opens one quest and takes it, the way the client would.
+
+    Branches on QUEST_FLAGS_AUTO_ACCEPT exactly as the client does: when it is set the quest is
+    already in the log by the time the window arrives and no accept is sent. Sending one anyway
+    would test a conversation that never happens, and hide a server that never adds the quest.
+    """
     client.send(CMSG_QUESTGIVER_QUERY_QUEST, struct.pack("<QIB", npc_guid, quest_id, 0))
 
     details = parse_quest_details(
@@ -92,15 +98,13 @@ def accept_quest(client, npc_guid, quest_id, expect_complete):
     if details["id"] != quest_id:
         fail(f"opened quest {details['id']}, expected {quest_id}")
 
-    client.send(CMSG_QUESTGIVER_ACCEPT_QUEST, struct.pack("<QII", npc_guid, quest_id, 0))
+    if not details["flags"] & QUEST_FLAGS_AUTO_ACCEPT:
+        client.send(CMSG_QUESTGIVER_ACCEPT_QUEST, struct.pack("<QII", npc_guid, quest_id, 0))
 
     if expect_complete:
-        completed = struct.unpack(
-            "<I",
-            await_opcode(client, SMSG_QUESTUPDATE_COMPLETE, "SMSG_QUESTUPDATE_COMPLETE")[:4])[0]
-
-        if completed != quest_id:
-            fail(f"the server said quest {completed} completed, not {quest_id}")
+        # No packet announces this — the slot's state word is the whole notification.
+        if await_quest_slot(client, quest_id).get(1) != QUEST_STATE_COMPLETE:
+            fail(f"quest {quest_id} should be complete on acceptance, but its slot says otherwise")
 
     print(f"  accepted {quest_id} '{details['title']}'"
           + (" — complete already" if expect_complete else " — objectives outstanding"))
@@ -141,14 +145,12 @@ def run(client, character):
     clear_prerequisite(client, character, start, willem)
 
     # ---- take the errand from Willem, two yards away
-    open_quest_giver(client, willem)
     accept_quest(client, willem, QUEST_ERRAND, expect_complete=True)
 
     # ---- and the kill quest from McBride
     walk_to(client, guid, start, mcbride_at)
     position = mcbride_at
 
-    open_quest_giver(client, mcbride)
     accept_quest(client, mcbride, QUEST_KOBOLDS, expect_complete=False)
 
     # ---- earn something, so there is money to check afterwards

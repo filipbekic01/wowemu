@@ -136,6 +136,7 @@ public sealed class QuestLog(Player owner)
             return QuestTakeResult.TooLowLevel;
         }
 
+
         // A maximum of zero means no maximum, which is nearly every quest. Comparing against it
         // literally would make every one of them unavailable.
         if (quest.MaxLevel > 0 && owner.Level > quest.MaxLevel)
@@ -159,6 +160,23 @@ public sealed class QuestLog(Player owner)
         }
 
         return QuestTakeResult.Ok;
+    }
+
+    /// <summary>
+    /// Whether a quest would be on offer if the player were the right level.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Player::CanSeeStartQuest</c>, which is <c>CanTakeQuest</c> with the level check
+    /// lifted out. The questgiver's marker needs the distinction: a quest the player is simply too
+    /// low for shows a grey exclamation, and one they can never take shows nothing at all.
+    /// </remarks>
+    public bool CanSeeStartQuest(QuestTemplate quest)
+    {
+        ArgumentNullException.ThrowIfNull(quest);
+
+        QuestTakeResult result = CanTake(quest);
+
+        return result is QuestTakeResult.Ok or QuestTakeResult.TooLowLevel;
     }
 
     /// <summary>

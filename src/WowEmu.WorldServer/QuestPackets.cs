@@ -47,6 +47,28 @@ public static class QuestPackets
     }
 
     /// <summary>
+    /// Writes <c>SMSG_QUESTGIVER_STATUS_MULTIPLE</c> — the mark over every questgiver in sight.
+    /// </summary>
+    /// <remarks>
+    /// A count and then that many guid-and-byte pairs. The guid is a full eight bytes, not packed:
+    /// the client reads a fixed nine bytes per entry and a packed one would shorten some of them.
+    /// </remarks>
+    public static void WriteStatusMultiple(
+        PacketWriter writer, IReadOnlyList<(ObjectGuid Guid, byte Status)> marks)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(marks);
+
+        writer.WriteUInt32((uint)marks.Count);
+
+        foreach ((ObjectGuid guid, byte status) in marks)
+        {
+            writer.WriteUInt64(guid.Value);
+            writer.WriteUInt8(status);
+        }
+    }
+
+    /// <summary>
     /// Writes <c>SMSG_QUESTGIVER_QUEST_LIST</c> — the menu an NPC with several quests shows.
     /// </summary>
     /// <param name="greeting">

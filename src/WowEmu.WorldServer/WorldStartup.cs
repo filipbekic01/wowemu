@@ -87,7 +87,8 @@ internal static class WorldStartup
                 "with no health. Import both with: tools/db/import-world.sh");
         }
 
-        await LoadCreatureContentAsync(services, worldConnection, logger, cancellationToken).ConfigureAwait(false);
+        await LoadCreatureContentAsync(services, worldConnection, options, logger, cancellationToken)
+            .ConfigureAwait(false);
 
         WorldContent content = services.GetRequiredService<WorldContent>();
 
@@ -138,6 +139,7 @@ internal static class WorldStartup
     private static async Task LoadCreatureContentAsync(
         IServiceProvider services,
         string worldConnection,
+        WorldServerOptions options,
         ILogger logger,
         CancellationToken cancellationToken)
     {
@@ -198,6 +200,8 @@ internal static class WorldStartup
         QuestStore quests = services.GetRequiredService<QuestStore>();
         QuestRelationStore questStarters = services.GetRequiredKeyedService<QuestRelationStore>("quest_starters");
         QuestRelationStore questEnders = services.GetRequiredKeyedService<QuestRelationStore>("quest_enders");
+
+        quests.IgnoreAutoAccept = options.IgnoreAutoAccept;
 
         await quests.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await questStarters.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);

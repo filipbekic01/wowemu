@@ -59,6 +59,20 @@ internal static partial class Log
         Message = "No handler for {Opcode} from {Address}")]
     public static partial void UnhandledOpcode(ILogger logger, Opcode opcode, string address);
 
+    /// <summary>
+    /// Every opcode a client sends, as it arrives.
+    /// </summary>
+    /// <remarks>
+    /// Off unless <c>Logging.LogLevel.WowEmu.WorldServer.Trace</c> is turned on. It exists because
+    /// the harness cannot tell you what a real client does — it can only replay what we already
+    /// believe. When the two disagree, this is the only thing that says which opcodes actually
+    /// arrived and in what order.
+    /// </remarks>
+    [LoggerMessage(EventId = 2109, Level = LogLevel.Trace,
+        Message = "<- {Opcode} ({Length} bytes) from {Address}")]
+    public static partial void OpcodeReceived(
+        ILogger logger, Opcode opcode, int length, string address);
+
     [LoggerMessage(EventId = 2108, Level = LogLevel.Warning,
         Message = "Opcode {Opcode} is not in the opcode table ({Address}); closing")]
     public static partial void UnknownOpcode(ILogger logger, Opcode opcode, string address);
@@ -157,6 +171,19 @@ internal static partial class Log
     [LoggerMessage(EventId = 2318, Level = LogLevel.Debug,
         Message = "'{Name}' started attacking '{Target}' — {Address}")]
     public static partial void AttackStarted(ILogger logger, string name, string target, string address);
+
+    /// <summary>
+    /// A step in a quest conversation, and what the server decided.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately one message with a free-text reason rather than an event per branch: the point
+    /// is to read a real client's whole conversation top to bottom in one grep, and a reason that
+    /// reads like a sentence is worth more here than a tidy taxonomy.
+    /// </remarks>
+    [LoggerMessage(EventId = 2338, Level = LogLevel.Debug,
+        Message = "quest: {Step} — {Reason} (npc {Npc}, quest {QuestId}) — {Address}")]
+    public static partial void QuestStep(
+        ILogger logger, string step, string reason, uint npc, uint questId, string address);
 
     [LoggerMessage(EventId = 2332, Level = LogLevel.Debug,
         Message = "'{Name}' accepted '{Quest}' ({QuestId}) — {Address}")]

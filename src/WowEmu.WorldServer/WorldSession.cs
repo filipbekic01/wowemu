@@ -251,6 +251,8 @@ public sealed class WorldSession(
     /// </remarks>
     private void Dispatch(Opcode opcode, byte[] payload)
     {
+        TraceOpcode(opcode, payload.Length);
+
         switch (opcode)
         {
             case Opcode.CMSG_READY_FOR_ACCOUNT_DATA_TIMES:
@@ -359,6 +361,12 @@ public sealed class WorldSession(
 
             case Opcode.CMSG_QUESTGIVER_STATUS_QUERY:
                 HandleQuestGiverStatusQuery(payload);
+                return;
+
+            case Opcode.CMSG_QUESTGIVER_STATUS_MULTIPLE_QUERY:
+                // The client asks for this whenever its quest log changes or it moves somewhere
+                // new. It is the only thing that repaints a mark already on screen.
+                SendQuestGiverStatusMultiple();
                 return;
 
             case Opcode.CMSG_QUESTGIVER_HELLO:
@@ -2122,17 +2130,67 @@ public sealed class WorldSession(
 
         PacketReader reader = new(payload.Span);
 
-        if (!reader.TryReadUInt64(out ulong rawGuid) || FindQuestGiver(new ObjectGuid(rawGuid)) is not { } npc)
+        if (!reader.TryReadUInt64(out ulong rawGuid))
         {
+            return;
+        }
+
+        if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } npc)
+        {
+            QuestTrace("hello", "no questgiver behind that guid — dead, out of the map, or no flag",
+                0, 0);
+
             return;
         }
 
         List<QuestMenuEntry> menu = BuildQuestMenu(npc);
 
-        if (menu.Count == 1
-            && world.Quests.TryGet(menu[0].QuestId, out QuestTemplate? only) && only is not null)
+        QuestTrace(
+            "hello",
+            menu.Count == 0
+                ? "the menu came out empty — nothing here passes CanTake"
+                : $"menu: {string.Join(", ", menu.Select(e => $"{e.QuestId} icon {e.Icon}"))}",
+            npc.Entry,
+            0);
+
+        SendPreparedQuest(npc, menu);
+    }
+
+    /// <summary>
+    /// Shows whatever an NPC's quest menu came out as.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Player::SendPreparedQuest</c>. <b>A single quest skips the list and opens its own
+    /// window, and which window depends on the menu icon</b> — not on re-deriving the status here.
+    /// That matters more than it looks: the icon is also what the client uses to decide which
+    /// opcode a click sends back. An "active" line sends <c>CMSG_QUESTGIVER_COMPLETE_QUEST</c> and
+    /// an "available" one sends <c>CMSG_QUESTGIVER_QUERY_QUEST</c>, so an icon and a window that
+    /// disagree put the two halves of the conversation on different opcodes.
+    /// </remarks>
+    private void SendPreparedQuest(Creature npc, List<QuestMenuEntry> menu)
+    {
+        if (_player is null || menu.Count == 0)
         {
-            OpenQuest(npc, only);
+            return;
+        }
+
+        if (menu.Count == 1)
+        {
+            if (!world.Quests.TryGet(menu[0].QuestId, out QuestTemplate? only) || only is null)
+            {
+                return;
+            }
+
+            if (menu[0].Icon == QuestMenuIcon.Active)
+            {
+                QuestTrace("prepared", "one active quest — request items", npc.Entry, only.Id);
+                SendRequestItems(npc.Guid, only);
+            }
+            else
+            {
+                QuestTrace("prepared", "one quest on offer — details", npc.Entry, only.Id);
+                OpenQuest(npc, only);
+            }
 
             return;
         }
@@ -2162,15 +2220,32 @@ public sealed class WorldSession(
             return;
         }
 
-        if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } npc)
+        // Upstream closes the window rather than ignoring the packet when the NPC has nothing to do
+        // with the quest — the client is sitting on a dialog it thinks is live.
+        if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } npc
+            || !QuestsFor(npc).Contains(questId))
         {
+            QuestTrace("query", "this NPC neither starts nor ends that quest", 0, questId);
+            CloseGossip();
+
             return;
         }
 
-        if (world.Quests.TryGet(questId, out QuestTemplate? quest) && quest is not null)
+        if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
         {
-            OpenQuest(npc, quest);
+            QuestTrace("query", "no such quest in the template store", npc.Entry, questId);
+
+            return;
         }
+
+        QuestTrace(
+            "query",
+            $"CanTake says {_player.Quests.CanTake(quest)}, autoAccept {quest.IsAutoAccept}, "
+                + $"autoComplete {quest.IsAutoComplete}, method {quest.Method}",
+            npc.Entry,
+            questId);
+
+        OpenQuest(npc, quest);
     }
 
     /// <summary>Takes a quest. <c>CMSG_QUESTGIVER_ACCEPT_QUEST</c>.</summary>
@@ -2195,16 +2270,32 @@ public sealed class WorldSession(
         if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } npc
             || !QuestsFor(npc).Contains(questId))
         {
+            QuestTrace("accept", "this NPC neither starts nor ends that quest", 0, questId);
+
             return;
         }
 
         if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
         {
+            QuestTrace("accept", "no such quest in the template store", npc.Entry, questId);
+
             return;
         }
 
-        if (_player.Quests.Accept(quest) is not { } progress)
+        QuestTakeResult verdict = _player.Quests.CanTake(quest);
+
+        if (_player.Quests.Accept(quest) is null)
         {
+            // Not an error for an auto-accept quest: it went in the log when the client asked
+            // about it, so the button the player pressed had nothing left to do. Upstream refuses
+            // the same way, via CanTakeQuest, and closes the window.
+            QuestTrace(
+                "accept",
+                verdict == QuestTakeResult.AlreadyOn && quest.IsAutoAccept
+                    ? "nothing to do — the server already took it (auto-accept)"
+                    : $"refused: CanTake says {verdict}",
+                npc.Entry,
+                questId);
             // Upstream closes the window on every failure path too, so a refused accept does not
             // leave the client sitting on a dialog it thinks is still live.
             CloseGossip();
@@ -2212,21 +2303,51 @@ public sealed class WorldSession(
             return;
         }
 
+        OnQuestAdded(npc, quest, "accept");
+
+        // Always, exactly as upstream does. The client keeps the quest dialog open until told.
+        CloseGossip();
+    }
+
+    /// <summary>
+    /// The rest of what taking a quest does, once it is in the log.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The tail of <c>Player::AddQuest</c>, shared because a quest can enter the log two ways —
+    /// the player pressing Accept, or the server taking it on their behalf for an auto-accept
+    /// quest. Both have to hand over the source item, or the second one silently skips it.
+    /// </para>
+    /// <para>
+    /// <b>Nothing is sent to the client here.</b> Accepting a quest is a pure field update in the
+    /// C++ too: <c>AddQuest</c> writes the five slot words and calls <c>SendQuestUpdate</c>, which
+    /// despite the name sends no packet — it only re-evaluates area auras. <c>CompleteQuest</c>
+    /// then sets the state word. <c>SMSG_QUESTUPDATE_COMPLETE</c> is not part of this path.
+    /// </para>
+    /// </remarks>
+    private void OnQuestAdded(Creature npc, QuestTemplate quest, string step)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
         // Some quests hand over an item when taken — a note to deliver, a tool to use. Nothing in
         // the log depends on it, but the quest is unfinishable without it.
         GiveQuestSourceItem(quest);
 
-        // Always, exactly as upstream does. The client keeps the quest dialog open until told.
-        CloseGossip();
+        Log.QuestAccepted(logger, _player.Name, quest.LogTitle, quest.Id, connection.RemoteAddress);
 
-        Log.QuestAccepted(logger, _player.Name, quest.LogTitle, questId, connection.RemoteAddress);
+        QuestTrace(
+            step,
+            $"in the log at slot {_player.Quests.Find(quest.Id)?.Slot}, "
+                + $"status {_player.Quests.StatusOf(quest.Id)}",
+            npc.Entry,
+            quest.Id);
 
-        // A quest with no objectives is complete on acceptance, and the client needs telling or the
-        // log entry never turns green.
-        if (progress.Status == QuestStatus.Complete)
-        {
-            SendQuestComplete(questId);
-        }
+        // The giver's exclamation mark has to go, and whoever takes the quest back needs their
+        // question mark. Neither happens on its own — see SendQuestGiverStatusMultiple.
+        SendQuestGiverStatusMultiple();
     }
 
     /// <summary>
@@ -2301,8 +2422,13 @@ public sealed class WorldSession(
         if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } giver
             || !world.QuestEnders.For(giver.Entry).Contains(questId))
         {
+            QuestTrace("complete", "this NPC does not end that quest", 0, questId);
+
             return;
         }
+
+        QuestTrace(
+            "complete", $"status {_player.Quests.StatusOf(questId)}", giver.Entry, questId);
 
         ObjectGuid npc = giver.Guid;
         bool canComplete = _player.Quests.StatusOf(questId) == QuestStatus.Complete;
@@ -2316,10 +2442,7 @@ public sealed class WorldSession(
             return;
         }
 
-        ServerPacket packet = new(Opcode.SMSG_QUESTGIVER_REQUEST_ITEMS, 256);
-        QuestPackets.WriteRequestItems(packet.Body, npc, quest, canComplete, DisplayIdFor);
-
-        connection.Send(packet);
+        SendRequestItems(npc, quest);
     }
 
     /// <summary>
@@ -2389,6 +2512,13 @@ public sealed class WorldSession(
         connection.Send(packet);
 
         Log.QuestCompleted(logger, _player.Name, quest.LogTitle, questId, experience, connection.RemoteAddress);
+
+        QuestTrace("reward", $"handed in for {experience} xp", 0, questId);
+
+        // Exactly where the C++ does it, at the end of Player::RewardQuest: the quest just left the
+        // log, so the ender's question mark has to go and the next quest in the chain may have put
+        // an exclamation mark somewhere new.
+        SendQuestGiverStatusMultiple();
     }
 
     /// <summary>Abandons a quest. <c>CMSG_QUESTLOG_REMOVE_QUEST</c>.</summary>
@@ -2413,21 +2543,32 @@ public sealed class WorldSession(
             {
                 _player.Quests.Abandon(progress.QuestId);
 
+                // Abandoning puts the quest back on offer, so the giver's mark comes back.
+                SendQuestGiverStatusMultiple();
+
                 return;
             }
         }
     }
 
-    /// <summary>Shows a quest's details, or its hand-in window if it is already complete.</summary>
     /// <summary>
-    /// Shows a quest at one NPC: its details, or its hand-in window.
+    /// Shows the "accept this?" window for a quest on offer.
     /// </summary>
     /// <remarks>
-    /// <b>The reward window is only ever shown by the quest's ender.</b> Starter and ender are
-    /// separate tables and very often different NPCs, and offering the reward at whichever
-    /// questgiver happens to be in front of the player lets a "go and speak to someone" quest be
-    /// handed straight back to the person who gave it — the client shows "Quest Completed" at the
-    /// wrong NPC, and the errand is finished without going anywhere.
+    /// <para>
+    /// The tail of <c>HandleQuestgiverQueryQuestOpcode</c>. <b>This path never shows a reward
+    /// window.</b> A quest ready to hand in reaches the client as an <i>active</i> menu line, and
+    /// the client answers an active line with <c>CMSG_QUESTGIVER_COMPLETE_QUEST</c> — a different
+    /// opcode, handled elsewhere, where the ender is checked. Producing a reward window from here
+    /// is what let a "go and speak to someone" errand be handed back to the person who gave it.
+    /// </para>
+    /// <para>
+    /// NOTE: upstream opens the request-items window rather than this one when
+    /// <see cref="QuestTemplate.IsAutoComplete"/>, on the first click as much as any later one.
+    /// Deliberately not done: that path ends in <c>RewardQuest</c> paying out a quest that was
+    /// never in the log, which is not built, so it would replace 1240 working
+    /// accept-then-hand-in flows with a dead end.
+    /// </para>
     /// </remarks>
     private void OpenQuest(Creature npc, QuestTemplate quest)
     {
@@ -2436,28 +2577,40 @@ public sealed class WorldSession(
             return;
         }
 
-        bool takesItBack = world.QuestEnders.For(npc.Entry).Contains(quest.Id);
-
-        if (takesItBack && _player.Quests.StatusOf(quest.Id) == QuestStatus.Complete)
+        // Some quests put themselves in the log the moment this window opens, before the player
+        // has pressed anything. THE CLIENT KNOWS THE FLAG TOO and considers the quest taken as
+        // soon as it reads it, so its Accept button sends nothing at all — leave it to the accept
+        // packet and the quest is never added by anyone. It has to happen on both routes into this
+        // window, which is why it lives here rather than in either handler: the C++ repeats it in
+        // SendPreparedQuest and HandleQuestgiverQueryQuestOpcode for the same reason.
+        if (quest.IsAutoAccept && _player.Quests.CanTake(quest) == QuestTakeResult.Ok
+            && _player.Quests.Accept(quest) is not null)
         {
-            SendOfferReward(npc.Guid, quest);
-
-            return;
+            OnQuestAdded(npc, quest, "auto-accept");
         }
 
-        // NOTE: upstream opens the request-items window rather than this one when
-        // quest.IsAutoComplete, on the first click as much as any later one. Deliberately not done:
-        // that path ends in RewardQuest paying out a quest that was never in the log, which is not
-        // built, so it would replace 1240 working accept-then-hand-in flows with a dead end. The
-        // window is the wrong one; the quest is completable, which matters more.
-
-        // Already carrying it, and this NPC cannot take it back: there is nothing to show but the
-        // text again, which is what the client asks for when a log entry is clicked.
         ServerPacket packet = new(Opcode.SMSG_QUESTGIVER_QUEST_DETAILS, 512);
 
         QuestPackets.WriteDetails(
             packet.Body, npc.Guid, quest, quest.RewardMoney,
             QuestReward.Experience(quest, _player.Level, world.Stores.QuestXp), DisplayIdFor);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Shows the "have you got them yet?" window for a quest already in the log.</summary>
+    private void SendRequestItems(ObjectGuid npc, QuestTemplate quest)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_QUESTGIVER_REQUEST_ITEMS, 256);
+
+        QuestPackets.WriteRequestItems(
+            packet.Body, npc, quest,
+            _player.Quests.StatusOf(quest.Id) == QuestStatus.Complete, DisplayIdFor);
 
         connection.Send(packet);
     }
@@ -2591,41 +2744,138 @@ public sealed class WorldSession(
     }
 
     /// <summary>Which mark goes over an NPC, from this player's point of view.</summary>
-    private uint QuestGiverStatusFor(ObjectGuid guid)
+    /// <summary>
+    /// The mark to draw over one NPC, from this player's point of view.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Player::GetQuestDialogStatus</c>. <b>Both lists are walked in full and the
+    /// highest answer wins</b> — the enum is ordered so that "there is a reward waiting" outranks
+    /// "there is something on offer" outranks "you are part way through". Returning early from
+    /// either loop looks equivalent and is not: an NPC that ends one quest and starts another can
+    /// legitimately have something to say about both.
+    /// </remarks>
+    private uint QuestGiverStatusFor(ObjectGuid guid) =>
+        _player is null || FindQuestGiver(guid) is not { } npc
+            ? QuestGiverStatus.None
+            : QuestGiverStatusFor(npc);
+
+    /// <inheritdoc cref="QuestGiverStatusFor(ObjectGuid)"/>
+    private uint QuestGiverStatusFor(Creature npc)
     {
-        if (_player is null || FindQuestGiver(guid) is not { } npc)
+        if (_player is null)
         {
             return QuestGiverStatus.None;
         }
 
-        uint best = QuestGiverStatus.None;
+        uint result = QuestGiverStatus.None;
 
-        // A quest ready to hand in wins over one waiting to be taken: the question mark is the more
-        // urgent of the two, and an NPC showing an exclamation mark over a finished quest sends the
-        // player looking for something to do.
+        // What this NPC takes back.
         foreach (uint questId in world.QuestEnders.For(npc.Entry))
         {
-            if (_player.Quests.StatusOf(questId) == QuestStatus.Complete)
+            if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
             {
-                return QuestGiverStatus.Reward;
+                continue;
             }
 
-            if (_player.Quests.StatusOf(questId) == QuestStatus.Incomplete)
+            uint candidate = _player.Quests.StatusOf(questId) switch
             {
-                best = QuestGiverStatus.Incomplete;
-            }
+                QuestStatus.Complete => QuestGiverStatus.Reward,
+                QuestStatus.Incomplete => QuestGiverStatus.Incomplete,
+                _ => QuestGiverStatus.None,
+            };
+
+            result = Math.Max(result, candidate);
         }
 
+        // What it hands out. Only quests the player has not touched: one already in the log is the
+        // ender's business, and drawing an exclamation for it sends the player back the way they came.
         foreach (uint questId in world.QuestStarters.For(npc.Entry))
         {
-            if (world.Quests.TryGet(questId, out QuestTemplate? quest) && quest is not null
-                && _player.Quests.CanTake(quest) == QuestTakeResult.Ok)
+            if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null
+                || _player.Quests.StatusOf(questId) != QuestStatus.None)
             {
-                return QuestGiverStatus.Available;
+                continue;
             }
+
+            // Three outcomes, and the middle one is easy to get backwards. A quest the player
+            // could never take draws NOTHING — the C++ leaves result2 at NONE and only reaches
+            // UNAVAILABLE from inside the CanSeeStartQuest branch, when the sole thing wrong is
+            // the level. A grey question mark on every NPC whose chain you have not started is
+            // what the other reading produces.
+            if (!_player.Quests.CanSeeStartQuest(quest))
+            {
+                continue;
+            }
+
+            uint candidate = SatisfiesQuestLevel(quest)
+                ? IsLowLevelQuest(quest)
+                    ? QuestGiverStatus.LowLevelAvailable
+                    : QuestGiverStatus.Available
+                : QuestGiverStatus.Unavailable;
+
+            result = Math.Max(result, candidate);
         }
 
-        return best;
+        return result;
+    }
+
+    /// <summary>Port of <c>Player::SatisfyQuestLevel</c> — the level window, both ends.</summary>
+    private bool SatisfiesQuestLevel(QuestTemplate quest) =>
+        _player is not null
+        && _player.Level >= quest.MinLevel
+        && (quest.MaxLevel == 0 || _player.Level <= quest.MaxLevel);
+
+    /// <summary>
+    /// Whether a quest is far enough below the player to get the faded mark.
+    /// </summary>
+    /// <remarks>
+    /// <c>Quests.LowLevelHideDiff</c>, which upstream defaults to 4. The comparison is against the
+    /// quest's own level, not its minimum — a level 1 quest is still worth doing at level 3.
+    /// </remarks>
+    private bool IsLowLevelQuest(QuestTemplate quest)
+    {
+        const int LowLevelHideDiff = 4;
+
+        return _player is not null && _player.Level > quest.Level + LowLevelHideDiff;
+    }
+
+    /// <summary>
+    /// Sends the mark for every questgiver the player can see. <c>SMSG_QUESTGIVER_STATUS_MULTIPLE</c>.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Player::SendQuestGiverStatusMultiple</c>. <b>This is how a marker ever changes.</b>
+    /// The single-NPC <c>SMSG_QUESTGIVER_STATUS</c> only answers a question about one guid the
+    /// client already asked about; nothing in it refreshes the exclamation marks already painted on
+    /// screen. Without this the mark a player saw when they walked up stays there after they take
+    /// the quest, and the question mark over whoever takes it back never appears at all.
+    /// </remarks>
+    private void SendQuestGiverStatusMultiple()
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        List<(ObjectGuid Guid, byte Status)> marks = [];
+
+        foreach (WorldObject nearby in
+            _map.FindInRange(_player.Position, _map.VisibilityDistance, _player))
+        {
+            if (nearby is not Creature npc || !npc.IsAlive
+                || (npc.NpcFlags & NpcFlagQuestGiver) == 0)
+            {
+                continue;
+            }
+
+            marks.Add((npc.Guid, (byte)QuestGiverStatusFor(npc)));
+        }
+
+        ServerPacket packet = new(
+            Opcode.SMSG_QUESTGIVER_STATUS_MULTIPLE, 4 + (marks.Count * 9));
+
+        QuestPackets.WriteStatusMultiple(packet.Body, marks);
+
+        connection.Send(packet);
     }
 
     /// <summary>
@@ -2720,6 +2970,36 @@ public sealed class WorldSession(
         return quests;
     }
 
+    /// <summary>
+    /// Logs an incoming opcode, minus the ones that arrive constantly.
+    /// </summary>
+    /// <remarks>
+    /// Movement, the time sync and the ping fire several times a second each and would bury
+    /// everything else. Skipping them is the difference between a log you can read and one you
+    /// cannot. Trace level, so it costs nothing until someone asks for it.
+    /// </remarks>
+    private void TraceOpcode(Opcode opcode, int length)
+    {
+        if (!logger.IsEnabled(LogLevel.Trace))
+        {
+            return;
+        }
+
+        if (opcode is Opcode.CMSG_TIME_SYNC_RESP or Opcode.CMSG_PING
+            or Opcode.MSG_MOVE_HEARTBEAT or Opcode.CMSG_SET_ACTIVE_MOVER
+            || (OpcodeTable.TryGet(opcode, out OpcodeInfo? info)
+                && info.Value.UpstreamHandler == "HandleMovementOpcodes"))
+        {
+            return;
+        }
+
+        Log.OpcodeReceived(logger, opcode, length, connection.RemoteAddress);
+    }
+
+    /// <summary>One line of the quest conversation, for reading a real client's session back.</summary>
+    private void QuestTrace(string step, string reason, uint npcEntry, uint questId) =>
+        Log.QuestStep(logger, step, reason, npcEntry, questId, connection.RemoteAddress);
+
     /// <summary>The creature behind a guid, if it is one, alive, and a questgiver in range.</summary>
     private Creature? FindQuestGiver(ObjectGuid guid)
     {
@@ -2749,7 +3029,16 @@ public sealed class WorldSession(
         connection.Send(packet);
     }
 
-    /// <summary>Tells this client every objective on a quest is now met.</summary>
+    /// <summary>
+    /// Tells this client an <i>explored or scripted</i> quest is now met.
+    /// </summary>
+    /// <remarks>
+    /// <b>Not part of the ordinary completion path, and not currently called.</b> In the C++ this
+    /// packet has exactly one caller — <c>AreaExploredOrEventHappens</c> — and neither
+    /// <c>AddQuest</c> nor <c>CompleteQuest</c> nor the kill-credit path sends it. Completion
+    /// reaches the client as the quest slot's state word and nothing else. Kept because the
+    /// exploration objectives this belongs to are a real gap, not because anything wants it yet.
+    /// </remarks>
     public void SendQuestComplete(uint questId)
     {
         ServerPacket packet = new(Opcode.SMSG_QUESTUPDATE_COMPLETE, 4);

@@ -62,6 +62,8 @@ SMSG_QUESTGIVER_OFFER_REWARD = 0x18D
 CMSG_QUESTGIVER_CHOOSE_REWARD = 0x18E
 SMSG_QUESTGIVER_QUEST_COMPLETE = 0x191
 SMSG_QUESTUPDATE_COMPLETE = 0x198
+CMSG_QUESTGIVER_STATUS_MULTIPLE_QUERY = 0x417
+SMSG_QUESTGIVER_STATUS_MULTIPLE = 0x418
 CMSG_QUEST_QUERY = 0x05C
 SMSG_QUEST_QUERY_RESPONSE = 0x05D
 
@@ -73,6 +75,10 @@ QUEST_LOG_SLOT_WIDTH = 5
 
 # QuestSlotStateMask. The second of a slot's five words.
 QUEST_STATE_COMPLETE = 0x0001
+
+# The client reads this off the details packet and takes the quest as given, sending no accept of
+# its own. A harness has to read it the same way or it tests a conversation nobody has.
+QUEST_FLAGS_AUTO_ACCEPT = 0x00080000
 
 SMSG_UPDATE_OBJECT = 0x0A9
 SMSG_COMPRESSED_UPDATE_OBJECT = 0x1F6
@@ -232,7 +238,11 @@ def parse_quest_details(payload):
     description, cursor = read_cstring(payload, cursor)
     objectives, cursor = read_cstring(payload, cursor)
 
-    return {"id": quest_id, "title": title, "description": description, "objectives": objectives}
+    cursor += 1                                    # activateAccept
+    flags = struct.unpack("<I", payload[cursor:cursor + 4])[0]
+
+    return {"id": quest_id, "title": title, "description": description,
+            "objectives": objectives, "flags": flags}
 
 
 def parse_offer_reward(payload):
@@ -248,16 +258,43 @@ def parse_offer_reward(payload):
     return {"id": quest_id, "title": title, "text": text}
 
 
+def status_marks(client):
+    """The mark over every questgiver in sight, keyed by guid.
+
+    This is the packet the client uses to repaint marks it has already drawn -- the single-NPC
+    SMSG_QUESTGIVER_STATUS only ever answers a question about one guid it just asked about. Going
+    unanswered is invisible to a harness that only asks directly, and looks to a player like an
+    exclamation mark that never clears and a turn-in they cannot find.
+    """
+    client.send(CMSG_QUESTGIVER_STATUS_MULTIPLE_QUERY, b"")
+
+    body = await_opcode(
+        client, SMSG_QUESTGIVER_STATUS_MULTIPLE, "SMSG_QUESTGIVER_STATUS_MULTIPLE")
+
+    count = struct.unpack("<I", body[:4])[0]
+
+    return dict(struct.unpack("<QB", body[4 + i * 9:13 + i * 9]) for i in range(count))
+
+
 def clear_prerequisite(client, character, start, willem):
     """Runs quest 783 end to end, because 5261 is gated behind it.
 
-    Leaner than the main sequence deliberately — this is setup, and everything it would assert is
-    asserted again on the quest the gate is actually about.
+    Leaner than the main sequence in what it asserts about the hand-in — that is all re-checked on
+    the quest the gate is actually about — but the *taking* half is deliberately strict, because
+    783 is an auto-accept quest and that is a shape no other gate covers.
+
+    **This function must never send CMSG_QUESTGIVER_ACCEPT_QUEST.** Quest 783 carries
+    QUEST_FLAGS_AUTO_ACCEPT, and a real client that reads that flag treats the quest as taken the
+    moment the window opens: it never sends an accept, so the server has to add the quest itself
+    when it opens the window. A harness that helpfully sends the accept anyway passes against a
+    server where nobody adds the quest at all, which is exactly what happened here — the gate was
+    green while the game was unplayable.
     """
     mcbride_spawn, mcbride_at = find_spawn(client, MARSHAL_MCBRIDE)
     mcbride = creature_guid(MARSHAL_MCBRIDE, mcbride_spawn)
 
-    client.send(CMSG_QUESTGIVER_QUERY_QUEST, struct.pack("<QIB", willem, PREREQUISITE_ID, 0))
+    # Right-click, and nothing else. This is the whole of what a real client does here.
+    client.send(CMSG_QUESTGIVER_HELLO, struct.pack("<Q", willem))
 
     details = parse_quest_details(
         await_opcode(client, SMSG_QUESTGIVER_QUEST_DETAILS, "SMSG_QUESTGIVER_QUEST_DETAILS"))
@@ -265,8 +302,9 @@ def clear_prerequisite(client, character, start, willem):
     if details["id"] != PREREQUISITE_ID:
         fail(f"the prerequisite opened as quest {details['id']}, expected {PREREQUISITE_ID}")
 
-    client.send(CMSG_QUESTGIVER_ACCEPT_QUEST, struct.pack("<QII", willem, PREREQUISITE_ID, 0))
-    await_opcode(client, SMSG_QUESTUPDATE_COMPLETE, "SMSG_QUESTUPDATE_COMPLETE")
+    if await_quest_slot(client, PREREQUISITE_ID).get(1) != QUEST_STATE_COMPLETE:
+        fail(f"quest {PREREQUISITE_ID} never reached the log. It is an auto-accept quest, so "
+             f"opening its window is the whole interaction — no accept packet is coming")
 
     walk_to(client, character["guid"], start, mcbride_at)
 
@@ -335,15 +373,13 @@ def run(client, character, start):
     # ---- accept it. This one has no objectives, so it completes on acceptance.
     client.send(CMSG_QUESTGIVER_ACCEPT_QUEST, struct.pack("<QII", willem, QUEST_ID, 0))
 
-    completed = struct.unpack(
-        "<I", await_opcode(client, SMSG_QUESTUPDATE_COMPLETE, "SMSG_QUESTUPDATE_COMPLETE")[:4])[0]
-
-    if completed != QUEST_ID:
-        fail(f"the server said quest {completed} completed, not {QUEST_ID}")
-
-    print(f"  accepted, and it is complete already (no objectives)")
-
     # ---- the log slot itself, which is what the client's quest log is drawn from
+    #
+    # Note what is NOT expected here: a packet. Accepting a quest sends the client no quest opcode
+    # at all — Player::AddQuest writes the five slot words and CompleteQuest sets the state word,
+    # and that is the whole conversation. SMSG_QUESTUPDATE_COMPLETE belongs to
+    # AreaExploredOrEventHappens and nowhere else, and this gate used to insist on it, which is how
+    # a spurious one survived long enough to reach a real client.
     #
     # All FIVE words have to arrive, not just the quest id. They are one unit to the client, and a
     # slot whose state word never came is a quest the log has no state for. This was silently
@@ -361,6 +397,17 @@ def run(client, character, start):
              f"for a quest with no objectives")
 
     print(f"  log slot ok: all {QUEST_LOG_SLOT_WIDTH} words arrived, state = complete")
+
+    # ---- and the marks over both heads must have moved
+    marks = status_marks(client)
+
+    if marks.get(willem) == STATUS_AVAILABLE:
+        fail("Deputy Willem still shows an exclamation mark for a quest already taken")
+
+    if marks.get(eagan) != STATUS_REWARD:
+        fail("Eagan shows no hand-in mark, so there is no way to find where the quest goes")
+
+    print("  marks moved: Willem's ! cleared, Eagan's ? appeared")
 
     # ---- what the client does next, and what the quest log is drawn from
     #

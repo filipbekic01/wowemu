@@ -31,6 +31,21 @@ public sealed class WorldServerOptions
     /// </summary>
     public uint ClientCacheVersion { get; set; }
 
+    /// <summary>
+    /// Make every quest wait for the player to press Accept.
+    /// </summary>
+    /// <remarks>
+    /// <c>Quests.IgnoreAutoAccept</c> in <c>worldserver.conf</c>, and <b>false to match a stock
+    /// realm</b>. Left false, a quest whose <c>Flags</c> carry <c>QUEST_FLAGS_AUTO_ACCEPT</c> — or
+    /// whose <c>SpecialFlags</c> ask for it — goes into the log the moment its window opens, with
+    /// no click. That is not a bug: the 3.3.5a client reads the same flag, treats the quest as
+    /// already taken, and never sends an accept for it, so if the server waits then nobody takes
+    /// the quest at all. "A Threat Within" (783), the first quest a human sees, is one of these.
+    /// Set this true to have the client ask first, and accept that the realm no longer behaves
+    /// like upstream.
+    /// </remarks>
+    public bool IgnoreAutoAccept { get; set; }
+
     /// <summary>Connection string for this realm's <c>characters</c> database.</summary>
     public string CharactersConnectionString { get; set; } = string.Empty;
 
