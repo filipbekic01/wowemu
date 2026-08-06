@@ -13,9 +13,21 @@ namespace WowEmu.Game.Maps;
 internal static partial class Log
 {
     [LoggerMessage(EventId = 3000, Level = LogLevel.Debug,
-        Message = "Grid ({GridX}, {GridY}) on map {MapId}: {Loaded} creature(s) loaded, {Skipped} skipped")]
+        Message = "Grid ({GridX}, {GridY}) on map {MapId}: {Loaded} creature(s) loaded, {Skipped} skipped in {ElapsedMs} ms")]
     public static partial void GridLoaded(
-        ILogger logger, uint mapId, int gridX, int gridY, int loaded, int skipped);
+        ILogger logger, uint mapId, int gridX, int gridY, int loaded, int skipped, double elapsedMs);
+
+    /// <summary>
+    /// The one-off per-map index build, timed separately from the grid load that triggered it.
+    /// </summary>
+    /// <remarks>
+    /// The two costs look identical from outside — both land on the tick a player logs in on — but
+    /// they have different fixes, so they are measured apart rather than together.
+    /// </remarks>
+    [LoggerMessage(EventId = 3005, Level = LogLevel.Information,
+        Message = "Map {MapId}: indexed {Spawns} creature spawn(s) into {Grids} grid(s) in {ElapsedMs} ms")]
+    public static partial void SpawnIndexBuilt(
+        ILogger logger, uint mapId, int spawns, int grids, double elapsedMs);
 
     [LoggerMessage(EventId = 3001, Level = LogLevel.Debug,
         Message = "Creature spawn {SpawnId} skipped: {Reason}")]

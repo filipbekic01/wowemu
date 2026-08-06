@@ -15,5 +15,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/WowEmu.Tests.Unit/WowEmu.Tests.Unit.csproj" />
+    <Project Path="tests/WowEmu.Tests.Integration/WowEmu.Tests.Integration.csproj" />
   </Folder>
 </Solution>

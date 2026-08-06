@@ -280,8 +280,17 @@ internal static partial class Log
     public static partial void TickStopped(ILogger logger, long ticks, double longestMs);
 
     [LoggerMessage(EventId = 2402, Level = LogLevel.Warning,
-        Message = "Tick took {ElapsedMs:F1} ms for {DiffMs} ms of game time with {Sessions} session(s)")]
-    public static partial void SlowTick(ILogger logger, double elapsedMs, uint diffMs, int sessions);
+        Message = "Tick took {ElapsedMs:F1} ms for {DiffMs} ms of game time with {Sessions} session(s) "
+                + "— drain {DrainMs:F1}, packets {PacketsMs:F1}, maps {MapsMs:F1}, save {SaveMs:F1}")]
+    public static partial void SlowTick(
+        ILogger logger,
+        double elapsedMs,
+        uint diffMs,
+        int sessions,
+        double drainMs,
+        double packetsMs,
+        double mapsMs,
+        double saveMs);
 
     [LoggerMessage(EventId = 2403, Level = LogLevel.Error,
         Message = "Work posted to the world tick threw")]

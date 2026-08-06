@@ -608,7 +608,8 @@
             },
             {
               "done": false,
-              "text": "character_homebind, character_spell, character_action"
+              "text": "character_homebind",
+              "note": "character_spell and character_action landed with the spellbook and action bars; homebind is still the only one of the three that is not written."
             },
             {
               "done": false,
@@ -2165,8 +2166,9 @@
               "note": "Logging in at Northshire went from 131 packets to 1."
             },
             {
-              "done": false,
-              "text": "Analyzer banning bare Task.Run in gameplay code"
+              "done": true,
+              "text": "Analyzer banning bare Task.Run in gameplay code",
+              "note": "Microsoft.CodeAnalysis.BannedApiAnalyzers with src/BannedSymbols.txt, scoped to src/ via src/Directory.Build.props — tests may still use it. Bans every Task.Run overload plus Task.Wait and Task<T>.Result. RS0030 under TreatWarningsAsErrors, so it is a build failure, and src/ has no violations today."
             },
             {
               "done": false,
@@ -2178,9 +2180,14 @@
               "text": "Map workers default to 0 (inline). The pool is written and tested but unproven under load."
             },
             {
+              "done": true,
+              "text": "Creature updates are gated on cells near a player, as upstream does",
+              "note": "The map used to update every creature it had ever loaded, every tick — so the cost of a tick followed where players had been, not where they were, and a map kept paying after everyone logged out. Measured across the same three harness runs: 50 slow ticks before, 2 after. The worst before was 3078 ms with ZERO sessions connected, purely ticking ~1,600 creatures nobody was near, each running an aggro range scan. Combat and respawn are deliberately exempt from the gate. Map.ActiveCreatureCount reports ticked against loaded."
+            },
+            {
               "done": false,
-              "text": "GRID LOADING BLOCKS THE TICK IT HAPPENS ON",
-              "note": "Measured: 875 ticks/second idle, but the tick a player logs in on takes ~71 ms, over the 50 ms budget, because the grid around them builds ~960 creatures inside the map update. Upstream splits this per cell rather than per grid."
+              "text": "The login tick is still over budget: ~161 ms, split between the deferred-work drain (~52 ms of database continuations resuming) and the map pass (~109 ms)",
+              "note": "Corrected by measurement. The old note here blamed grid loading and said upstream splits the load per cell — both wrong. MapGridManager::LoadGrid calls LoadAllCellsInGrid(), so AzerothCore loads whole grids exactly as we do, and a grid load costs 0.8-1.8 ms for 133-687 creatures. The 31 ms first load was JIT warm-up. What remains is a one-off login cost, not a steady-state one: ~20 ms building the per-map spawn index (movable to startup, as upstream precomputes it) and the first grid load paying JIT."
             }
           ]
         }
@@ -2196,20 +2203,24 @@
           "title": "Infrastructure",
           "items": [
             {
-              "done": false,
-              "text": "CI — build, test, vector verification on every push"
+              "done": true,
+              "text": "CI — build, test, vector verification on every push",
+              "note": ".github/workflows/ci.yml. Two jobs: build + unit tests + the vector check on the SDK alone, and an integration job with a MySQL service container. Nothing that reads data/ can run there — the client files are not committed — so the M2+ gates stay local."
             },
             {
               "done": false,
-              "text": "tests/WowEmu.Tests.Protocol — golden-packet comparison against captures"
+              "text": "tests/WowEmu.Tests.Protocol — golden-packet comparison against captures",
+              "note": "Still open, and blocked on the oracle rather than on effort: a golden-packet test needs a PKT 3.1 capture taken from the C++ server. Fixtures generated from our own output would detect a change in the wire format but could never prove it was right."
             },
             {
-              "done": false,
-              "text": "tests/WowEmu.Tests.Integration — Docker MySQL + the gate harnesses"
+              "done": true,
+              "text": "tests/WowEmu.Tests.Integration — Docker MySQL + the gate harnesses",
+              "note": "The M1 gate, as five tests: logon, realm list, reconnect on a fresh connection, and the wrong-password / unknown-account codes being identical. The logon server is hosted in-process on a random port against a throwaway schema, and the client half of SRP6 is written from scratch in the test project so the two halves cannot agree on a shared mistake. Skips itself when there is no MySQL, unless WOWEMU_INTEGRATION=1 — which CI sets, so a missing database fails the pipeline instead of quietly passing. M2+ still need the client data and are not covered."
             },
             {
-              "done": false,
-              "text": "Analyzer banning bare Task.Run in gameplay code"
+              "done": true,
+              "text": "Analyzer banning bare Task.Run in gameplay code",
+              "note": "Microsoft.CodeAnalysis.BannedApiAnalyzers with src/BannedSymbols.txt, scoped to src/ via src/Directory.Build.props — tests may still use it. Bans every Task.Run overload plus Task.Wait and Task<T>.Result. RS0030 under TreatWarningsAsErrors, so it is a build failure, and src/ has no violations today."
             },
             {
               "done": false,

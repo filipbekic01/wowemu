@@ -1,0 +1,24 @@
+; APIs that must not appear in shipping code. One per line:
+;
+;   <documentation-comment-id>;<message shown at the call site>
+;
+; See src/Directory.Build.props for why this exists. Violations are RS0030, which
+; TreatWarningsAsErrors turns into a build failure.
+
+; Task.Run moves work to a thread-pool thread. Gameplay state belongs to the map tick that owns it
+; (PLAN.md §4.2), so a bare Task.Run is either a data race waiting to happen or a sign the work
+; wants to be scheduled on the tick instead. Use the tick scheduler; for genuinely off-tick work
+; such as database I/O, await the asynchronous API directly rather than wrapping a blocking one.
+M:System.Threading.Tasks.Task.Run(System.Action);Schedule it on the map tick instead — see PLAN.md §4.2.
+M:System.Threading.Tasks.Task.Run(System.Action,System.Threading.CancellationToken);Schedule it on the map tick instead — see PLAN.md §4.2.
+M:System.Threading.Tasks.Task.Run``1(System.Func{``0});Schedule it on the map tick instead — see PLAN.md §4.2.
+M:System.Threading.Tasks.Task.Run``1(System.Func{``0},System.Threading.CancellationToken);Schedule it on the map tick instead — see PLAN.md §4.2.
+M:System.Threading.Tasks.Task.Run(System.Func{System.Threading.Tasks.Task});Schedule it on the map tick instead — see PLAN.md §4.2.
+M:System.Threading.Tasks.Task.Run(System.Func{System.Threading.Tasks.Task},System.Threading.CancellationToken);Schedule it on the map tick instead — see PLAN.md §4.2.
+M:System.Threading.Tasks.Task.Run``1(System.Func{System.Threading.Tasks.Task{``0}});Schedule it on the map tick instead — see PLAN.md §4.2.
+M:System.Threading.Tasks.Task.Run``1(System.Func{System.Threading.Tasks.Task{``0}},System.Threading.CancellationToken);Schedule it on the map tick instead — see PLAN.md §4.2.
+
+; The synchronous bridges. Blocking a thread on an awaitable deadlocks under any context that runs
+; continuations on the blocked thread, and on the tick it stalls every player on that map.
+M:System.Threading.Tasks.Task.Wait;Await it instead of blocking the thread.
+P:System.Threading.Tasks.Task`1.Result;Await it instead of blocking the thread.

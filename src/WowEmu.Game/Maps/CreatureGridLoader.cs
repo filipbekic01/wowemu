@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using WowEmu.Data.Db;
 
@@ -35,6 +36,8 @@ public sealed class CreatureGridLoader(
     /// <inheritdoc/>
     public IReadOnlyList<WorldObject> Load(uint mapId, GridCoord grid)
     {
+        long startedAt = Stopwatch.GetTimestamp();
+
         Dictionary<GridCoord, List<CreatureSpawn>> index = IndexFor(mapId);
 
         if (!index.TryGetValue(grid, out List<CreatureSpawn>? inGrid))
@@ -65,7 +68,9 @@ public sealed class CreatureGridLoader(
             }
         }
 
-        Log.GridLoaded(logger, mapId, grid.X, grid.Y, loaded.Count, skipped);
+        double elapsedMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+        Log.GridLoaded(logger, mapId, grid.X, grid.Y, loaded.Count, skipped, elapsedMs);
+
         return loaded;
     }
 
@@ -77,9 +82,12 @@ public sealed class CreatureGridLoader(
             return index;
         }
 
+        long startedAt = Stopwatch.GetTimestamp();
         index = [];
 
-        foreach (CreatureSpawn spawn in spawns.ForMap(mapId))
+        IReadOnlyList<CreatureSpawn> onMap = spawns.ForMap(mapId);
+
+        foreach (CreatureSpawn spawn in onMap)
         {
             GridCoord grid = MapCoordinates.GridFor(spawn.Position.X, spawn.Position.Y);
 
@@ -93,6 +101,10 @@ public sealed class CreatureGridLoader(
         }
 
         _byMapAndGrid[mapId] = index;
+
+        double elapsedMs = Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds;
+        Log.SpawnIndexBuilt(logger, mapId, onMap.Count, index.Count, elapsedMs);
+
         return index;
     }
 }

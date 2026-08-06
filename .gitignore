@@ -54,3 +54,6 @@ data/Cameras/FlyByTroll.m2
 data/Cameras/FlybyUndead.m2
 data/Cameras/PalantirOfAzora.m2
 data/Cameras/Scry_cam.m2
+
+# Claude Code personal overrides
+.claude/settings.local.json

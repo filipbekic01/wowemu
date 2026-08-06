@@ -1,0 +1,30 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!--
+    The logon server and the database, and nothing else. The client half of the handshake is written
+    from scratch in this project (see SrpClient) rather than reusing WowEmu.Cryptography, so the test
+    cannot pass by two copies of the same mistake agreeing with each other.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\WowEmu.AuthServer\WowEmu.AuthServer.csproj" />
+    <ProjectReference Include="..\..\src\WowEmu.Data.Db\WowEmu.Data.Db.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,31 @@
+<Project>
+
+  <!-- Inherit the repository-wide settings, then add what only applies to shipping code. -->
+  <Import Project="$([MSBuild]::GetPathOfFileAbove($(MSBuildThisFile), $(MSBuildThisFileDirectory)..))" />
+
+  <!--
+    PLAN.md §4.2 decides the threading model up front: a map is single-threaded, and gameplay state
+    is touched only from the tick that owns it. That invariant was documented and structural, but
+    nothing enforced it — a future caller could reach for Task.Run and move game state onto a
+    thread-pool thread, and the result would be a rare, unreproducible corruption rather than a
+    failure anyone could trace back to the line that caused it.
+
+    BannedSymbols.txt turns that into a build error. TreatWarningsAsErrors is already on, so RS0030
+    fails the build rather than adding one more warning to scroll past.
+
+    Tests are deliberately not covered: tests/Directory.Build.props imports the repository root
+    directly, not this file, and driving a scheduler from a background task is exactly how you prove
+    it is thread-safe.
+  -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="4.14.0">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt" />
+  </ItemGroup>
+
+</Project>

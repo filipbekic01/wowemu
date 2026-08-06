@@ -97,7 +97,7 @@ public sealed class WorldLoop : BackgroundService
             previous = now;
 
             long started = Stopwatch.GetTimestamp();
-            Update(diff);
+            TickPhases phases = Update(diff);
             double elapsedMs = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
 
             TickCount++;
@@ -109,16 +109,31 @@ public sealed class WorldLoop : BackgroundService
 
             if (elapsedMs > _options.SlowTickThresholdMs)
             {
-                Log.SlowTick(_logger, elapsedMs, diff, _sessions.Count);
+                // The total on its own says a tick was slow but never which of the four phases did
+                // it, and the phases have nothing in common: one is deferred continuations, one is
+                // packet handling, one is the maps, one is the database. Guessing between them from
+                // a single number is how the wrong thing gets optimised.
+                Log.SlowTick(
+                    _logger, elapsedMs, diff, _sessions.Count,
+                    phases.DrainMs, phases.PacketsMs, phases.MapsMs, phases.SaveMs);
             }
         }
 
         Log.TickStopped(_logger, TickCount, LongestTickMs);
     }
 
-    private void Update(uint diff)
+    /// <summary>How long each phase of one tick took. Only read when the tick was slow.</summary>
+    private readonly record struct TickPhases(
+        double DrainMs,
+        double PacketsMs,
+        double MapsMs,
+        double SaveMs);
+
+    private TickPhases Update(uint diff)
     {
         // 1. Deferred work. Anything a handler awaited last tick resumes here.
+        long phaseStarted = Stopwatch.GetTimestamp();
+
         int executed = _scheduler.Drain();
 
         if (executed > 0 && _scheduler.DeferredLastDrain > 0)
@@ -127,20 +142,32 @@ public sealed class WorldLoop : BackgroundService
             Log.TickWorkDeferred(_logger, _scheduler.DeferredLastDrain);
         }
 
+        double drainMs = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
+
         IReadOnlyList<WorldSession> sessions = _sessions.Snapshot();
 
         // 2. World-queue packets. Logins and logouts move players on and off maps, which is only
         //    safe here — before any map worker starts.
+        phaseStarted = Stopwatch.GetTimestamp();
+
         foreach (WorldSession session in sessions)
         {
             session.DrainWorldPackets(diff);
         }
 
-        // 3. Maps. From here until Update returns, map state belongs to the workers.
-        _maps.Update(diff);
+        double packetsMs = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
 
+        // 3. Maps. From here until Update returns, map state belongs to the workers.
+        phaseStarted = Stopwatch.GetTimestamp();
+        _maps.Update(diff);
+        double mapsMs = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
+
+        phaseStarted = Stopwatch.GetTimestamp();
         PeriodicSave(diff, sessions);
         PeriodicReport(diff);
+        double saveMs = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
+
+        return new TickPhases(drainMs, packetsMs, mapsMs, saveMs);
     }
 
     /// <summary>

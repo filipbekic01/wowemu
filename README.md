@@ -31,6 +31,7 @@ The board is the *what*.
 ```bash
 dotnet build && dotnet test          # needs only the .NET 10 SDK
 docker compose up -d                 # MySQL on 127.0.0.1:3306
+                                     # integration tests skip themselves without it
 tools/db/import-world.sh             # vendored world content
 dotnet run --project tools/WowEmu.AccountCli -- account create test
 dotnet run --project src/WowEmu.AuthServer     # port 3724

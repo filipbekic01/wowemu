@@ -273,6 +273,15 @@ public sealed class Map(
     // continent to find the few thousand that are going somewhere.
     private readonly List<Creature> _creatures = [];
 
+    // Cells close enough to a player that what happens in them matters. Rebuilt once per gameplay
+    // tick; see RefreshActiveCells.
+    private readonly HashSet<CellCoord> _activeCells = [];
+
+    // Reused by the per-tick creature passes. Those have to iterate a snapshot, because a tick can
+    // kill or respawn a creature and that re-files cells underneath the enumerator — but allocating
+    // a fresh list of every creature on the continent three times a tick is pure garbage.
+    private readonly List<Creature> _creatureScratch = [];
+
     public uint MapId { get; } = mapId;
 
     /// <summary>Which phase of the round-robin updates this map. See <see cref="MapManager"/>.</summary>
@@ -414,6 +423,13 @@ public sealed class Map(
             player.Connection?.DrainMapPackets(sessionDiff);
         }
 
+        // Once per tick, before anything reads it. Player positions do not change again until the
+        // next session pass, so every creature pass below sees the same answer.
+        if (gameplayDiff > 0)
+        {
+            RefreshActiveCells();
+        }
+
         UpdateCreatures(gameplayDiff);
         UpdateCombat(gameplayDiff);
 
@@ -438,6 +454,65 @@ public sealed class Map(
     /// walked away from it and invisible to people who have walked up to it.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Rebuilds the set of cells near enough to a player to be worth updating.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is upstream's grid-activity model, which we did not have: AzerothCore updates the cells
+    /// around its players, not every object it has ever loaded. Without it the cost of a tick is the
+    /// number of creatures the server has loaded since it started — so walking across a continent
+    /// makes every later tick more expensive, permanently, and the map that is cheapest to update is
+    /// the one nobody has visited.
+    /// </para>
+    /// <para>
+    /// Whole cells, so the covered area is already larger than the visibility radius asked for: a
+    /// cell is 66.6 yards and the radius is rounded outwards to cell boundaries. That slack is
+    /// wanted — a creature that is one yard outside a player's view still has to be running when the
+    /// player takes one step towards it.
+    /// </para>
+    /// </remarks>
+    private void RefreshActiveCells()
+    {
+        _activeCells.Clear();
+
+        foreach (Player player in _players.Values)
+        {
+            foreach (CellCoord cell in
+                MapCoordinates.CellsInRange(player.Position.X, player.Position.Y, VisibilityDistance))
+            {
+                _activeCells.Add(cell);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether a creature is close enough to a player to need updating this tick.
+    /// </summary>
+    /// <remarks>
+    /// A creature already in combat is always active, wherever it is standing. Freezing one that is
+    /// mid-fight would leave it locked onto a victim who has walked away, and it would never reach
+    /// the evade that sends it home — so it would be waiting, still angry, when the player came
+    /// back. Combat is rare enough that keeping it exempt costs nothing.
+    /// </remarks>
+    private bool IsActive(Creature creature) =>
+        _activeCells.Contains(creature.Cell) || creature.Victim is not null || !creature.Threat.IsEmpty;
+
+    /// <summary>How many creatures the last gameplay tick actually updated.</summary>
+    /// <remarks>
+    /// Reported next to <see cref="CreatureCount"/> so the difference between "loaded" and "ticking"
+    /// is visible rather than inferred.
+    /// </remarks>
+    public int ActiveCreatureCount { get; private set; }
+
+    /// <summary>Copies the creature list into the reusable scratch buffer.</summary>
+    private List<Creature> SnapshotCreatures()
+    {
+        _creatureScratch.Clear();
+        _creatureScratch.AddRange(_creatures);
+        return _creatureScratch;
+    }
+
     private void UpdateCreatures(uint gameplayDiff)
     {
         if (gameplayDiff == 0 || _creatures.Count == 0)
@@ -445,15 +520,26 @@ public sealed class Map(
             return;
         }
 
+        int active = 0;
+
         // Materialised: a respawn or a corpse removal files and unfiles cells, and a despawned
         // creature stays in this list so it has something to come back on.
-        foreach (Creature creature in _creatures.ToList())
+        foreach (Creature creature in SnapshotCreatures())
         {
             if (!creature.IsAlive)
             {
+                // Deliberately not gated on activity. This is a timer comparison, and a corpse that
+                // only respawns once somebody walks up to it respawns in front of them.
                 UpdateDeadCreature(creature, gameplayDiff);
                 continue;
             }
+
+            if (!IsActive(creature))
+            {
+                continue;
+            }
+
+            active++;
 
             CellCoord before = creature.Cell;
             Movement.CreatureMove? started = creature.Update(gameplayDiff);
@@ -492,6 +578,8 @@ public sealed class Map(
                     logger, creature.Name, distance, started.Value.DurationMs, watchers.Count);
             }
         }
+
+        ActiveCreatureCount = active;
     }
 
     /// <summary>
@@ -874,9 +962,18 @@ public sealed class Map(
     /// </remarks>
     private void UpdateCreatureCombat(uint gameplayDiff)
     {
-        foreach (Creature creature in _creatures.ToList())
+        foreach (Creature creature in SnapshotCreatures())
         {
             if (!creature.IsAlive)
+            {
+                continue;
+            }
+
+            // The single most expensive thing a tick did: TryAggro below scans the creature's
+            // surroundings, and running it for every creature on the continent meant a range query
+            // per loaded creature per tick, almost all of them looking for players hundreds of
+            // yards away.
+            if (!IsActive(creature))
             {
                 continue;
             }
@@ -1138,13 +1235,38 @@ public sealed class Map(
     {
         // Materialised: a tick can kill, and a death takes the victim out of the cell it was filed
         // in — enumerating the live collections while that happens throws.
-        foreach (Unit unit in Players.Cast<Unit>().Concat(_creatures).ToList())
-        {
-            if (unit.Auras.Count == 0)
-            {
-                continue;
-            }
+        //
+        // Only units that actually carry an aura are copied. The old form built a list of every
+        // player and creature on the map each tick and then discarded almost all of it on the very
+        // next line, which on a loaded continent is tens of thousands of references a second to
+        // find the handful of things that are burning. Not gated on activity: an aura is what kills
+        // something after its attacker has walked away, and a burn that stops ticking out of sight
+        // is a mob that survives by being ignored.
+        List<Unit>? afflicted = null;
 
+        foreach (Player player in _players.Values)
+        {
+            if (player.Auras.Count > 0)
+            {
+                (afflicted ??= []).Add(player);
+            }
+        }
+
+        foreach (Creature creature in _creatures)
+        {
+            if (creature.Auras.Count > 0)
+            {
+                (afflicted ??= []).Add(creature);
+            }
+        }
+
+        if (afflicted is null)
+        {
+            return;
+        }
+
+        foreach (Unit unit in afflicted)
+        {
             (IReadOnlyList<AuraTick> ticks, IReadOnlyList<Aura> expired) = unit.Auras.Update(gameplayDiff);
 
             foreach (AuraTick tick in ticks)

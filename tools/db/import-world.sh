@@ -13,6 +13,14 @@
 # Idempotent: every dump starts with DROP TABLE IF EXISTS, so re-running replaces the table.
 #
 #   tools/db/import-world.sh
+#
+# Two ways to reach MySQL, picked automatically:
+#
+#   docker  the wowemu-mysql container from docker-compose.yml — the development default
+#   client  a local `mysql` binary over TCP — what CI uses, where MySQL is a service container
+#           that `docker exec` cannot reach by name
+#
+# Set WOWEMU_MYSQL_MODE to force one. The client path reads WOWEMU_MYSQL_HOST / _PORT / _USER.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -22,22 +30,54 @@ source_dir="$repo/sql/world"
 container="${WOWEMU_MYSQL_CONTAINER:-wowemu-mysql}"
 password="${WOWEMU_MYSQL_ROOT_PASSWORD:-wowemu}"
 database="${WOWEMU_WORLD_DATABASE:-wowemu_world}"
+host="${WOWEMU_MYSQL_HOST:-127.0.0.1}"
+port="${WOWEMU_MYSQL_PORT:-3306}"
+user="${WOWEMU_MYSQL_USER:-root}"
 
 if [[ ! -d "$source_dir" ]]; then
     echo "error: $source_dir not found" >&2
     exit 1
 fi
 
-if ! docker exec "$container" true 2>/dev/null; then
-    echo "error: container '$container' is not running. Start it with: docker compose up -d" >&2
-    exit 1
+# Pick a transport. Explicit beats inferred, so CI never silently falls back to a container it was
+# not meant to use.
+mode="${WOWEMU_MYSQL_MODE:-}"
+
+if [[ -z "$mode" ]]; then
+    if docker exec "$container" true 2>/dev/null; then
+        mode=docker
+    elif command -v mysql >/dev/null 2>&1; then
+        mode=client
+    else
+        echo "error: no way to reach MySQL." >&2
+        echo "       container '$container' is not running and no local 'mysql' client is on PATH." >&2
+        echo "       Start the container with: docker compose up -d" >&2
+        exit 1
+    fi
 fi
 
+# One entry point for every query below, so the two transports cannot drift apart. Both read stdin,
+# which is what lets the same function take an `-e` one-liner and a piped dump file.
+mysql_run() {
+    case "$mode" in
+        docker)
+            docker exec -i "$container" mysql -u"$user" -p"$password" "$@" 2>/dev/null
+            ;;
+        client)
+            mysql --protocol=TCP -h "$host" -P "$port" -u"$user" -p"$password" "$@" 2>/dev/null
+            ;;
+        *)
+            echo "error: unknown WOWEMU_MYSQL_MODE '$mode' (expected 'docker' or 'client')" >&2
+            exit 1
+            ;;
+    esac
+}
+
 # The schema may not exist on a volume created before it was added to docker/mysql-init/.
-docker exec "$container" mysql -uroot -p"$password" -e \
+mysql_run -e \
     "CREATE DATABASE IF NOT EXISTS \`$database\` CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
      GRANT ALL PRIVILEGES ON \`$database\`.* TO 'wowemu'@'%';
-     FLUSH PRIVILEGES;" 2>/dev/null
+     FLUSH PRIVILEGES;" </dev/null
 
 count=0
 
@@ -54,14 +94,13 @@ for schema_file in "$source_dir"/schema/*.sql; do
 
     printf '  %-26s ' "$table"
 
-    docker exec -i "$container" mysql -uroot -p"$password" "$database" < "$schema_file" 2>/dev/null
-    docker exec -i "$container" mysql -uroot -p"$password" "$database" < "$data_file" 2>/dev/null
+    mysql_run "$database" < "$schema_file"
+    mysql_run "$database" < "$data_file"
 
-    rows=$(docker exec "$container" mysql -uroot -p"$password" "$database" -N -B -e \
-        "SELECT COUNT(*) FROM \`$table\`" 2>/dev/null)
+    rows=$(mysql_run "$database" -N -B -e "SELECT COUNT(*) FROM \`$table\`" </dev/null)
     echo "$rows rows"
 
     count=$((count + 1))
 done
 
-echo "imported $count table(s) into $database from sql/world/"
+echo "imported $count table(s) into $database from sql/world/ (via $mode)"
