@@ -363,6 +363,21 @@ public sealed class WorldSession(
                 HandleQuestGiverStatusQuery(payload);
                 return;
 
+            case Opcode.CMSG_QUESTGIVER_CANCEL:
+                // The client's own "I am done with this window" — sent when a quest dialog is
+                // dismissed. It stays on screen until the server answers, which is the whole of
+                // HandleQuestgiverCancel upstream.
+                CloseGossip();
+                return;
+
+            case Opcode.CMSG_QUESTGIVER_REQUEST_REWARD:
+                HandleQuestGiverRequestReward(payload);
+                return;
+
+            case Opcode.CMSG_QUESTLOG_SWAP_QUEST:
+                HandleQuestLogSwapQuest(payload);
+                return;
+
             case Opcode.CMSG_QUESTGIVER_STATUS_MULTIPLE_QUERY:
                 // The client asks for this whenever its quest log changes or it moves somewhere
                 // new. It is the only thing that repaints a mark already on screen.
@@ -2519,6 +2534,84 @@ public sealed class WorldSession(
         // log, so the ender's question mark has to go and the next quest in the chain may have put
         // an exclamation mark somewhere new.
         SendQuestGiverStatusMultiple();
+    }
+
+    /// <summary>
+    /// Asks for the reward window. <c>CMSG_QUESTGIVER_REQUEST_REWARD</c>.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>HandleQuestgiverRequestRewardOpcode</c>. Sent when the player presses Continue in
+    /// the "have you got them?" window, so without it the hand-in stops one click short of the
+    /// rewards. It re-checks completion first, because the items may have arrived while the window
+    /// was open.
+    /// </remarks>
+    private void HandleQuestGiverRequestReward(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || !reader.TryReadUInt32(out uint questId))
+        {
+            return;
+        }
+
+        if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } giver
+            || !world.QuestEnders.For(giver.Entry).Contains(questId))
+        {
+            QuestTrace("request-reward", "this NPC does not end that quest", 0, questId);
+
+            return;
+        }
+
+        _player.Quests.RefreshCompletion(questId, world.Quests);
+
+        if (_player.Quests.StatusOf(questId) != QuestStatus.Complete)
+        {
+            QuestTrace(
+                "request-reward",
+                $"not finished — status {_player.Quests.StatusOf(questId)}",
+                giver.Entry,
+                questId);
+
+            return;
+        }
+
+        if (world.Quests.TryGet(questId, out QuestTemplate? quest) && quest is not null)
+        {
+            QuestTrace("request-reward", "showing the reward window", giver.Entry, questId);
+            SendOfferReward(giver.Guid, quest);
+        }
+    }
+
+    /// <summary>
+    /// Reorders the quest log. <c>CMSG_QUESTLOG_SWAP_QUEST</c>.
+    /// </summary>
+    /// <remarks>
+    /// Dragging one quest above another in the log. Purely cosmetic to the server and not cosmetic
+    /// to the client: the slot is the handle every objective update names, so a client that thinks
+    /// it moved a quest the server did not will attribute the next kill to the wrong row.
+    /// </remarks>
+    private void HandleQuestLogSwapQuest(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt8(out byte first) || !reader.TryReadUInt8(out byte second)
+            || first == second
+            || first >= QuestConstants.MaxLogSize || second >= QuestConstants.MaxLogSize)
+        {
+            return;
+        }
+
+        _player.Quests.SwapSlots(first, second);
     }
 
     /// <summary>Abandons a quest. <c>CMSG_QUESTLOG_REMOVE_QUEST</c>.</summary>

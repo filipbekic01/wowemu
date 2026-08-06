@@ -15,6 +15,7 @@ internal static class QuestFixture
     /// <summary>A quest with everything at its column default, so a test sets only what it is about.</summary>
     public static QuestTemplate Build(
         uint id = 1,
+        byte method = 2,
         string title = "A Task",
         short level = 5,
         byte minLevel = 0,
@@ -33,7 +34,7 @@ internal static class QuestFixture
         QuestItem[]? rewardChoices = null) =>
         new(
             Id: id,
-            Method: 2,
+            Method: method,
             Level: level,
             MinLevel: minLevel,
             MaxLevel: maxLevel,
@@ -977,6 +978,63 @@ public sealed class QuestStoreTests(ITestOutputHelper output)
     /// <b>Level 255 is a sentinel</b> — four quests carry it, the DBC has no row for it, and
     /// upstream pays nothing for them too. That is the data being explicit rather than a hole.
     /// </remarks>
+    /// <summary>
+    /// The auto-accept flag is merged in from <c>SpecialFlags</c> at load, and the switch strips it.
+    /// </summary>
+    /// <remarks>
+    /// Two columns feed one behaviour: <c>Quest::Quest</c> reads <c>Flags</c> and
+    /// <c>LoadQuestTemplateAddon</c> ORs the bit in for any quest whose <c>SpecialFlags</c> asks.
+    /// Against real data because that is the only way to know the merge matches the content — a
+    /// mistake either way is a starting zone nobody can play.
+    /// </remarks>
+    [RequiresWorldDatabaseFact]
+    public async Task AutoAccept_IsMergedFromSpecialFlagsAndCanBeSwitchedOff()
+    {
+        // 783 "A Threat Within" already carries the bit in its own Flags column, so it proves
+        // nothing about the merge. 170 "A New Threat" has Flags 8 and SpecialFlags 4 — it is
+        // auto-accept ONLY if the two columns are combined, and 110 quests are in that position.
+        const uint AThreatWithin = 783;
+        const uint ANewThreat = 170;
+
+        QuestStore honoured = new();
+        await honoured.LoadAsync(WorldDatabase.ConnectionString, TestToken);
+
+        Assert.True(honoured.TryGet(ANewThreat, out QuestTemplate? merged) && merged is not null);
+        Assert.NotEqual(0u, merged.SpecialFlags & QuestSpecialFlags.AutoAccept);
+        Assert.True(
+            merged.IsAutoAccept,
+            "quest 170 is auto-accept only via SpecialFlags — if the two columns are not merged at "
+            + "load, 110 quests silently stop being taken by anyone, because the client never "
+            + "sends an accept for them either");
+
+        Assert.True(honoured.TryGet(AThreatWithin, out QuestTemplate? raw) && raw is not null);
+        Assert.True(raw!.IsAutoAccept);
+
+        QuestStore ignored = new() { IgnoreAutoAccept = true };
+        await ignored.LoadAsync(WorldDatabase.ConnectionString, TestToken);
+
+        foreach (uint id in (uint[])[AThreatWithin, ANewThreat])
+        {
+            Assert.True(ignored.TryGet(id, out QuestTemplate? stripped) && stripped is not null);
+            Assert.False(stripped!.IsAutoAccept, $"quest {id} kept the flag with the switch on");
+        }
+
+        int autoAccept = 0;
+
+        for (uint id = 1; id < 30_000; id++)
+        {
+            if (honoured.TryGet(id, out QuestTemplate? each) && each is not null && each.IsAutoAccept)
+            {
+                autoAccept++;
+            }
+        }
+
+        output.WriteLine($"{autoAccept} auto-accept quests of {honoured.Count}");
+
+        // A targeted set, not a blanket. If this ever becomes most of the game, the merge is wrong.
+        Assert.InRange(autoAccept, 1, honoured.Count / 10);
+    }
+
     [RequiresClientDataFact]
     public async Task EveryRealQuestLevel_HasAnExperienceRow()
     {
@@ -1250,5 +1308,277 @@ public sealed class QuestFlagTests
 
         Assert.NotNull(player.Quests.Accept(pvp));
         Assert.Equal(QuestStatus.Incomplete, player.Quests.StatusOf(pvp.Id));
+    }
+
+    /// <summary>
+    /// Swapping two log slots moves the fields and the server's own record together.
+    /// </summary>
+    /// <remarks>
+    /// Drifting apart is invisible until the next kill, which then credits the wrong row.
+    /// </remarks>
+    [Fact]
+    public void SwappingSlots_MovesTheFieldsAndTheRecord()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+
+        player.Quests.Accept(QuestFixture.Build(id: 11, objectives: KillFiveWolves));
+        player.Quests.Accept(QuestFixture.Build(id: 22, objectives: KillFiveWolves));
+
+        Assert.Equal(0, player.Quests.Find(11)!.Slot);
+        Assert.Equal(1, player.Quests.Find(22)!.Slot);
+
+        player.Quests.SwapSlots(0, 1);
+
+        Assert.Equal(1, player.Quests.Find(11)!.Slot);
+        Assert.Equal(0, player.Quests.Find(22)!.Slot);
+
+        // And the client's view agrees: slot 0 now holds quest 22.
+        Assert.Equal(22u, player.Fields.GetUInt32(UpdateFields.PLAYER_QUEST_LOG_1_1));
+        Assert.Equal(
+            11u,
+            player.Fields.GetUInt32(
+                UpdateFields.PLAYER_QUEST_LOG_1_1 + QuestConstants.LogSlotWidth));
+    }
+
+    /// <summary>An out-of-range or identical swap does nothing rather than corrupting a slot.</summary>
+    [Fact]
+    public void SwappingSlots_IgnoresNonsense()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+
+        player.Quests.Accept(QuestFixture.Build(id: 11, objectives: KillFiveWolves));
+
+        player.Quests.SwapSlots(0, 0);
+        player.Quests.SwapSlots(0, 200);
+
+        Assert.Equal(0, player.Quests.Find(11)!.Slot);
+        Assert.Equal(11u, player.Fields.GetUInt32(UpdateFields.PLAYER_QUEST_LOG_1_1));
+    }
+
+    /// <summary>
+    /// Taking a quest marks all five of its slot words for sending, not just the ones that changed.
+    /// </summary>
+    /// <remarks>
+    /// The original bug, and the reason quests were invisible in the client's log. Four of the five
+    /// words are zero on a fresh slot, <c>SetUInt32</c> skips a write that changes nothing, and the
+    /// client reads the slot as one unit — so only the quest id ever went out and the log had a
+    /// quest with no state attached. Nothing about this is visible server-side, which is why it
+    /// survived: the assertion has to be about the <i>dirty mask</i>, not the values.
+    /// </remarks>
+    [Fact]
+    public void TakingAQuest_SendsAllFiveSlotWords()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+
+        player.Fields.ClearDirty();
+        player.Quests.Accept(QuestFixture.Build(id: 5261));
+
+        for (int word = 0; word < QuestConstants.LogSlotWidth; word++)
+        {
+            int field = UpdateFields.PLAYER_QUEST_LOG_1_1 + word;
+
+            Assert.True(
+                player.Fields.IsFieldDirty(field),
+                $"slot word {word} (field {field}) was never marked for sending, so the client "
+                + "gets a quest log entry with a hole in it");
+        }
+    }
+
+    /// <summary>A quest complete on acceptance says so in the slot's state word, not only in its status.</summary>
+    /// <remarks>
+    /// The state word is what the client's log reads. A status of complete with a state word of
+    /// zero is a quest the client keeps drawing as unfinished, at the NPC and in the log both.
+    /// </remarks>
+    [Fact]
+    public void CompletingAQuest_WritesTheSlotStateWord()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+
+        player.Quests.Accept(QuestFixture.Build(id: 5261));
+
+        Assert.Equal(
+            QuestSlotState.Complete,
+            player.Fields.GetUInt32(UpdateFields.PLAYER_QUEST_LOG_1_1 + 1));
+
+        Assert.True(player.Fields.IsFieldDirty(UpdateFields.PLAYER_QUEST_LOG_1_1 + 1));
+    }
+
+    /// <summary>An unfinished quest leaves the state word alone.</summary>
+    [Fact]
+    public void AnUnfinishedQuest_LeavesTheStateWordClear()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+
+        player.Quests.Accept(QuestFixture.Build(id: 26, objectives: KillFiveWolves));
+
+        Assert.Equal(
+            QuestSlotState.None,
+            player.Fields.GetUInt32(UpdateFields.PLAYER_QUEST_LOG_1_1 + 1));
+    }
+
+    /// <summary>
+    /// The menu icons are the small set, and are not the questgiver-status numbers.
+    /// </summary>
+    /// <remarks>
+    /// Both go out as a <c>uint32</c>, so nothing catches a swap. It matters twice over: the icon
+    /// sorts a line into the available or active half of the window, and the client answers an
+    /// active line with a different opcode than an available one.
+    /// </remarks>
+    [Fact]
+    public void TheMenuIcons_AreNotTheQuestGiverStatuses()
+    {
+        Assert.Equal(0u, QuestMenuIcon.Silent);
+        Assert.Equal(2u, QuestMenuIcon.Available);
+        Assert.Equal(4u, QuestMenuIcon.Active);
+
+        // The pairing that actually bit: "available" is 2 in one enum and 8 in the other.
+        Assert.NotEqual(QuestGiverStatus.Available, QuestMenuIcon.Available);
+        Assert.NotEqual(QuestGiverStatus.Reward, QuestMenuIcon.Active);
+    }
+
+    /// <summary>
+    /// Auto-accept is read from <c>Flags</c>, not from the same-named <c>SpecialFlags</c> bit.
+    /// </summary>
+    /// <remarks>
+    /// Both exist and only the <c>Flags</c> one is what <c>Quest::IsAutoAccept</c> reads. Getting
+    /// it wrong is not cosmetic: the client reads the same flag and never sends an accept for such
+    /// a quest, so if the server disagrees then nobody puts the quest in the log.
+    /// </remarks>
+    [Fact]
+    public void AutoAccept_ComesFromTheFlagsColumn()
+    {
+        Assert.True(QuestFixture.Build(flags: QuestFlags.AutoAccept).IsAutoAccept);
+        Assert.False(QuestFixture.Build(specialFlags: QuestSpecialFlags.AutoAccept).IsAutoAccept);
+
+        Assert.Equal(0x00080000u, QuestFlags.AutoAccept);
+        Assert.Equal(0x0004u, QuestSpecialFlags.AutoAccept);
+    }
+
+    /// <summary>A quest is auto-complete when its Flags say so, or when its Method is zero.</summary>
+    [Fact]
+    public void AutoComplete_AlsoCoversMethodZero()
+    {
+        Assert.True(QuestFixture.Build(flags: QuestFlags.AutoComplete).IsAutoComplete);
+        Assert.True(QuestFixture.Build(method: 0).IsAutoComplete);
+        Assert.False(QuestFixture.Build().IsAutoComplete);
+    }
+
+    /// <summary>
+    /// A quest blocked only by level is still visible to the questgiver marker; one blocked by its
+    /// chain is not.
+    /// </summary>
+    /// <remarks>
+    /// The distinction the C++ draws between the two, and the reason the marker code cannot just
+    /// call <c>CanTake</c>: too low draws a grey mark, a chain not started draws nothing at all.
+    /// </remarks>
+    [Fact]
+    public void CanSeeStartQuest_IgnoresLevelButNotTheChain()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+
+        Assert.True(player.Quests.CanSeeStartQuest(QuestFixture.Build(minLevel: 40)));
+        Assert.False(player.Quests.CanSeeStartQuest(QuestFixture.Build(prevQuestId: 783)));
+    }
+
+    /// <summary>Re-asking about completion notices items picked up since the last check.</summary>
+    /// <remarks>
+    /// The reward window can be asked for at any moment, and the bags may have changed since the
+    /// objectives were last counted — which is why the C++ re-checks in the same handler.
+    /// </remarks>
+    [Fact]
+    public void RefreshCompletion_NoticesItemsAcquiredMeanwhile()
+    {
+        Player player = InventoryFixture.Player(level: 5);
+        ItemTemplate pelt = ItemFixture.Build(entry: 50432, stackable: 20);
+
+        QuestTemplate quest = QuestFixture.Build(id: 33, requiredItems: [new QuestItem(50432, 3)]);
+        QuestStore store = QuestFixture.Store(quest);
+
+        player.Quests.Accept(quest);
+        Assert.Equal(QuestStatus.Incomplete, player.Quests.StatusOf(33));
+
+        InventoryFixture.Place(player, pelt, InventoryFixture.Backpack(), count: 3);
+
+        player.Quests.RefreshCompletion(33, store);
+
+        Assert.Equal(QuestStatus.Complete, player.Quests.StatusOf(33));
+    }
+
+    /// <summary>
+    /// The multiple-status packet is a count and then fixed nine-byte entries.
+    /// </summary>
+    /// <remarks>
+    /// The packet that repaints marks already on screen. It went unhandled for a while, which is
+    /// what left an exclamation mark over a questgiver whose quest was already taken and no
+    /// question mark over whoever took it back.
+    /// </remarks>
+    [Fact]
+    public void TheMultipleStatus_WritesNineBytesPerEntry()
+    {
+        PacketWriter writer = new();
+
+        QuestPackets.WriteStatusMultiple(
+            writer,
+            [(new ObjectGuid(0x1122334455667788), (byte)QuestGiverStatus.Reward),
+             (new ObjectGuid(0x00000000000000AA), (byte)QuestGiverStatus.Available)]);
+
+        Assert.Equal(4 + (2 * 9), writer.WrittenSpan.Length);
+
+        PacketReader reader = new(writer.WrittenSpan.ToArray());
+
+        Assert.True(reader.TryReadUInt32(out uint count));
+        Assert.Equal(2u, count);
+
+        Assert.True(reader.TryReadUInt64(out ulong first));
+        Assert.Equal(0x1122334455667788ul, first);
+        Assert.True(reader.TryReadUInt8(out byte firstStatus));
+        Assert.Equal((byte)QuestGiverStatus.Reward, firstStatus);
+
+        Assert.True(reader.TryReadUInt64(out ulong second));
+        Assert.Equal(0xAAul, second);
+        Assert.True(reader.TryReadUInt8(out byte secondStatus));
+        Assert.Equal((byte)QuestGiverStatus.Available, secondStatus);
+    }
+
+    /// <summary>An empty multiple-status packet is a zero count, not an empty body.</summary>
+    [Fact]
+    public void TheMultipleStatus_WritesACountEvenWhenEmpty()
+    {
+        PacketWriter writer = new();
+        QuestPackets.WriteStatusMultiple(writer, []);
+
+        Assert.Equal(4, writer.WrittenSpan.Length);
+    }
+
+    /// <summary>
+    /// The quest list carries the repeatable byte the client uses to pick its icon.
+    /// </summary>
+    /// <remarks>
+    /// It was hardcoded to zero in both writers. A blue question mark and a yellow exclamation are
+    /// the same packet with this one byte different.
+    /// </remarks>
+    [Fact]
+    public void TheQuestList_CarriesTheRepeatableByte()
+    {
+        PacketWriter writer = new();
+
+        QuestPackets.WriteQuestList(
+            writer,
+            new ObjectGuid(7),
+            string.Empty,
+            [new QuestMenuEntry(33, QuestMenuIcon.Available, 2, 0, Repeatable: true, "Wolves")]);
+
+        PacketReader reader = new(writer.WrittenSpan.ToArray());
+
+        reader.Skip(8);                                   // npc guid
+        Assert.True(reader.TryReadCString(out _));        // greeting
+        reader.Skip(4 + 4);                               // emote delay, emote
+        Assert.True(reader.TryReadUInt8(out byte count));
+        Assert.Equal(1, count);
+
+        reader.Skip(4 + 4 + 4 + 4);                       // id, icon, level, flags
+
+        Assert.True(reader.TryReadUInt8(out byte repeatable));
+        Assert.Equal(1, repeatable);
     }
 }

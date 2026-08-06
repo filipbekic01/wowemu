@@ -370,6 +370,72 @@ public sealed class QuestLog(Player owner)
     }
 
     /// <summary>
+    /// Re-asks whether one quest is finished, and promotes it if so.
+    /// </summary>
+    /// <remarks>
+    /// The reward window can be requested at any moment, and what the player is carrying may have
+    /// changed since the objectives were last counted. <c>HandleQuestgiverRequestRewardOpcode</c>
+    /// re-checks for the same reason.
+    /// </remarks>
+    public void RefreshCompletion(uint questId, QuestStore quests)
+    {
+        ArgumentNullException.ThrowIfNull(quests);
+
+        if (Find(questId) is not { } progress
+            || !quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
+        {
+            return;
+        }
+
+        RecountItems(quest, progress);
+        RefreshCompletion(quest, progress);
+    }
+
+    /// <summary>
+    /// Exchanges two log slots.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Player::SwapQuestSlot</c>, which swaps all five words of each. Both the server's
+    /// record and the client's fields have to move together — the slot is the handle every
+    /// objective update names, so disagreeing about it credits the next kill to the wrong row.
+    /// </remarks>
+    public void SwapSlots(byte first, byte second)
+    {
+        if (first == second
+            || first >= QuestConstants.MaxLogSize || second >= QuestConstants.MaxLogSize)
+        {
+            return;
+        }
+
+        int a = SlotField(first);
+        int b = SlotField(second);
+
+        for (int i = 0; i < QuestConstants.LogSlotWidth; i++)
+        {
+            uint left = owner.Fields.GetUInt32(a + i);
+            uint right = owner.Fields.GetUInt32(b + i);
+
+            owner.Fields.SetUInt32(a + i, right);
+            owner.Fields.SetUInt32(b + i, left);
+
+            owner.Fields.MarkDirty(a + i);
+            owner.Fields.MarkDirty(b + i);
+        }
+
+        foreach (QuestProgress progress in _quests.Values)
+        {
+            if (progress.Slot == first)
+            {
+                progress.Slot = second;
+            }
+            else if (progress.Slot == second)
+            {
+                progress.Slot = first;
+            }
+        }
+    }
+
+    /// <summary>
     /// Hands a quest in and takes it out of the log.
     /// </summary>
     /// <remarks>

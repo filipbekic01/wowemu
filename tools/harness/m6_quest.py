@@ -239,6 +239,11 @@ def parse_quest_details(payload):
     objectives, cursor = read_cstring(payload, cursor)
 
     cursor += 1                                    # activateAccept
+
+    if len(payload) < cursor + 4:
+        fail(f"SMSG_QUESTGIVER_QUEST_DETAILS is {len(payload)} bytes and ran out before the flags "
+             f"word at {cursor} — the packet is truncated or the strings are misaligned")
+
     flags = struct.unpack("<I", payload[cursor:cursor + 4])[0]
 
     return {"id": quest_id, "title": title, "description": description,
@@ -271,7 +276,16 @@ def status_marks(client):
     body = await_opcode(
         client, SMSG_QUESTGIVER_STATUS_MULTIPLE, "SMSG_QUESTGIVER_STATUS_MULTIPLE")
 
+    if len(body) < 4:
+        fail(f"SMSG_QUESTGIVER_STATUS_MULTIPLE is {len(body)} bytes — it must carry a count even "
+             f"when nothing is in sight")
+
     count = struct.unpack("<I", body[:4])[0]
+    expected = 4 + (count * 9)
+
+    if len(body) != expected:
+        fail(f"SMSG_QUESTGIVER_STATUS_MULTIPLE says {count} marks, which needs {expected} bytes, "
+             f"but the packet is {len(body)}")
 
     return dict(struct.unpack("<QB", body[4 + i * 9:13 + i * 9]) for i in range(count))
 
