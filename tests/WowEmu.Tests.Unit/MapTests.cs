@@ -279,6 +279,149 @@ public sealed class MapVisibilityTests
         Assert.Empty(distantLink.Swings);
     }
 
+    /// <summary>
+    /// A change to one player reaches everyone who can see them.
+    /// </summary>
+    /// <remarks>
+    /// The point of the whole per-observer filter. Before it, a values block was only ever sent to
+    /// the object's own client, so a second player was a mannequin frozen at whatever its create
+    /// block said — health, level and equipment all fixed for as long as it stayed in sight.
+    /// </remarks>
+    [Fact]
+    public void AChangedPlayer_IsBroadcastToWhoeverCanSeeThem()
+    {
+        Map map = NewMap();
+
+        (Player changed, RecordingConnection changedLink) = NewPlayer(1, 0f, 0f);
+        (Player watcher, RecordingConnection watcherLink) = NewPlayer(2, 10f, 0f);
+
+        map.Add(changed);
+        map.Add(watcher);
+
+        // A freshly built player is dirty in every field it was given. The real login path clears
+        // that in SendSelfCreate, once the create block has carried it; without the same clearing
+        // here every test below would be measuring the construction rather than the change.
+        changed.Fields.ClearDirty();
+        watcher.Fields.ClearDirty();
+
+        changed.Health = 42;
+        map.Update(1, 1);
+
+        Assert.Equal([changed.Guid], watcherLink.ValuesUpdates);
+
+        // Not to itself through this path: a player's own block is built by its own flush, and is
+        // the unfiltered one. Coming through here as well would send it the public half twice.
+        Assert.Empty(changedLink.ValuesUpdates);
+    }
+
+    /// <summary>Someone too far away to have been sent a create block is told nothing.</summary>
+    /// <remarks>
+    /// The gate is the visible set rather than distance, because that is what the client's own state
+    /// is: a values block naming a guid it has no object for is dropped on the floor.
+    /// </remarks>
+    [Fact]
+    public void AChangedPlayer_IsNotBroadcastToSomeoneOutOfRange()
+    {
+        Map map = NewMap();
+
+        (Player changed, _) = NewPlayer(1, 0f, 0f);
+        (Player distant, RecordingConnection distantLink) = NewPlayer(2, 500f, 500f);
+
+        map.Add(changed);
+        map.Add(distant);
+
+        changed.Fields.ClearDirty();
+        distant.Fields.ClearDirty();
+
+        changed.Health = 42;
+        map.Update(1, 1);
+
+        Assert.Empty(distantLink.ValuesUpdates);
+    }
+
+    /// <summary>
+    /// The broadcast pass leaves a player's own dirty mask alone.
+    /// </summary>
+    /// <remarks>
+    /// This is the ordering the whole design rests on. The player's own flush runs a few lines later
+    /// and needs the mask still set, because that flush is where the unfiltered block only it may
+    /// have is built. Clearing here would send every observer the public half and the player itself
+    /// nothing at all.
+    /// </remarks>
+    [Fact]
+    public void Broadcasting_DoesNotClearThePlayersOwnDirtyMask()
+    {
+        Map map = NewMap();
+
+        (Player changed, _) = NewPlayer(1, 0f, 0f);
+        (Player watcher, _) = NewPlayer(2, 10f, 0f);
+
+        map.Add(changed);
+        map.Add(watcher);
+
+        changed.Fields.ClearDirty();
+        watcher.Fields.ClearDirty();
+
+        changed.Health = 42;
+        map.Update(1, 1);
+
+        Assert.True(changed.Fields.IsDirty);
+    }
+
+    /// <summary>
+    /// A creature's changes are broadcast, and its mask is cleared once they have been.
+    /// </summary>
+    /// <remarks>
+    /// A creature has no flush of its own to clear the mask in — nothing else would ever clear it —
+    /// so the same change would be rebroadcast to everyone in sight on every tick from then on. It
+    /// is also the first time a creature's health has been transmitted at all: nothing built a
+    /// values block for one before this existed, so a mob's health bar never moved.
+    /// </remarks>
+    [Fact]
+    public void AChangedCreature_IsBroadcastOnceAndThenClean()
+    {
+        Creature creature = CreatureFixture.Build(position: new Position(5f, 0f, 0f, 0f));
+
+        Map map = new(0, new TerrainMap(0, Path.GetTempPath()), new OneCreature(creature));
+
+        (Player watcher, RecordingConnection watcherLink) = NewPlayer(1, 0f, 0f);
+        map.Add(watcher);
+
+        Assert.Contains(creature.Guid, watcher.VisibleObjects);
+
+        // As above: both are dirty from construction, and the create blocks have already carried it.
+        creature.Fields.ClearDirty();
+        watcher.Fields.ClearDirty();
+
+        creature.Health = 1;
+        map.Update(1, 1);
+
+        Assert.Equal([creature.Guid], watcherLink.ValuesUpdates);
+        Assert.False(creature.Fields.IsDirty);
+
+        // And a second tick with nothing new to say sends nothing.
+        map.Update(1, 1);
+
+        Assert.Single(watcherLink.ValuesUpdates);
+    }
+
+    /// <summary>Hands one creature to whichever grid the player arrives in.</summary>
+    private sealed class OneCreature(Creature creature) : IGridObjectLoader
+    {
+        private bool _loaded;
+
+        public IReadOnlyList<WorldObject> Load(uint mapId, GridCoord grid)
+        {
+            if (_loaded)
+            {
+                return [];
+            }
+
+            _loaded = true;
+            return [creature];
+        }
+    }
+
     private static CancellationToken TestToken => CancellationToken.None;
 
     private static Map NewMap() => new(0, new TerrainMap(0, Path.GetTempPath()));
@@ -326,6 +469,16 @@ public sealed class MapVisibilityTests
         }
 
         public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
+
+        /// <summary>Objects this client was told had changed, one entry per block.</summary>
+        public List<ObjectGuid> ValuesUpdates { get; } = [];
+
+        public void QueueValues(WorldObject other)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+
+            ValuesUpdates.Add(other.Guid);
+        }
 
         public void FlushUpdates() => Flushes++;
 

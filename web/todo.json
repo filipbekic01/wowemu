@@ -1546,9 +1546,9 @@
               "text": "Agility's contribution to armour, which needs the gt* DBCs"
             },
             {
-              "done": false,
-              "text": "Other players do not see equipment, health or level change",
-              "note": "No longer blocked. The reason given here — that the dirty mask cannot tell public from private — is fixed: UpdateFieldVisibilityRules.Filter does exactly that, and BuildValuesBlock takes an observer. What is left is the behavioural half: actually broadcasting a values block to everyone who can see the object, instead of to its owner alone."
+              "done": true,
+              "text": "Other players see equipment, health and level change",
+              "note": "Values blocks are broadcast to every observer who has the object, filtered per observer by UpdateFieldVisibilityRules. Map.BroadcastFieldChanges runs after everything that can dirty a field and before the flush, because the flush is where a player builds its own unfiltered block and clears its own mask. Create blocks are filtered the same way now, which closed a leak: a stranger walking past was being sent the whole non-zero field set, coinage included."
             }
           ]
         },
@@ -2267,7 +2267,7 @@
     {
       "category": "Update objects",
       "items": [
-        "Per-observer field filtering is implemented — generated flag tables plus UpdateFieldVisibilityRules — but nothing broadcasts values blocks to third parties yet, so it is not exercised in anger. Party-member and special-info visibility are omitted rather than guessed, which errs towards showing observers less than upstream would, never more.",
+        "Per-observer field filtering is applied to both create and values blocks, and values blocks are broadcast to everyone who can see the object. Party-member visibility is granted to the object itself (upstream IsInSameRaidWith opens with p == this, and a quest log slot id carries no other flag) and to nobody else until groups exist; special-info is omitted rather than guessed. Both err towards showing observers less than upstream would, never more.",
         "Create-block branches for Transport, HasTarget and Vehicle are unwritten. Living, StationaryPosition, Self, Position, LowGuid and Rotation are all produced.",
         "Our deflate output is not byte-identical to upstream's, by design (PLAN §9 excludes compressed bodies from byte-exact comparison)"
       ]

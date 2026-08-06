@@ -46,6 +46,23 @@ public static class UpdateFieldVisibilityRules
     /// </remarks>
     public const UpdateFieldVisibility AlwaysNotified = UpdateFieldVisibility.Dynamic;
 
+    /// <summary>Which flag table an object of a given type id uses.</summary>
+    /// <remarks>
+    /// Items and containers share one table, and so do creatures and players — the same pairing
+    /// <c>GetUpdateFieldData</c> makes by falling through its cases. <see cref="TypeId.Object"/> has
+    /// no table of its own upstream, and nothing on a map is one, so it is an argument error rather
+    /// than a silent default to units.
+    /// </remarks>
+    public static UpdateObjectKind KindOf(TypeId typeId) => typeId switch
+    {
+        TypeId.Item or TypeId.Container => UpdateObjectKind.Item,
+        TypeId.Unit or TypeId.Player => UpdateObjectKind.Unit,
+        TypeId.GameObject => UpdateObjectKind.GameObject,
+        TypeId.DynamicObject => UpdateObjectKind.DynamicObject,
+        TypeId.Corpse => UpdateObjectKind.Corpse,
+        _ => throw new ArgumentOutOfRangeException(nameof(typeId)),
+    };
+
     /// <summary>The per-index flag table for an object kind.</summary>
     public static ReadOnlySpan<ushort> FlagsFor(UpdateObjectKind kind) => kind switch
     {
@@ -65,11 +82,18 @@ public static class UpdateFieldVisibilityRules
     /// <param name="isOwner">The observer owns the object — a pet's master, an item's holder.</param>
     /// <remarks>
     /// <para>
-    /// Two things upstream adds that we cannot yet: <c>UF_FLAG_SPECIAL_INFO</c>, which needs an
-    /// Empathy-style aura cast by the observer, and <c>UF_FLAG_PARTY_MEMBER</c>, which needs groups.
-    /// Both are omitted rather than assumed, so the answer is never more permissive than upstream's —
-    /// a party member currently sees a stranger's view of their group, which is a missing feature
-    /// rather than a leak.
+    /// One thing upstream adds that we cannot yet: <c>UF_FLAG_SPECIAL_INFO</c>, which needs an
+    /// Empathy-style aura cast by the observer. It is omitted rather than assumed, so the answer is
+    /// never more permissive than upstream's.
+    /// </para>
+    /// <para>
+    /// <c>UF_FLAG_PARTY_MEMBER</c> is granted for <paramref name="isSelf"/> and nowhere else, because
+    /// upstream's <c>IsInSameRaidWith</c> opens with <c>p == this</c> — an object is always its own
+    /// party member — and groups do not exist yet for the rest. Getting the self case wrong is not
+    /// cosmetic: the first word of every quest log slot is flagged party-member and nothing else, so
+    /// omitting it drops the quest id and leaves the client four counters with no quest to hang them
+    /// on. Real party members currently get a stranger's view, which is a missing feature rather than
+    /// a leak.
     /// </para>
     /// <para>
     /// Note that <see cref="UpdateFieldVisibility.Owner"/> is <i>not</i> implied by
@@ -83,7 +107,7 @@ public static class UpdateFieldVisibilityRules
 
         if (isSelf)
         {
-            visible |= UpdateFieldVisibility.Private;
+            visible |= UpdateFieldVisibility.Private | UpdateFieldVisibility.PartyMember;
         }
 
         if (isOwner)

@@ -272,6 +272,16 @@ public sealed class MapGridLoadingTests
 
         public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
 
+        /// <summary>Objects this client was told had changed, one entry per block.</summary>
+        public List<ObjectGuid> ValuesUpdates { get; } = [];
+
+        public void QueueValues(WorldObject other)
+        {
+            ArgumentNullException.ThrowIfNull(other);
+
+            ValuesUpdates.Add(other.Guid);
+        }
+
         public void FlushUpdates() => Flushes++;
 
         public void QueueMonsterMove(ObjectGuid mover, CreatureMove move, uint splineId) =>

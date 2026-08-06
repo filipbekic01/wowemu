@@ -1,3 +1,4 @@
+using WowEmu.Core;
 using WowEmu.Protocol;
 
 namespace WowEmu.Tests.Unit;
@@ -64,6 +65,57 @@ public sealed class UpdateFieldVisibilityTests
 
         Assert.False(visible.HasFlag(UpdateFieldVisibility.Owner));
     }
+
+    /// <summary>
+    /// An object is its own party member, and a quest log is what proves it matters.
+    /// </summary>
+    /// <remarks>
+    /// <c>IsInSameRaidWith</c> opens with <c>p == this</c>, so upstream grants
+    /// <c>UF_FLAG_PARTY_MEMBER</c> to the object itself before any group exists. The first word of
+    /// every quest log slot carries that flag <i>and nothing else</i> — reading party-member as
+    /// "needs groups, therefore never" would drop the quest id from a player's own update and leave
+    /// the client holding four objective counters with no quest attached to them.
+    /// </remarks>
+    [Fact]
+    public void TheObjectItself_CountsAsItsOwnPartyMember()
+    {
+        UpdateMask mask = new(UpdateFields.PLAYER_END);
+        mask.Set(UpdateFields.PLAYER_QUEST_LOG_1_1);
+
+        UpdateFieldVisibilityRules.Filter(
+            mask,
+            UpdateObjectKind.Unit,
+            UpdateFieldVisibilityRules.VisibleTo(UpdateObjectKind.Unit, isSelf: true, isOwner: false));
+
+        Assert.True(mask.IsSet(UpdateFields.PLAYER_QUEST_LOG_1_1));
+    }
+
+    /// <summary>And a stranger is not, so the same field goes nowhere near them.</summary>
+    [Fact]
+    public void AStranger_DoesNotCountAsAPartyMember()
+    {
+        UpdateMask mask = new(UpdateFields.PLAYER_END);
+        mask.Set(UpdateFields.PLAYER_QUEST_LOG_1_1);
+
+        UpdateFieldVisibilityRules.Filter(
+            mask,
+            UpdateObjectKind.Unit,
+            UpdateFieldVisibilityRules.VisibleTo(UpdateObjectKind.Unit, isSelf: false, isOwner: false));
+
+        Assert.False(mask.IsSet(UpdateFields.PLAYER_QUEST_LOG_1_1));
+    }
+
+    /// <summary>Creatures and players share a table, items and containers share the other.</summary>
+    [Theory]
+    [InlineData(TypeId.Unit, UpdateObjectKind.Unit)]
+    [InlineData(TypeId.Player, UpdateObjectKind.Unit)]
+    [InlineData(TypeId.Item, UpdateObjectKind.Item)]
+    [InlineData(TypeId.Container, UpdateObjectKind.Item)]
+    [InlineData(TypeId.GameObject, UpdateObjectKind.GameObject)]
+    [InlineData(TypeId.DynamicObject, UpdateObjectKind.DynamicObject)]
+    [InlineData(TypeId.Corpse, UpdateObjectKind.Corpse)]
+    public void EachTypeId_PicksItsOwnTable(TypeId typeId, UpdateObjectKind expected) =>
+        Assert.Equal(expected, UpdateFieldVisibilityRules.KindOf(typeId));
 
     /// <summary>An item's holder gets the item-owner flag as well as the plain owner one.</summary>
     [Fact]

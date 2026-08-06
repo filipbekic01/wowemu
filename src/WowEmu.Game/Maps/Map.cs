@@ -23,6 +23,17 @@ public interface IPlayerConnection
     void QueueDestroy(ObjectGuid objectGuid);
 
     /// <summary>
+    /// Notes that an object this client can already see has changed, to go out at the next flush.
+    /// </summary>
+    /// <remarks>
+    /// For <i>someone else's</i> object: the implementation filters the block down to what this
+    /// observer is allowed to see. A player's own changes go out through its own flush, unfiltered,
+    /// and must not come through here — the filter would strip its coinage and quest log from its
+    /// own update.
+    /// </remarks>
+    void QueueValues(WorldObject other);
+
+    /// <summary>
     /// Emits everything queued since the last flush as one packet.
     /// </summary>
     /// <remarks>
@@ -282,6 +293,10 @@ public sealed class Map(
     // a fresh list of every creature on the continent three times a tick is pure garbage.
     private readonly List<Creature> _creatureScratch = [];
 
+    // Objects whose fields changed this tick. Reused for the same reason the creature scratch is:
+    // the list is rebuilt every tick and is empty on most of them.
+    private readonly List<WorldObject> _changedScratch = [];
+
     public uint MapId { get; } = mapId;
 
     /// <summary>Which phase of the round-robin updates this map. See <see cref="MapManager"/>.</summary>
@@ -432,6 +447,9 @@ public sealed class Map(
 
         UpdateCreatures(gameplayDiff);
         UpdateCombat(gameplayDiff);
+
+        // After everything that could change a field, before anything is flushed.
+        BroadcastFieldChanges();
 
         // Last, and unconditional. A player whose map is out of phase still had things happen to it
         // during the session pass, and holding those until the next full update would show as a
@@ -622,6 +640,91 @@ public sealed class Map(
 
             default:
                 break;
+        }
+    }
+
+    /// <summary>
+    /// Tells every observer about the objects near them that changed this tick.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is what makes another player's health bar drop, their level change, and their new sword
+    /// appear. Until it existed a values block was only ever sent to the object's own client, so a
+    /// creature's health was never transmitted at all and a second player was a mannequin frozen at
+    /// whatever its create block said.
+    /// </para>
+    /// <para>
+    /// Ordered deliberately, and the ordering is the whole design: <b>after</b> everything that can
+    /// dirty a field, and <b>before</b> the flush, because the flush is where a player builds its own
+    /// unfiltered block and clears its own mask. Running this afterwards would find every mask
+    /// already empty and send nothing, which is exactly the bug it replaces.
+    /// </para>
+    /// <para>
+    /// Observer-major rather than object-major. The other way round costs a pass over every player on
+    /// the map per changed object, and in a fight nearly every creature present is changing.
+    /// </para>
+    /// <para>
+    /// Players and creatures only. Gameobjects are not scanned because nothing writes to their fields
+    /// after the spawn builds them — when something does (a chest opening, a door swinging), it is
+    /// this list they have to join, and there is no other place a change would leak out from.
+    /// </para>
+    /// </remarks>
+    private void BroadcastFieldChanges()
+    {
+        _changedScratch.Clear();
+
+        foreach (Player player in _players.Values)
+        {
+            if (player.Fields.IsDirty)
+            {
+                _changedScratch.Add(player);
+            }
+        }
+
+        foreach (Creature creature in _creatures)
+        {
+            if (creature.Fields.IsDirty)
+            {
+                _changedScratch.Add(creature);
+            }
+        }
+
+        if (_changedScratch.Count == 0)
+        {
+            return;
+        }
+
+        foreach (Player observer in _players.Values)
+        {
+            if (observer.Connection is not { } connection)
+            {
+                continue;
+            }
+
+            foreach (WorldObject changed in _changedScratch)
+            {
+                // A client that has not been sent a create block for the object drops the values
+                // block silently, so the visible set is the gate — not proximity.
+                if (observer.VisibleObjects.Contains(changed.Guid))
+                {
+                    connection.QueueValues(changed);
+                }
+            }
+        }
+
+        foreach (WorldObject changed in _changedScratch)
+        {
+            // A player's own mask is cleared by its own flush, a few lines later, once it has built
+            // the unfiltered block only it is entitled to. Clearing it here would send every observer
+            // the public half and the player itself nothing.
+            //
+            // Unless it has no connection to flush through — a test double, or a session that has
+            // gone away — in which case nothing will ever clear it and the same stale change would be
+            // rebroadcast on every tick from now on.
+            if (changed is not Player { Connection: not null })
+            {
+                changed.Fields.ClearDirty();
+            }
         }
     }
 

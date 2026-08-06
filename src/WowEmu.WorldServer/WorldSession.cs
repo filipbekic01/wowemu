@@ -3333,18 +3333,74 @@ public sealed class WorldSession(
         if (other is GameObject gameObject)
         {
             _pendingUpdates.AddBlock(UpdateBlockBuilder.BuildGameObjectCreateBlock(
-                gameObject.Guid, gameObject.Fields, gameObject.Position, gameObject.PackedRotation));
+                gameObject.Guid,
+                gameObject.Fields,
+                gameObject.Position,
+                gameObject.PackedRotation,
+                VisibilityOf(gameObject)));
         }
         else
         {
             other.SyncMovement();
 
             _pendingUpdates.AddBlock(UpdateBlockBuilder.BuildCreateBlock(
-                other.Guid, other.TypeId, other.Fields, other.Movement, other.Speeds, isSelf: false));
+                other.Guid,
+                other.TypeId,
+                other.Fields,
+                other.Movement,
+                other.Speeds,
+                isSelf: false,
+                VisibilityOf(other)));
         }
 
         Log.ObjectBecameVisible(logger, other.Name, _player?.Name ?? "?");
     }
+
+    /// <summary>Adds someone else's changed fields to this tick's batch.</summary>
+    /// <remarks>
+    /// Filtered, always. This is how another player's health, level and equipment finally reach the
+    /// people standing next to them, and it is only safe because the mask is cut down to what this
+    /// observer is entitled to first — the same dirty mask sent whole would hand over their coinage,
+    /// their bag contents and their quest log.
+    /// <para>
+    /// Silent when nothing survives the filter, which is the ordinary case for a purely private
+    /// change: no block is added rather than an empty one.
+    /// </para>
+    /// </remarks>
+    public void QueueValues(WorldObject other)
+    {
+        ArgumentNullException.ThrowIfNull(other);
+
+        if (UpdateBlockBuilder.TryBuildValuesBlock(
+            other.Guid,
+            other.Fields,
+            UpdateFieldVisibilityRules.KindOf(other.TypeId),
+            VisibilityOf(other),
+            out byte[]? block))
+        {
+            _pendingUpdates.AddBlock(block!);
+        }
+    }
+
+    /// <summary>
+    /// What this session's player is allowed to see of another object.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="other"/> is never this player in practice — a player is not in its own visible
+    /// set, and its own changes go out unfiltered through <see cref="QueueOwnChanges"/> — but the
+    /// test is made rather than assumed, because the cost of being wrong is a player's own private
+    /// fields being stripped from their own client.
+    /// <para>
+    /// Ownership is always false: the things a player owns and is told extra about are pets, totems
+    /// and its own dynamic objects, none of which exist yet. An item's owner is handled on the other
+    /// path, where the item is only ever sent to the person holding it.
+    /// </para>
+    /// </remarks>
+    private UpdateFieldVisibility VisibilityOf(WorldObject other) =>
+        UpdateFieldVisibilityRules.VisibleTo(
+            UpdateFieldVisibilityRules.KindOf(other.TypeId),
+            isSelf: _player is not null && other.Guid == _player.Guid,
+            isOwner: false);
 
     /// <summary>
     /// Adds this player's own changed fields, and its items', to the batch.
@@ -3354,11 +3410,15 @@ public sealed class WorldSession(
     /// moved. Without this an item can change hands entirely server-side — the slot guid is
     /// written, the stack count is updated — and the client's bag never changes.
     /// <para>
-    /// <b>To this client only.</b> Half of a player's fields are marked private upstream, and the
-    /// dirty mask does not know the difference — so sending the same block to onlookers would hand
-    /// them a stranger's bags. Other players therefore do not yet see each other's health, level or
-    /// equipment change; that needs the per-viewer mask filtering that
-    /// <c>UpdateFieldFlags</c> exists for, and is recorded as a gap.
+    /// <b>To this client only, and unfiltered.</b> Half of a player's fields are marked private
+    /// upstream, and a player's own client is entitled to all of them — passing this block through
+    /// the observer filter would strip its coinage and quest log from its own update. Onlookers get
+    /// the same changes through <see cref="QueueValues"/>, which does filter, and which the map has
+    /// already called by the time the flush reaches here.
+    /// </para>
+    /// <para>
+    /// So the dirty mask is read twice per tick — once per observer and once here — and cleared only
+    /// here. That ordering is <see cref="Maps.Map.Update"/>'s, not this method's.
     /// </para>
     /// </remarks>
     private void QueueOwnChanges()

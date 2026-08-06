@@ -25,6 +25,10 @@ public static class UpdateBlockBuilder
     /// <param name="movement">Where it is and how it is moving.</param>
     /// <param name="speeds">Its nine movement speeds.</param>
     /// <param name="isSelf">True when building the observer's own character.</param>
+    /// <param name="visibleTo">
+    /// What this observer may see. <see langword="null"/> means no filtering, which is only correct
+    /// for the object's own client. See <see cref="BuildValuesBlock"/>.
+    /// </param>
     /// <remarks>
     /// Players use <see cref="UpdateType.CreateObject2"/> rather than
     /// <see cref="UpdateType.CreateObject"/> — upstream picks it for anything with a stationary
@@ -37,7 +41,8 @@ public static class UpdateBlockBuilder
         UpdateFieldStorage fields,
         MovementInfo movement,
         MovementSpeeds speeds,
-        bool isSelf)
+        bool isSelf,
+        UpdateFieldVisibility? visibleTo = null)
     {
         ArgumentNullException.ThrowIfNull(fields);
         ArgumentNullException.ThrowIfNull(movement);
@@ -69,7 +74,7 @@ public static class UpdateBlockBuilder
 
         // A create block sends every non-zero field, not just the changed ones: the observer has no
         // previous copy to diff against.
-        WriteValues(writer, fields, fields.BuildCreateMask());
+        WriteValues(writer, fields, CreateMask(fields, UpdateFieldVisibilityRules.KindOf(typeId), visibleTo));
 
         return writer.ToArray();
     }
@@ -87,7 +92,11 @@ public static class UpdateBlockBuilder
     /// dynamic objects.
     /// </para>
     /// </remarks>
-    public static byte[] BuildItemCreateBlock(ObjectGuid objectGuid, TypeId typeId, UpdateFieldStorage fields)
+    public static byte[] BuildItemCreateBlock(
+        ObjectGuid objectGuid,
+        TypeId typeId,
+        UpdateFieldStorage fields,
+        UpdateFieldVisibility? visibleTo = null)
     {
         ArgumentNullException.ThrowIfNull(fields);
 
@@ -101,7 +110,7 @@ public static class UpdateBlockBuilder
         writer.WriteUInt16((ushort)flags);
 
         WriteLowGuid(writer, flags, objectGuid, typeId, isSelf: false);
-        WriteValues(writer, fields, fields.BuildCreateMask());
+        WriteValues(writer, fields, CreateMask(fields, UpdateFieldVisibilityRules.KindOf(typeId), visibleTo));
 
         return writer.ToArray();
     }
@@ -126,7 +135,8 @@ public static class UpdateBlockBuilder
         ObjectGuid objectGuid,
         UpdateFieldStorage fields,
         Position position,
-        ulong packedRotation)
+        ulong packedRotation,
+        UpdateFieldVisibility? visibleTo = null)
     {
         ArgumentNullException.ThrowIfNull(fields);
 
@@ -149,7 +159,7 @@ public static class UpdateBlockBuilder
         // Rotation comes last of all the optional sections, after transport and vehicle.
         writer.WriteUInt64(packedRotation);
 
-        WriteValues(writer, fields, fields.BuildCreateMask());
+        WriteValues(writer, fields, CreateMask(fields, UpdateObjectKind.GameObject, visibleTo));
 
         return writer.ToArray();
     }
@@ -178,11 +188,6 @@ public static class UpdateBlockBuilder
     {
         ArgumentNullException.ThrowIfNull(fields);
 
-        PacketWriter writer = new(256);
-
-        writer.WriteUInt8((byte)UpdateType.Values);
-        writer.WritePackedGuid(objectGuid);
-
         UpdateMask mask = fields.BuildDirtyMask();
 
         if (visibleTo is { } visible)
@@ -190,9 +195,71 @@ public static class UpdateBlockBuilder
             UpdateFieldVisibilityRules.Filter(mask, kind, visible);
         }
 
+        return WriteValuesBlock(objectGuid, fields, mask);
+    }
+
+    /// <summary>
+    /// Builds a values block for a third party, unless none of what changed is theirs to see.
+    /// </summary>
+    /// <param name="block">The block, or <see langword="null"/> when nothing survived the filter.</param>
+    /// <returns>Whether there was anything to send.</returns>
+    /// <remarks>
+    /// The empty case is the common one, not an edge: a player picking up copper dirties nothing but
+    /// private fields, and every observer in sight would otherwise be sent a block whose mask is 42
+    /// words of zero. Upstream avoids it structurally — a values block is built per observer inside
+    /// <c>BuildUpdate</c> only for observers the change was queued against — so this is the same
+    /// saving arrived at from the other end.
+    /// <para>
+    /// The mask is filtered, never optional: this overload exists for observers who are not the
+    /// object, and there is no caller for whom "no filter" would be right.
+    /// </para>
+    /// </remarks>
+    public static bool TryBuildValuesBlock(
+        ObjectGuid objectGuid,
+        UpdateFieldStorage fields,
+        UpdateObjectKind kind,
+        UpdateFieldVisibility visibleTo,
+        out byte[]? block)
+    {
+        ArgumentNullException.ThrowIfNull(fields);
+
+        UpdateMask mask = fields.BuildDirtyMask();
+        UpdateFieldVisibilityRules.Filter(mask, kind, visibleTo);
+
+        if (mask.SetCount == 0)
+        {
+            block = null;
+            return false;
+        }
+
+        block = WriteValuesBlock(objectGuid, fields, mask);
+        return true;
+    }
+
+    private static byte[] WriteValuesBlock(ObjectGuid objectGuid, UpdateFieldStorage fields, UpdateMask mask)
+    {
+        PacketWriter writer = new(256);
+
+        writer.WriteUInt8((byte)UpdateType.Values);
+        writer.WritePackedGuid(objectGuid);
+
         WriteValues(writer, fields, mask);
 
         return writer.ToArray();
+    }
+
+    /// <summary>The non-zero fields of an object, less anything this observer may not see.</summary>
+    private static UpdateMask CreateMask(
+        UpdateFieldStorage fields, UpdateObjectKind kind, UpdateFieldVisibility? visibleTo)
+    {
+        UpdateMask mask = fields.BuildCreateMask();
+
+        if (visibleTo is { } visible)
+        {
+            UpdateFieldVisibilityRules.Filter(mask, kind, visible);
+        }
+
+        return mask;
     }
 
     /// <summary>

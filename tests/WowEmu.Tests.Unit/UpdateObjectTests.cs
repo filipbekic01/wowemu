@@ -385,6 +385,106 @@ public sealed class UpdateObjectPacketTests
         Assert.Equal(0, reader.Remaining);
     }
 
+    /// <summary>
+    /// A create block for someone else drops the fields they are not entitled to.
+    /// </summary>
+    /// <remarks>
+    /// Upstream applies the same visibility test to a create block as to a values block —
+    /// <c>BuildValuesUpdate</c> only swaps <c>_changesMask</c> for "is it non-zero". Before this,
+    /// walking past a player broadcast their coinage to everyone in sight, because the create mask
+    /// went out unfiltered.
+    /// </remarks>
+    [Fact]
+    public void CreateBlock_ForAStranger_OmitsPrivateFields()
+    {
+        ObjectGuid guid = ObjectGuid.Create(HighGuid.Player, 7);
+
+        UpdateFieldStorage fields = new(UpdateFields.PLAYER_END);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_HEALTH, 100);
+        fields.SetUInt32(UpdateFields.PLAYER_FIELD_COINAGE, 12345);
+
+        byte[] stranger = UpdateBlockBuilder.BuildCreateBlock(
+            guid, TypeId.Player, fields, new MovementInfo(), new MovementSpeeds(), isSelf: false,
+            UpdateFieldVisibilityRules.VisibleTo(UpdateObjectKind.Unit, isSelf: false, isOwner: false));
+
+        byte[] self = UpdateBlockBuilder.BuildCreateBlock(
+            guid, TypeId.Player, fields, new MovementInfo(), new MovementSpeeds(), isSelf: true);
+
+        Assert.False(Contains(stranger, 12345u), "a stranger's create block carried the coinage");
+        Assert.True(Contains(self, 12345u), "the player's own create block lost the coinage");
+
+        // The mask is the same length either way — a cleared bit costs no bytes there — so the
+        // stranger's block is shorter by exactly the value that was dropped.
+        Assert.Equal(4, self.Length - stranger.Length);
+    }
+
+    /// <summary>
+    /// A change nobody else may see produces no block at all, rather than an empty one.
+    /// </summary>
+    /// <remarks>
+    /// An empty values block is not free: a player's mask is 42 words, so 170-odd bytes per observer
+    /// per tick to say nothing. Picking up copper dirties only private fields, and that is the
+    /// ordinary case rather than a corner one.
+    /// </remarks>
+    [Fact]
+    public void ValuesBlock_ForAStranger_IsSkippedWhenNothingSurvivesTheFilter()
+    {
+        ObjectGuid guid = ObjectGuid.Create(HighGuid.Player, 7);
+
+        UpdateFieldStorage fields = new(UpdateFields.PLAYER_END);
+        fields.SetUInt32(UpdateFields.PLAYER_FIELD_COINAGE, 500);
+
+        Assert.False(UpdateBlockBuilder.TryBuildValuesBlock(
+            guid,
+            fields,
+            UpdateObjectKind.Unit,
+            UpdateFieldVisibilityRules.VisibleTo(UpdateObjectKind.Unit, isSelf: false, isOwner: false),
+            out byte[]? block));
+
+        Assert.Null(block);
+    }
+
+    /// <summary>And a public change does produce one, carrying only the public half.</summary>
+    [Fact]
+    public void ValuesBlock_ForAStranger_CarriesThePublicChangesOnly()
+    {
+        ObjectGuid guid = ObjectGuid.Create(HighGuid.Player, 7);
+
+        UpdateFieldStorage fields = new(UpdateFields.PLAYER_END);
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_HEALTH, 100);
+        fields.SetUInt32(UpdateFields.PLAYER_FIELD_COINAGE, 500);
+        fields.ClearDirty();
+
+        fields.SetUInt32(UpdateFields.UNIT_FIELD_HEALTH, 60);
+        fields.SetUInt32(UpdateFields.PLAYER_FIELD_COINAGE, 499);
+
+        Assert.True(UpdateBlockBuilder.TryBuildValuesBlock(
+            guid,
+            fields,
+            UpdateObjectKind.Unit,
+            UpdateFieldVisibilityRules.VisibleTo(UpdateObjectKind.Unit, isSelf: false, isOwner: false),
+            out byte[]? block));
+
+        PacketReader reader = new(block!);
+
+        Assert.True(reader.TryReadUInt8(out byte updateType));
+        Assert.Equal((byte)UpdateType.Values, updateType);
+
+        Assert.True(reader.TryReadPackedGuid(out ObjectGuid readGuid));
+        Assert.Equal(guid, readGuid);
+
+        Assert.True(reader.TryReadUInt8(out byte blockCount));
+        for (int i = 0; i < blockCount; i++)
+        {
+            Assert.True(reader.TryReadUInt32(out _));
+        }
+
+        // Exactly one value: the health. The coinage changed too and is not here.
+        Assert.True(reader.TryReadUInt32(out uint health));
+        Assert.Equal(60u, health);
+        Assert.Equal(0, reader.Remaining);
+    }
+
     [Fact]
     public void Packet_CountsItsBlocks()
     {
@@ -467,4 +567,15 @@ public sealed class UpdateObjectPacketTests
         Assert.True(reader.TryReadUInt32(out uint bits));
         return BitConverter.UInt32BitsToSingle(bits);
     }
+
+    /// <summary>
+    /// Whether a 32-bit value appears anywhere in a block, at any alignment.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not aligned to field boundaries: the point of the check is that the value is
+    /// <i>absent</i>, and a search that only looked where the field ought to be would pass on a
+    /// block that leaked it somewhere else.
+    /// </remarks>
+    private static bool Contains(byte[] block, uint value) =>
+        block.AsSpan().IndexOf(BitConverter.GetBytes(value)) >= 0;
 }
