@@ -385,13 +385,22 @@ public sealed class Map(
     /// default for a player is 2.0 yards.
     /// </param>
     /// <remarks>
-    /// <b>Terrain liquid only.</b> A WMO carries its own liquid — every indoor pool, fountain and
-    /// flooded dungeon room — and while those chunks are parsed into the model records, nothing
-    /// queries them yet. So a "no liquid here" answer means "no liquid in the terrain here", and a
-    /// caller must not read it as proof that a player standing in an inn's fountain is lying.
+    /// Terrain and models together, the same way <see cref="GetFloor"/> combines them — but by a
+    /// different rule. See <see cref="WorldLiquid"/>: a model's water wins outright indoors, because
+    /// a building standing in a lake must not have the lake running through its ground floor.
     /// </remarks>
     public LiquidData GetLiquid(float x, float y, float z, float collisionHeight) =>
-        Terrain.GetLiquidData(x, y, z, collisionHeight);
+        WorldLiquid.Get(Terrain, Collision, x, y, z, collisionHeight, LiquidTypes);
+
+    /// <summary>
+    /// <c>LiquidType.dbc</c>, which classifies the liquid inside a model.
+    /// </summary>
+    /// <remarks>
+    /// Optional, and the failure without it is quiet rather than loud: indoor water still reports
+    /// its depth and its entry id, but with no type — so nothing can tell Undercity's slime from
+    /// Stormwind's canal, and any rule keyed on the type simply never fires.
+    /// </remarks>
+    public DbcStore<LiquidTypeEntry>? LiquidTypes { get; init; }
 
     /// <summary>Whether one point on this map can see another.</summary>
     /// <remarks>Clear when there is no collision data: a missing file must not blind the world.</remarks>

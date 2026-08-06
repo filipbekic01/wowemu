@@ -160,6 +160,31 @@ public sealed record QuestXpEntry(uint Level, uint[] ByDifficulty)
         difficulty < ByDifficulty.Length ? ByDifficulty[difficulty] : 0;
 }
 
+/// <summary>A row of <c>LiquidType.dbc</c>.</summary>
+/// <remarks>
+/// Two columns of forty-five. <see cref="SoundBank"/> is what upstream calls <c>Type</c>, and it is
+/// the only classification there is: it says whether a liquid is water, ocean, magma or slime, and
+/// nothing else in the file does. A WMO stores only the row id, so without this table indoor water
+/// and Undercity's slime are indistinguishable.
+/// </remarks>
+public sealed record LiquidTypeEntry(uint Id, uint SoundBank, uint SpellId)
+{
+    /// <summary>The <c>MAP_LIQUID_TYPE_*</c> bit this row's sound bank corresponds to.</summary>
+    /// <remarks>
+    /// The same mapping the map extractor makes when it bakes types into a terrain tile —
+    /// <c>1 &lt;&lt; SoundBank</c>, spelled out rather than shifted so that an unexpected value
+    /// becomes <see cref="LiquidTypeMask.None"/> instead of an out-of-range bit.
+    /// </remarks>
+    public LiquidTypeMask Type => SoundBank switch
+    {
+        0 => LiquidTypeMask.Water,
+        1 => LiquidTypeMask.Ocean,
+        2 => LiquidTypeMask.Magma,
+        3 => LiquidTypeMask.Slime,
+        _ => LiquidTypeMask.None,
+    };
+}
+
 public sealed record WorldSafeLocsEntry(
     uint Id,
     uint MapId,
@@ -221,15 +246,20 @@ public sealed class DbcStores
     /// <summary>An id and ten difficulty columns. <c>QuestXPfmt</c>.</summary>
     private const string QuestXpFormat = "niiiiiiiiii";
 
+    /// <summary>Verbatim from <c>DBCfmt.h</c>: id, type and spell out of forty-five columns.</summary>
+    private const string LiquidTypeFormat = "nxxixixxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+
     private DbcStores(
         DbcStore<ChrRacesEntry> races,
         DbcStore<ChrClassesEntry> classes,
         DbcStore<MapEntry> maps,
         DbcStore<FactionTemplateEntry> factionTemplates,
         DbcStore<WorldSafeLocsEntry> worldSafeLocs,
-        DbcStore<QuestXpEntry> questXp)
+        DbcStore<QuestXpEntry> questXp,
+        DbcStore<LiquidTypeEntry> liquidTypes)
     {
         QuestXp = questXp;
+        LiquidTypes = liquidTypes;
         Races = races;
         Classes = classes;
         Maps = maps;
@@ -258,10 +288,13 @@ public sealed class DbcStores
     /// </remarks>
     public DbcStore<QuestXpEntry> QuestXp { get; }
 
+    /// <summary>What each liquid actually is. Without it a WMO's water has no type at all.</summary>
+    public DbcStore<LiquidTypeEntry> LiquidTypes { get; }
+
     /// <summary>Total rows loaded, for the startup log.</summary>
     public int TotalRows =>
         Races.Count + Classes.Count + Maps.Count + FactionTemplates.Count + WorldSafeLocs.Count
-        + QuestXp.Count;
+        + QuestXp.Count + LiquidTypes.Count;
 
     /// <summary>
     /// Loads every store from a directory of extracted <c>.dbc</c> files.
@@ -378,6 +411,20 @@ public sealed class DbcStores
                     }
 
                     return new QuestXpEntry(record.GetUInt32(0), byDifficulty);
-                }));
+                }),
+
+            DbcStore<LiquidTypeEntry>.Load(
+                Path.Combine(directory, "LiquidType.dbc"),
+                LiquidTypeFormat,
+                idField: 0,
+                // Columns, not kept fields: an 'x' in the format still consumes an index, so the
+                // type sits at 3 and the spell at 5 even though they are the second and third
+                // things the format keeps. Reading them at 1 and 2 lands on the name's string
+                // offset, which resolves to a plausible small number and quietly types every
+                // liquid as nothing.
+                (in DbcRecord record) => new LiquidTypeEntry(
+                    Id: record.GetUInt32(0),
+                    SoundBank: record.GetUInt32(3),
+                    SpellId: record.GetUInt32(5))));
     }
 }

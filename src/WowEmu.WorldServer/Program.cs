@@ -127,7 +127,8 @@ builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredKeyedService<LootStore>("creature_loot"),
     services.GetRequiredKeyedService<LootStore>("reference_loot"),
     services.GetRequiredService<ItemGuidGenerator>().Next,
-    services.GetRequiredService<QuestStore>()));
+    services.GetRequiredService<QuestStore>(),
+    services.GetRequiredService<DbcStores>().LiquidTypes));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in

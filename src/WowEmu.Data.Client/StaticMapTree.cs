@@ -126,6 +126,102 @@ public sealed class StaticMapTree(uint mapId, string vmapsDirectory)
             : null;
     }
 
+    /// <summary>
+    /// The liquid inside a model at a world point, if the point is inside one that has any.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>StaticVMapCollisionData::GetAreaAndLiquidData</c>, less the area half. This is the
+    /// other kind of water: terrain liquid covers lakes, rivers and the ocean, and everything under
+    /// a roof — a fountain, a canal, a flooded dungeon room — is a grid inside a WMO instead. A
+    /// server that only reads terrain liquid believes an indoor pool is dry air.
+    /// <para>
+    /// Returns null when the point is not inside any model, or is inside one with no liquid in that
+    /// group. Both are ordinary and mean "ask the terrain instead".
+    /// </para>
+    /// <para>
+    /// The <see cref="LiquidData.Entry"/> a model stores is a <c>LiquidType.dbc</c> row, <b>not</b>
+    /// the sound-bank bitmask a terrain tile carries — the extractor resolves that for terrain and
+    /// leaves a WMO's to the reader. So <paramref name="liquidTypes"/> is what turns entry 20 into
+    /// "slime" rather than an opaque number; without it <see cref="LiquidData.Type"/> is left empty
+    /// rather than guessed at, and a caller cannot tell Undercity's slime from Stormwind's canal.
+    /// </para>
+    /// </remarks>
+    public ModelLiquid? GetLiquid(
+        float x,
+        float y,
+        float z,
+        float collisionHeight,
+        DbcStore<LiquidTypeEntry>? liquidTypes = null)
+    {
+        EnsureTreeLoaded();
+        EnsureTilesLoadedFor(x, y);
+
+        if (_tree is null)
+        {
+            return null;
+        }
+
+        Vector3 point = Collision.ToInternal(x, y, z);
+
+        List<uint> candidates = [];
+        Collision.CollectCandidatesAtPoint(_tree.Tree, point, candidates);
+
+        // The highest floor wins, the same way upstream keeps the greatest ground_Z across
+        // instances: two models can overlap, and the one you are standing in is the upper one.
+        ModelLocation? best = null;
+        ModelSpawn bestSpawn = default;
+
+        foreach (uint candidate in candidates)
+        {
+            if (!_instances.TryGetValue(candidate, out ModelInstance? instance))
+            {
+                continue;
+            }
+
+            if (ModelLocator.TryLocate(instance.Spawn, instance.Model, point, out ModelLocation found)
+                && (best is null || found.GroundZ > best.Value.GroundZ))
+            {
+                best = found;
+                bestSpawn = instance.Spawn;
+            }
+        }
+
+        if (best is not { } location || location.Group.Liquid is not { } liquid)
+        {
+            return null;
+        }
+
+        if (!ModelLocator.TryGetLiquidLevel(bestSpawn, location.Group, point, out float level))
+        {
+            return null;
+        }
+
+        float depth = level - z;
+
+        LiquidStatus status = depth > collisionHeight ? LiquidStatus.UnderWater
+            : depth > 0.0f ? LiquidStatus.InWater
+            : depth > -0.1f ? LiquidStatus.WaterWalk
+            : LiquidStatus.AboveWater;
+
+        LiquidTypeMask type = liquidTypes is not null && liquidTypes.TryGet(liquid.Type, out LiquidTypeEntry? entry)
+            ? entry!.Type
+            : LiquidTypeMask.None;
+
+        return new ModelLiquid(
+            new LiquidData(liquid.Type, type, level, location.GroundZ, status),
+            IsInterior: (location.Group.MogpFlags & WmoInteriorFlag) != 0);
+    }
+
+    /// <summary>
+    /// The <c>MOGP</c> bit that marks a group as an enclosed interior.
+    /// </summary>
+    /// <remarks>
+    /// It decides which liquid wins when a point has both kinds. Indoors the model's own water is
+    /// the only water there is, and letting the terrain override it would put a lake through the
+    /// floor of every building standing in one.
+    /// </remarks>
+    public const uint WmoInteriorFlag = 0x2000;
+
     /// <summary>Loads the models a tile places, if it has not been loaded already.</summary>
     public void LoadTile(int gridX, int gridY)
     {

@@ -568,6 +568,131 @@ public static class Collision
     }
 
     /// <summary>
+    /// Appends the primitives whose subtree contains a point to <paramref name="into"/>.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>BIH::intersectPoint</c>. The same tree as the ray walk and the same node layout,
+    /// but there is no interval to narrow and no near/far ordering to get right — a point is simply
+    /// on one side of each split plane, or between them, in which case it is in neither child and
+    /// the descent stops.
+    /// <para>
+    /// Like the ray walk, this is a filter: a returned candidate is a primitive whose <i>subtree</i>
+    /// the point falls in, not one the point is inside. Callers still test the real geometry.
+    /// </para>
+    /// </remarks>
+    public static void CollectCandidatesAtPoint(BihTree tree, Vector3 point, List<uint> into)
+    {
+        ArgumentNullException.ThrowIfNull(tree);
+        ArgumentNullException.ThrowIfNull(into);
+
+        if (tree.Nodes.Length == 0 || tree.Objects.Length == 0)
+        {
+            return;
+        }
+
+        if (point.X < tree.BoundsMinX || point.X > tree.BoundsMaxX ||
+            point.Y < tree.BoundsMinY || point.Y > tree.BoundsMaxY ||
+            point.Z < tree.BoundsMinZ || point.Z > tree.BoundsMaxZ)
+        {
+            return;
+        }
+
+        Span<float> at = [point.X, point.Y, point.Z];
+
+        Stack<int> pending = new();
+        int node = 0;
+
+        while (true)
+        {
+            bool descend = true;
+
+            while (descend)
+            {
+                if (node < 0 || node + 2 >= tree.Nodes.Length)
+                {
+                    break;
+                }
+
+                uint word = tree.Nodes[node];
+                int axis = (int)BihTree.NodeAxis(word);
+                bool bvh2 = BihTree.NodeIsBvh2(word);
+                int offset = (int)BihTree.NodeOffset(word);
+
+                if (!bvh2)
+                {
+                    if (axis < 3)
+                    {
+                        float left = AsFloat(tree.Nodes[node + 1]);
+                        float right = AsFloat(tree.Nodes[node + 2]);
+
+                        // Between the two half-spaces: the point is in the empty gap the split
+                        // carved out, so neither child can contain it.
+                        if (left < at[axis] && right > at[axis])
+                        {
+                            break;
+                        }
+
+                        int rightChild = offset + BihTree.WordsPerNode;
+                        node = rightChild;
+
+                        if (left < at[axis])
+                        {
+                            continue;
+                        }
+
+                        node = offset;
+
+                        if (right > at[axis])
+                        {
+                            continue;
+                        }
+
+                        // In both — the halves overlap here, so the far one is deferred.
+                        pending.Push(rightChild);
+                        continue;
+                    }
+
+                    uint count = tree.Nodes[node + 1];
+
+                    for (uint i = 0; i < count; i++)
+                    {
+                        uint slot = (uint)offset + i;
+
+                        if (slot < (uint)tree.Objects.Length)
+                        {
+                            into.Add(tree.Objects[slot]);
+                        }
+                    }
+
+                    break;
+                }
+
+                if (axis > 2)
+                {
+                    return;
+                }
+
+                float low = AsFloat(tree.Nodes[node + 1]);
+                float high = AsFloat(tree.Nodes[node + 2]);
+
+                node = offset;
+
+                if (low > at[axis] || high < at[axis])
+                {
+                    break;
+                }
+            }
+
+            if (pending.Count == 0)
+            {
+                return;
+            }
+
+            node = pending.Pop();
+        }
+    }
+
+    /// <summary>
     /// Clips the ray to the tree's bounding box, giving the interval the walk starts from.
     /// </summary>
     /// <remarks>

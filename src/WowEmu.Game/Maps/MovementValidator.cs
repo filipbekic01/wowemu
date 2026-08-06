@@ -54,13 +54,14 @@ public readonly record struct MovementVerdict(MovementRejection Rejection, strin
 /// leaving a surface and the fall being reported; each of those is an honest player disconnected.
 /// </para>
 /// <para>
-/// Swimming is still not checked either, but the reason has moved. The terrain liquid chunk is
-/// parsed now — <see cref="TerrainMap.GetLiquidData"/> will say whether there is water at a point —
-/// so the obvious rule is available: refuse a client that claims to be swimming where there is no
-/// liquid. It is not applied, because a WMO carries its own liquid and nothing queries it yet. Every
-/// indoor pool, fountain and flooded dungeon room would read as open air, and the rule would
-/// disconnect honest players for standing in water the server cannot see. It becomes exactly right
-/// the day <c>StaticMapTree</c> answers liquid queries, and not before.
+/// Swimming is still not checked here, and this one is now a choice rather than a blocker. Both
+/// kinds of water can be asked about — <see cref="WorldLiquid"/> answers for terrain and models
+/// together — so "claims to be swimming where there is no liquid" is finally a question with a real
+/// answer. What is missing is the margin: a client reports its position on its own schedule, and a
+/// player who has just jumped clear of a lake is legitimately dry at a position it sends while still
+/// flagged as swimming. Refusing that is a disconnect for playing normally. The rule wants a
+/// tolerance in time and distance, which is a piece of design rather than a lookup, and it belongs
+/// with the fall-damage work that needs the same state.
 /// </para>
 /// <para>
 /// So the checks here are the ones that are exactly right rather than nearly right: coordinates
