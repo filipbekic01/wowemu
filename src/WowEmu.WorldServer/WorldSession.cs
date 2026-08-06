@@ -454,6 +454,14 @@ public sealed class WorldSession(
                     return;
                 }
 
+                // The nine speed acknowledgements share one handler for the same reason: the opcode
+                // names which speed, and the payload is identical for all of them.
+                if (info?.UpstreamHandler == "HandleForceSpeedChangeAck")
+                {
+                    HandleSpeedChangeAck(opcode, payload);
+                    return;
+                }
+
                 Log.UnhandledOpcode(logger, opcode, connection.RemoteAddress);
                 return;
         }
@@ -3253,7 +3261,7 @@ public sealed class WorldSession(
         // The floor lookup is handed in rather than reached for, so the validator stays a pure
         // function and a map with no collision data simply skips the check.
         MovementVerdict verdict = MovementValidator.Validate(
-            _player.Position, claimed, elapsed, _map.GetFloor);
+            _player.Position, claimed, elapsed, _map.GetFloor, AllowedSpeed());
 
         if (!verdict.Accepted)
         {
@@ -3292,6 +3300,154 @@ public sealed class WorldSession(
         // a walk arrives as a walk, a jump as a jump.
         _map.BroadcastMovement(_player, opcode, _player.Movement);
     }
+
+    /// <summary>
+    /// Handles a client confirming it has applied a speed the server ordered.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>WorldSession::HandleForceSpeedChangeAck</c>. This is the other half of
+    /// <see cref="SendSpeedChange"/>: the server orders a speed, the client applies it and echoes
+    /// back what it now believes, and the two are compared.
+    /// <para>
+    /// <b>Only the last acknowledgement of a run is checked.</b> Several forced changes can be in
+    /// flight at once — a slow landing while a buff is still being applied — and the client answers
+    /// each in turn, so every reply but the final one reports a speed that was correct when it was
+    /// sent and is stale by the time it arrives. Comparing them all reports an honest client as a
+    /// cheat, reliably, whenever two auras land close together.
+    /// </para>
+    /// <para>
+    /// <b>A mismatch corrects rather than disconnects.</b> Upstream kicks a client that claims to be
+    /// faster than the server allows. We re-send the correct speed in both directions and log the
+    /// suspicious one — a deliberate deviation, and the same call the movement validator makes:
+    /// nothing here has been proven accurate enough against a real client to disconnect somebody
+    /// over, and a false positive costs an honest player their session.
+    /// </para>
+    /// </remarks>
+    private void HandleSpeedChangeAck(Opcode opcode, ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || SpeedTypeForAck(opcode) is not { } type)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadPackedGuid(out ObjectGuid mover) || mover != _player.Guid)
+        {
+            // A client may only acknowledge its own speed.
+            return;
+        }
+
+        if (!reader.TryReadUInt32(out uint counter))
+        {
+            return;
+        }
+
+        // The movement block sits between the counter and the speed and is not optional — the new
+        // speed is the last field, so it cannot be reached without stepping over the block first.
+        MovementInfo claimed = new();
+
+        if (!claimed.TryReadFrom(ref reader) || !reader.TryReadUInt32(out uint speedBits))
+        {
+            return;
+        }
+
+        float acknowledged = BitConverter.UInt32BitsToSingle(speedBits);
+        float expected = UnitSpeed.Read(_player.Speeds, type);
+
+        // One fewer outstanding. While any remain, this reply is describing a speed the server has
+        // already moved on from.
+        bool wasLast = ConsumePendingSpeedChange(type);
+
+        if (!wasLast || Math.Abs(expected - acknowledged) <= SpeedAcknowledgementTolerance)
+        {
+            return;
+        }
+
+        Log.SpeedAcknowledgementMismatch(
+            logger,
+            _player.Name,
+            type.ToString(),
+            expected,
+            acknowledged,
+            acknowledged > expected ? "claims to be faster" : "lagging behind",
+            connection.RemoteAddress);
+
+        // Re-ordered rather than argued with. A client that is behind catches up; one that claims to
+        // be faster is put back where it belongs and told again.
+        SendSpeedChange(_player.Guid, type, expected, forced: true);
+    }
+
+    /// <summary>
+    /// The fastest this player is currently entitled to move, or null while that is in doubt.
+    /// </summary>
+    /// <remarks>
+    /// The fastest of the three forward speeds, because a packet does not say which one produced it
+    /// — a player crossing a river is swimming for part of the distance and running for the rest,
+    /// and picking one would refuse the other.
+    /// <para>
+    /// <b>Null while any speed change is unacknowledged.</b> Between ordering a speed and the client
+    /// confirming it, the client is legitimately moving at either the old value or the new one, and
+    /// the server has no way to tell which. Answering with the new speed refuses an honest client
+    /// that has not received the order yet; answering with the old one lets a real one through. So
+    /// the check falls back to the flat ceiling for exactly as long as the ambiguity lasts.
+    /// </para>
+    /// </remarks>
+    private float? AllowedSpeed()
+    {
+        if (_player is null || Array.Exists(_pendingSpeedChanges, pending => pending > 0))
+        {
+            return null;
+        }
+
+        return MathF.Max(
+            _player.Speeds.Run,
+            MathF.Max(_player.Speeds.Swim, _player.Speeds.Flight));
+    }
+
+    /// <summary>How far a client's reported speed may differ before it is worth acting on.</summary>
+    /// <remarks>Upstream's 0.01, which is float noise on a value around 7.</remarks>
+    private const float SpeedAcknowledgementTolerance = 0.01f;
+
+    /// <summary>How many forced changes of each speed are waiting to be acknowledged.</summary>
+    /// <remarks>
+    /// Indexed by <see cref="UnitMoveType"/>. Needed because the check is only meaningful against the
+    /// <i>last</i> reply of a run — see <see cref="HandleSpeedChangeAck"/>.
+    /// </remarks>
+    private readonly int[] _pendingSpeedChanges = new int[9];
+
+    /// <summary>Notes that a speed has been ordered and is awaiting confirmation.</summary>
+    private void NotePendingSpeedChange(UnitMoveType type) => _pendingSpeedChanges[(int)type]++;
+
+    /// <summary>Takes one outstanding order off, and says whether it was the last.</summary>
+    /// <remarks>
+    /// An acknowledgement with nothing outstanding counts as the last: it is either a client
+    /// answering something from before a map change, or one volunteering a speed nobody asked for.
+    /// Both are worth comparing rather than ignoring.
+    /// </remarks>
+    private bool ConsumePendingSpeedChange(UnitMoveType type)
+    {
+        int index = (int)type;
+
+        if (_pendingSpeedChanges[index] > 0)
+        {
+            _pendingSpeedChanges[index]--;
+        }
+
+        return _pendingSpeedChanges[index] == 0;
+    }
+
+    private static UnitMoveType? SpeedTypeForAck(Opcode opcode) => opcode switch
+    {
+        Opcode.CMSG_FORCE_WALK_SPEED_CHANGE_ACK => UnitMoveType.Walk,
+        Opcode.CMSG_FORCE_RUN_SPEED_CHANGE_ACK => UnitMoveType.Run,
+        Opcode.CMSG_FORCE_RUN_BACK_SPEED_CHANGE_ACK => UnitMoveType.RunBack,
+        Opcode.CMSG_FORCE_SWIM_SPEED_CHANGE_ACK => UnitMoveType.Swim,
+        Opcode.CMSG_FORCE_SWIM_BACK_SPEED_CHANGE_ACK => UnitMoveType.SwimBack,
+        Opcode.CMSG_FORCE_FLIGHT_SPEED_CHANGE_ACK => UnitMoveType.Flight,
+        Opcode.CMSG_FORCE_FLIGHT_BACK_SPEED_CHANGE_ACK => UnitMoveType.FlightBack,
+        _ => null,
+    };
 
     /// <summary>
     /// Remembers where a fall started, and bills the player when it ends.
@@ -3338,7 +3494,18 @@ public sealed class WorldSession(
             return;
         }
 
-        uint damage = FallDamage.Calculate(distance, _player.MaxHealth);
+        // Slow Fall and Levitate remove fall damage outright rather than reducing it; Safe Fall,
+        // the rogue talent, shortens the drop before it is measured. Two different auras and two
+        // different behaviours — treating either as the other is a rogue who never dies to a fall.
+        if (_player.Auras.HasType(AuraType.FeatherFall))
+        {
+            return;
+        }
+
+        uint damage = FallDamage.Calculate(
+            distance,
+            _player.MaxHealth,
+            safeFallReduction: _player.Auras.Total(AuraType.SafeFall));
 
         if (damage > 0)
         {
@@ -3904,6 +4071,76 @@ public sealed class WorldSession(
 
         connection.Send(packet);
     }
+
+    /// <summary>
+    /// Tells this client a unit's speed has changed.
+    /// </summary>
+    /// <remarks>
+    /// Two opcodes per speed, and they are not interchangeable. The client steering the unit gets
+    /// <c>SMSG_FORCE_*_SPEED_CHANGE</c>, which carries a counter it echoes back in an acknowledgement
+    /// — that handshake is how the server knows the client has applied it. Everyone else gets
+    /// <c>SMSG_SPLINE_SET_*_SPEED</c>, which is a bare statement of fact so their copy of the unit
+    /// interpolates at the right rate.
+    /// <para>
+    /// <b>Run alone carries an extra byte</b> in the forced form, between the counter and the speed.
+    /// Upstream writes it under an explicit <c>if</c> and nothing marks it in the packet's shape;
+    /// leaving it out shifts the float and the client reads a speed of roughly zero.
+    /// </para>
+    /// </remarks>
+    public void SendSpeedChange(ObjectGuid unit, UnitMoveType type, float speed, bool forced)
+    {
+        // Turn and pitch rates are not speeds and have no aura that touches them, so there is no
+        // opcode to pick and nothing to send.
+        if ((forced ? ForcedSpeedOpcode(type) : SplineSpeedOpcode(type)) is not { } opcode)
+        {
+            return;
+        }
+
+        ServerPacket packet = new(opcode, 20);
+        packet.Body.WritePackedGuid(unit);
+
+        if (forced)
+        {
+            NotePendingSpeedChange(type);
+            packet.Body.WriteUInt32(_speedChangeCounter++);
+
+            if (type == UnitMoveType.Run)
+            {
+                packet.Body.WriteUInt8(0);
+            }
+        }
+
+        packet.Body.WriteSingle(speed);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Counts the forced speed changes sent, which the client echoes back.</summary>
+    private uint _speedChangeCounter;
+
+    private static Opcode? ForcedSpeedOpcode(UnitMoveType type) => type switch
+    {
+        UnitMoveType.Walk => Opcode.SMSG_FORCE_WALK_SPEED_CHANGE,
+        UnitMoveType.Run => Opcode.SMSG_FORCE_RUN_SPEED_CHANGE,
+        UnitMoveType.RunBack => Opcode.SMSG_FORCE_RUN_BACK_SPEED_CHANGE,
+        UnitMoveType.Swim => Opcode.SMSG_FORCE_SWIM_SPEED_CHANGE,
+        UnitMoveType.SwimBack => Opcode.SMSG_FORCE_SWIM_BACK_SPEED_CHANGE,
+        UnitMoveType.Flight => Opcode.SMSG_FORCE_FLIGHT_SPEED_CHANGE,
+        UnitMoveType.FlightBack => Opcode.SMSG_FORCE_FLIGHT_BACK_SPEED_CHANGE,
+        _ => null,
+    };
+
+    private static Opcode? SplineSpeedOpcode(UnitMoveType type) => type switch
+    {
+        UnitMoveType.Walk => Opcode.SMSG_SPLINE_SET_WALK_SPEED,
+        UnitMoveType.Run => Opcode.SMSG_SPLINE_SET_RUN_SPEED,
+        UnitMoveType.RunBack => Opcode.SMSG_SPLINE_SET_RUN_BACK_SPEED,
+        UnitMoveType.Swim => Opcode.SMSG_SPLINE_SET_SWIM_SPEED,
+        UnitMoveType.SwimBack => Opcode.SMSG_SPLINE_SET_SWIM_BACK_SPEED,
+        UnitMoveType.Flight => Opcode.SMSG_SPLINE_SET_FLIGHT_SPEED,
+        UnitMoveType.FlightBack => Opcode.SMSG_SPLINE_SET_FLIGHT_BACK_SPEED,
+        _ => null,
+    };
 
     public void SendSwingError(SwingError reason)
     {

@@ -1,4 +1,5 @@
 using WowEmu.Data.Client;
+using WowEmu.Game.Combat;
 
 namespace WowEmu.Game;
 
@@ -190,12 +191,17 @@ public sealed class PlayerEnvironment
     /// <param name="level">The player's level, which adds a little scatter to the damage.</param>
     /// <param name="isAlive">A dead player's bars are stopped rather than ticked.</param>
     /// <param name="urand">The damage roll, injected so a test can make it deterministic.</param>
+    /// <param name="auras">
+    /// What is on the player. Optional: without it nobody can breathe under water, which is the old
+    /// behaviour and correct for a player with no such buff.
+    /// </param>
     public EnvironmentUpdate Update(
         uint diff,
         uint maxHealth,
         uint level,
         bool isAlive,
-        Func<uint, uint, uint> urand)
+        Func<uint, uint, uint> urand,
+        AuraContainer? auras = null)
     {
         ArgumentNullException.ThrowIfNull(urand);
 
@@ -210,7 +216,7 @@ public sealed class PlayerEnvironment
         Advance(
             MirrorTimer.Breath,
             UnderwaterState.InWater,
-            isAlive ? BreathMs : Disabled,
+            BreathLimit(isAlive, auras),
             EnvironmentalDamageType.Drowning,
             diff, maxHealth, level, isAlive, urand, timers, hits);
 
@@ -224,6 +230,42 @@ public sealed class PlayerEnvironment
         AdvanceFire(diff, isAlive, urand, timers, hits);
 
         return new EnvironmentUpdate(timers, hits);
+    }
+
+    /// <summary>
+    /// How long this player can hold their breath, or <see cref="Disabled"/> for never running out.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>getMaxTimer(BREATH_TIMER)</c>. Two different auras, and they are not the same
+    /// thing: <see cref="AuraType.WaterBreathing"/> removes the bar entirely — a death knight simply
+    /// does not drown — while <see cref="AuraType.ModWaterBreathing"/> multiplies how long it lasts.
+    /// Treating the second as the first gives an underwater-breathing potion that never wears off.
+    /// <para>
+    /// A disabled limit also stops any bar already running, because <see cref="Advance"/> takes it
+    /// as "there is no such timer" — so drinking the potion mid-drown clears the bar rather than
+    /// freezing it part-drained.
+    /// </para>
+    /// </remarks>
+    private static int BreathLimit(bool isAlive, AuraContainer? auras)
+    {
+        if (!isAlive)
+        {
+            return Disabled;
+        }
+
+        if (auras is null)
+        {
+            return BreathMs;
+        }
+
+        if (auras.HasType(AuraType.WaterBreathing))
+        {
+            return Disabled;
+        }
+
+        float multiplier = auras.TotalMultiplier(AuraType.ModWaterBreathing);
+
+        return (int)(BreathMs * multiplier);
     }
 
     /// <summary>

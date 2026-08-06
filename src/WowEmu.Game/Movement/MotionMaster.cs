@@ -207,22 +207,47 @@ public sealed class RandomMovementGenerator(float wanderDistance) : IMovementGen
 
         Position home = creature.HomePosition;
 
-        Position destination = new(
-            home.X + (radius * MathF.Cos(angle)),
-            home.Y + (radius * MathF.Sin(angle)),
-
-            // Terrain height is not consulted. Without vmaps a creature on a bridge or indoors would
-            // be dropped through the floor, which is the same reason movement validation does not
-            // check height yet — see MovementValidator and TODO.md.
-            home.Z,
-            0f);
+        float x = home.X + (radius * MathF.Cos(angle));
+        float y = home.Y + (radius * MathF.Sin(angle));
 
         // Drawn now rather than on arrival, so one draw covers the whole walk-and-wait cycle and the
         // generator needs no arrival callback to stay in step.
         _waitRemainingMs = GameRandom.Urand(MinWaitMs, MaxWaitMs);
 
-        decision = new MovementDecision(destination, Run: false);
+        float z = GroundAt(creature, x, y, home.Z);
+
+        decision = new MovementDecision(new Position(x, y, z, 0f), Run: false);
         return true;
+    }
+
+    /// <summary>
+    /// The height a creature would stand at over a point, if it may stand there at all.
+    /// </summary>
+    /// <remarks>
+    /// The spawn's own height is not good enough. A wander radius is small — 52,426 of the 77,138
+    /// wandering spawns stay within five yards — but 1,946 of them roam more than twenty, and on any
+    /// slope reusing the spawn's Z buries the creature in the hillside or floats it above one by the
+    /// full height difference.
+    /// <para>
+    /// <b>No answer falls back to the spawn height rather than refusing.</b> That was not the first
+    /// choice: refusing looks safer, and it is — right up until the server is run without extracted
+    /// client data, which a fresh clone always is, because <c>data/</c> is three gigabytes and not
+    /// committed. Every wandering creature in the world would then stand still, silently. The rest
+    /// of this codebase makes the same call in the same direction — a missing collision file leaves
+    /// line of sight clear rather than blinding the world — so a missing height leaves the creature
+    /// wandering at its spawn height, exactly as it did before heights were consulted at all.
+    /// </para>
+    /// <para>
+    /// The cost is that a genuine hole in the terrain is indistinguishable from an absent tile, and
+    /// a creature wandering over one keeps its spawn height. That is the old behaviour and no worse.
+    /// </para>
+    /// </remarks>
+    private static float GroundAt(Creature creature, float x, float y, float fallbackZ)
+    {
+        // Searched from the spawn's own height: terrain answers regardless of where the search
+        // starts, and a model's floor is only found within a few yards of it — which is all a
+        // wander radius covers.
+        return creature.FloorAt?.Invoke(x, y, fallbackZ) ?? fallbackZ;
     }
 
     /// <summary>Upstream's <c>urand(500, 10000)</c> pause between wanders, in milliseconds.</summary>

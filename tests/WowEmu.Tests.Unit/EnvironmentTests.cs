@@ -1,5 +1,7 @@
+using WowEmu.Core;
 using WowEmu.Data.Client;
 using WowEmu.Game;
+using WowEmu.Game.Combat;
 
 namespace WowEmu.Tests.Unit;
 
@@ -275,6 +277,67 @@ public sealed class EnvironmentTests
         Assert.Contains(update.Timers, t => t is { Timer: MirrorTimer.Breath, Stop: true });
     }
 
+    // ------------------------------------------------------------------ auras that change it
+
+    /// <summary>
+    /// Water Breathing removes the bar rather than lengthening it.
+    /// </summary>
+    /// <remarks>
+    /// Two auras look interchangeable here and are not. This one — death knights, warlock pets —
+    /// means the player simply does not drown, and upstream expresses that as a disabled timer.
+    /// </remarks>
+    [Fact]
+    public void WaterBreathing_RemovesTheBreathBarEntirely()
+    {
+        PlayerEnvironment environment = Submerged();
+        AuraContainer auras = AurasWith(AuraType.WaterBreathing, 0);
+
+        EnvironmentUpdate update = environment.Update(1000, MaxHealth, Level, true, NoScatter, auras);
+
+        Assert.Empty(update.Hits);
+        Assert.Equal(PlayerEnvironment.Disabled, environment.Remaining(MirrorTimer.Breath));
+    }
+
+    /// <summary>Gaining it mid-drown clears the bar rather than freezing it part-drained.</summary>
+    [Fact]
+    public void GainingWaterBreathing_ClearsABarAlreadyRunning()
+    {
+        PlayerEnvironment environment = Submerged();
+
+        environment.Update(100, MaxHealth, Level, true, NoScatter);
+        Drain(environment, 10_000);
+
+        Assert.NotEqual(PlayerEnvironment.Disabled, environment.Remaining(MirrorTimer.Breath));
+
+        environment.Refresh(UnderWater, isAlive: true);
+        EnvironmentUpdate update = environment.Update(
+            100, MaxHealth, Level, true, NoScatter, AurasWith(AuraType.WaterBreathing, 0));
+
+        Assert.Contains(update.Timers, t => t is { Timer: MirrorTimer.Breath, Stop: true });
+        Assert.Equal(PlayerEnvironment.Disabled, environment.Remaining(MirrorTimer.Breath));
+    }
+
+    /// <summary>
+    /// The other one multiplies how long the breath lasts.
+    /// </summary>
+    /// <remarks>
+    /// <c>ModWaterBreathing</c> is a percentage, so +100% doubles the three minutes rather than
+    /// removing the timer. Reading it as the flag-shaped one gives a potion that never wears off.
+    /// </remarks>
+    [Fact]
+    public void ModWaterBreathing_LengthensTheBarInstead()
+    {
+        PlayerEnvironment environment = Submerged();
+        AuraContainer auras = AurasWith(AuraType.ModWaterBreathing, 100);
+
+        EnvironmentUpdate update = environment.Update(100, MaxHealth, Level, true, NoScatter, auras);
+
+        MirrorTimerUpdate timer = Assert.Single(update.Timers);
+
+        Assert.Equal(PlayerEnvironment.BreathMs * 2, timer.MaxMs);
+        Assert.Equal(PlayerEnvironment.BreathMs * 2, environment.Remaining(MirrorTimer.Breath));
+    }
+
     // ------------------------------------------------------------------ falling
 
     /// <summary>A short drop costs nothing.</summary>
@@ -337,7 +400,65 @@ public sealed class EnvironmentTests
         Assert.True(cushioned < plain, $"safe fall should soften the landing: {cushioned} vs {plain}");
     }
 
+    /// <summary>Enough Safe Fall turns a lethal drop into a free one.</summary>
+    /// <remarks>
+    /// The reduction is in yards off the measured distance, so it can take a fall back under the
+    /// threshold entirely rather than merely scaling it down.
+    /// </remarks>
+    [Fact]
+    public void EnoughSafeFall_RemovesTheDamage()
+    {
+        Assert.Equal(0u, FallDamage.Calculate(30f, MaxHealth, safeFallReduction: 30));
+    }
+
+    /// <summary>Safe Fall stacks, because it is a quantity rather than a flag.</summary>
+    [Fact]
+    public void SafeFall_Stacks()
+    {
+        AuraContainer auras = AurasWith(AuraType.SafeFall, 5);
+        AddAura(auras, AuraType.SafeFall, 7, id: 2);
+
+        Assert.Equal(12, auras.Total(AuraType.SafeFall));
+    }
+
+    /// <summary>Feather Fall is a flag, and an amount of zero must not read as absent.</summary>
+    /// <remarks>
+    /// Why the container has <c>HasType</c> at all. Slow Fall carries no amount, so asking for a
+    /// total and comparing it to zero would report the aura as missing and drop the player.
+    /// </remarks>
+    [Fact]
+    public void FeatherFall_IsDetectedDespiteCarryingNoAmount()
+    {
+        AuraContainer auras = AurasWith(AuraType.FeatherFall, 0);
+
+        Assert.True(auras.HasType(AuraType.FeatherFall));
+        Assert.Equal(0, auras.Total(AuraType.FeatherFall));
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    /// <summary>A container holding one aura of a type.</summary>
+    private static AuraContainer AurasWith(uint type, int amount)
+    {
+        AuraContainer auras = new();
+        AddAura(auras, type, amount, id: 1);
+
+        return auras;
+    }
+
+    private static void AddAura(AuraContainer auras, uint type, int amount, uint id)
+    {
+        SpellEffectEntry[] effects = new SpellEffectEntry[SpellConstants.MaxEffects];
+
+        effects[0] = new SpellEffectEntry(
+            SpellEffectId.ApplyAura, 0, 0f, amount, 0, 0, 0, type, 0, 0, 0, 0, 0, 0);
+
+        SpellEntry spell = new(
+            id, "test", "", new uint[SpellEntry.AttributeWords],
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0f, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, effects);
+
+        auras.Apply(spell, new ObjectGuid(id), casterLevel: 20, durationMs: -1, e => e.BasePoints);
+    }
 
     private static LiquidData UnderWater =>
         new(1, LiquidTypeMask.Water, 10f, -20f, LiquidStatus.UnderWater);

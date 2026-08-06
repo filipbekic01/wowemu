@@ -112,6 +112,11 @@ public static class PlayerCombatStats
     /// handled — the resistances, the combat ratings and the flat spell power on an item are read
     /// and ignored.
     /// </para>
+    /// <para>
+    /// Auras are summed in on top, and <b>they sum rather than taking the strongest</b> — unlike
+    /// speed modifiers, which do the opposite. Two stat buffs stack; two slows do not. The rule is
+    /// per aura type upstream, not a house style.
+    /// </para>
     /// </remarks>
     private static void ApplyStats(Player player)
     {
@@ -150,6 +155,10 @@ public static class PlayerCombatStats
 
         for (int i = 0; i < totals.Length; i++)
         {
+            // A stored MiscValue of -1 means every attribute at once — Mark of the Wild — and the
+            // container matches it against whichever index is asked for.
+            totals[i] += player.Auras.Total(AuraType.ModStat, miscValue: i);
+
             player.SetStat(i, (uint)Math.Max(totals[i], 0));
         }
     }

@@ -356,6 +356,18 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
     /// <summary>Every aura on this unit.</summary>
     public AuraContainer Auras => _auras ??= new AuraContainer();
 
+    /// <summary>
+    /// Recomputes every speed from this unit's own base speeds and its auras.
+    /// </summary>
+    /// <remarks>
+    /// Called whenever the aura set changes — applied, expired, or cleared on death — and never on a
+    /// timer. Speeds do not drift on their own, so recomputing per tick would be work to arrive at
+    /// the same answer.
+    /// </remarks>
+    /// <returns>The speeds that actually changed, so only those go on the wire.</returns>
+    public IReadOnlyList<UnitMoveType> RefreshSpeeds() =>
+        UnitSpeed.Refresh(Speeds, BaseSpeeds, Auras);
+
     private AuraContainer? _auras;
 
     /// <summary>What this unit is casting, and what it is waiting on.</summary>

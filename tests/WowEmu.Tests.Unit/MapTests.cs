@@ -459,6 +459,94 @@ public sealed class MapVisibilityTests
         Assert.Equal(30u, Assert.Single(link.EnvironmentalDamage).Amount);
     }
 
+    /// <summary>
+    /// A slow wearing off restores the speed, and everyone who can see it is told.
+    /// </summary>
+    /// <remarks>
+    /// The end-to-end check for what was previously a debuff that did nothing. Driven through
+    /// expiry because that is the path with the most to get wrong: the speeds are stored rather than
+    /// derived, so a recompute that never fires leaves a creature slowed for the rest of its life.
+    /// <para>
+    /// Two different opcodes go out. The slowed player is <i>ordered</i> to the new speed and
+    /// acknowledges it; onlookers are simply told, so their copy interpolates at the right rate.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void AnExpiringSlow_RestoresTheSpeedAndTellsBothSides()
+    {
+        Map map = NewMap();
+
+        (Player victim, RecordingConnection victimLink) = NewPlayer(1, 0f, 0f);
+        (Player watcher, RecordingConnection watcherLink) = NewPlayer(2, 10f, 0f);
+
+        map.Add(victim);
+        map.Add(watcher);
+
+        float unslowed = victim.Speeds.Run;
+
+        victim.Auras.Apply(
+            SlowSpell(halved: true), watcher.Guid, casterLevel: 20, durationMs: 3000, e => e.BasePoints);
+
+        victim.RefreshSpeeds();
+        Assert.Equal(unslowed * 0.5f, victim.Speeds.Run, 0.001f);
+
+        // Tick past the aura's duration; the map notices the expiry and recomputes.
+        map.Update(4000, 4000);
+
+        Assert.Equal(unslowed, victim.Speeds.Run, 0.001f);
+
+        // The victim is ordered; the watcher is informed.
+        Assert.Contains(victimLink.SpeedChanges, c => c is { Type: UnitMoveType.Run, Forced: true });
+        Assert.Contains(watcherLink.SpeedChanges, c => c is { Type: UnitMoveType.Run, Forced: false });
+    }
+
+    /// <summary>A slow on a creature slows the creature, from its own template speed.</summary>
+    /// <remarks>
+    /// A creature's run speed is its template's, not the global one — so halving it has to halve
+    /// <i>that</i>. Recomputing from the global base would hand every slowed wolf a human's pace.
+    /// </remarks>
+    [Fact]
+    public void ASlowOnACreature_HalvesItsOwnSpeed()
+    {
+        Creature creature = CreatureFixture.Build(position: new Position(5f, 0f, 0f, 0f));
+
+        float unslowed = creature.Speeds.Run;
+        Assert.Equal(unslowed, creature.BaseSpeeds.Run, 0.001f);
+
+        creature.Auras.Apply(
+            SlowSpell(halved: true), ObjectGuid.Empty, casterLevel: 20, durationMs: -1, e => e.BasePoints);
+
+        creature.RefreshSpeeds();
+
+        Assert.Equal(unslowed * 0.5f, creature.Speeds.Run, 0.001f);
+    }
+
+    /// <summary>A spell whose only effect is a 50% slow.</summary>
+    private static SpellEntry SlowSpell(bool halved)
+    {
+        SpellEffectEntry[] effects = new SpellEffectEntry[SpellConstants.MaxEffects];
+
+        effects[0] = new SpellEffectEntry(
+            Effect: SpellEffectId.ApplyAura,
+            DieSides: 0,
+            RealPointsPerLevel: 0f,
+            BasePoints: halved ? -50 : 0,
+            ImplicitTargetA: 0,
+            ImplicitTargetB: 0,
+            RadiusIndex: 0,
+            ApplyAuraName: AuraType.ModDecreaseSpeed,
+            Amplitude: 0,
+            ChainTarget: 0,
+            ItemType: 0,
+            MiscValue: 0,
+            MiscValueB: 0,
+            TriggerSpell: 0);
+
+        return new SpellEntry(
+            77, "slow", "", new uint[SpellEntry.AttributeWords],
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0f, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, effects);
+    }
+
     /// <summary>Hands one creature to whichever grid the player arrives in.</summary>
     private sealed class OneCreature(Creature creature) : IGridObjectLoader
     {
@@ -523,6 +611,13 @@ public sealed class MapVisibilityTests
         }
 
         public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
+
+        /// <summary>Speed changes this client was told about.</summary>
+        public List<(ObjectGuid Unit, UnitMoveType Type, float Speed, bool Forced)> SpeedChanges { get; } = [];
+
+        public void SendSpeedChange(ObjectGuid unit, UnitMoveType type, float speed, bool forced) =>
+            SpeedChanges.Add((unit, type, speed, forced));
+
 
         /// <summary>Mirror-timer bars this client was told to draw, update or remove.</summary>
         public List<MirrorTimerUpdate> MirrorTimers { get; } = [];

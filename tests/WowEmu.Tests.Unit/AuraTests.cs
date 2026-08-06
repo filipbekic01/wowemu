@@ -336,15 +336,20 @@ public sealed class AuraContainerTests
 
     /// <summary>An unhandled type is still applied and still shown — it just does nothing.</summary>
     /// <remarks>
-    /// A slow on the buff bar that does not slow is worse than one that never appeared, so this is
+    /// A buff on the bar that does nothing is worse than one that never appeared, so this is
     /// asserted rather than left implicit until the handler arrives.
+    /// <para>
+    /// The example is a damage modifier because that is one of the ones still outstanding. It used
+    /// to be a slow, which now works — so if this test ever needs repointing again, that is a
+    /// handler arriving rather than a regression.
+    /// </para>
     /// </remarks>
     [Fact]
     public void AnUnhandledType_IsStillApplied()
     {
         AuraContainer container = new();
 
-        Aura aura = Apply(container, AuraFixture.Periodic(AuraType.ModDecreaseSpeed, 50, 0), Caster)!;
+        Aura aura = Apply(container, AuraFixture.Periodic(AuraType.ModDamageDone, 50, 0), Caster)!;
 
         Assert.Equal(1, container.Count);
         Assert.False(aura.Effects[0].IsHandled);

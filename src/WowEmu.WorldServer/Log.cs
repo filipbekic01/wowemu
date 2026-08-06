@@ -160,6 +160,18 @@ internal static partial class Log
     public static partial void WaypointContentLoaded(
         ILogger logger, int waypoints, int paths, int addons, int withPath);
 
+    [LoggerMessage(EventId = 2331, Level = LogLevel.Warning,
+        Message = "'{Name}' acknowledged {Speed} speed {Acknowledged} where the server has "
+                + "{Expected} ({Direction}) — {Address}")]
+    public static partial void SpeedAcknowledgementMismatch(
+        ILogger logger,
+        string name,
+        string speed,
+        float expected,
+        float acknowledged,
+        string direction,
+        string address);
+
     [LoggerMessage(EventId = 2315, Level = LogLevel.Error,
         Message = "Handler for {Opcode} threw ({Address})")]
     public static partial void PacketHandlerFailed(

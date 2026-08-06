@@ -22,6 +22,20 @@ public sealed class Creature : Unit
     {
     }
 
+    /// <summary>
+    /// The surface under a point, supplied by the map this creature is standing on.
+    /// </summary>
+    /// <remarks>
+    /// A delegate rather than a map reference, so <see cref="Creature"/> keeps knowing nothing about
+    /// maps, grids or terrain files — the same arrangement that lets one be built and tested with no
+    /// world behind it. The map hands it over when it files the creature.
+    /// <para>
+    /// Null means nobody has said, and a generator that needs a height must then leave the creature
+    /// where it is rather than assume one.
+    /// </para>
+    /// </remarks>
+    public Func<float, float, float, float?>? FloorAt { get; set; }
+
     /// <summary>The <c>creature</c> row this came from — upstream's <c>m_spawnId</c>.</summary>
     /// <remarks>
     /// Kept separate from <see cref="GameObjectBase.Guid"/> because they are different numbers with
@@ -577,6 +591,12 @@ public sealed class Creature : Unit
 
         creature.Speeds.Walk = UnitDefaults.BaseWalkSpeed * template.SpeedWalk;
         creature.Speeds.Run = UnitDefaults.BaseRunSpeed * template.SpeedRun;
+
+        // The unmodified pair, so a slow that wears off restores this creature's own speed rather
+        // than the global one. Set from the same expressions, not copied afterwards, so the two
+        // cannot drift if either line changes.
+        creature.BaseSpeeds.Walk = UnitDefaults.BaseWalkSpeed * template.SpeedWalk;
+        creature.BaseSpeeds.Run = UnitDefaults.BaseRunSpeed * template.SpeedRun;
 
         creature.SyncMovement();
         return creature;

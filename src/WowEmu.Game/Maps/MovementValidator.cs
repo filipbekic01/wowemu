@@ -78,11 +78,28 @@ public sealed class MovementValidator
     /// Fastest anything moves in 3.3.5a, with headroom.
     /// </summary>
     /// <remarks>
-    /// Base run is 7 yards/second; the fastest flying mount is 31.5. The ceiling here is far above
-    /// both because it exists to catch teleports, not to police speed buffs — that needs the
-    /// server to track applied auras, which no phase has built.
+    /// Base run is 7 yards/second; the fastest flying mount is 31.5. Used when the caller cannot say
+    /// what the player is actually allowed — while a speed change is still being acknowledged, or
+    /// with no session behind the check at all — so it exists to catch teleports rather than to
+    /// police speed.
     /// </remarks>
     public const float MaxPlausibleSpeed = 60.0f;
+
+    /// <summary>
+    /// How far over its allowed speed a client may measure before it is refused.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately loose. The elapsed time is the server's, so a stalled tick, a burst of queued
+    /// packets or ordinary jitter all inflate the measured speed over a short window, and the cost of
+    /// being wrong is an honest player snapped backwards. Double is still four times tighter than the
+    /// flat ceiling it replaces for a player at base run speed.
+    /// <para>
+    /// <b>Not validated against a real client.</b> Nothing here has been measured against a live
+    /// session under real latency, which is why the margin is this generous and why a breach
+    /// corrects rather than disconnects.
+    /// </para>
+    /// </remarks>
+    public const float SpeedTolerance = 2.0f;
 
     /// <summary>
     /// Largest jump accepted in one packet regardless of elapsed time.
@@ -123,11 +140,18 @@ public sealed class MovementValidator
     /// The surface under a position, or null where nothing is known. Optional: without it the height
     /// check is skipped rather than guessed at.
     /// </param>
+    /// <param name="allowedSpeed">
+    /// The fastest the player is currently entitled to move, before
+    /// <see cref="SpeedTolerance"/> is applied. Null falls back to <see cref="MaxPlausibleSpeed"/>,
+    /// which is what a caller should pass while a speed change is still unacknowledged — the client
+    /// is legitimately at either the old speed or the new one until it says which.
+    /// </param>
     public static MovementVerdict Validate(
         Position previous,
         MovementInfo movement,
         uint elapsedMilliseconds,
-        Func<float, float, float, float?>? floorAt = null)
+        Func<float, float, float, float?>? floorAt = null,
+        float? allowedSpeed = null)
     {
         ArgumentNullException.ThrowIfNull(movement);
 
@@ -162,11 +186,15 @@ public sealed class MovementValidator
             float seconds = elapsedMilliseconds / 1000f;
             float speed = distance / seconds;
 
-            if (speed > MaxPlausibleSpeed)
+            float ceiling = allowedSpeed is { } allowed
+                ? allowed * SpeedTolerance
+                : MaxPlausibleSpeed;
+
+            if (speed > ceiling)
             {
                 return MovementVerdict.Reject(
                     MovementRejection.ImpossibleSpeed,
-                    $"{speed:F1} yards/second over {seconds:F2}s");
+                    $"{speed:F1} yards/second over {seconds:F2}s, ceiling {ceiling:F1}");
             }
         }
 

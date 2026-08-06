@@ -722,6 +722,13 @@ internal static class MapCombatFixture
 
         public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
 
+        /// <summary>Speed changes this client was told about.</summary>
+        public List<(ObjectGuid Unit, UnitMoveType Type, float Speed, bool Forced)> SpeedChanges { get; } = [];
+
+        public void SendSpeedChange(ObjectGuid unit, UnitMoveType type, float speed, bool forced) =>
+            SpeedChanges.Add((unit, type, speed, forced));
+
+
         /// <summary>Mirror-timer bars this client was told to draw, update or remove.</summary>
         public List<MirrorTimerUpdate> MirrorTimers { get; } = [];
 

@@ -1,4 +1,5 @@
 using WowEmu.Core;
+using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Game;
 using WowEmu.Game.Combat;
@@ -221,6 +222,106 @@ public sealed class WaypointTests
 
         // And the wander underneath takes over, which is the thing that would never have happened.
         Assert.NotNull(creature.Update(RandomMovementGenerator.MaxWaitMs + 1));
+    }
+
+    // ------------------------------------------------------------------ standing on the ground
+
+    /// <summary>
+    /// A wander destination sits on the floor, not at the spawn's height.
+    /// </summary>
+    /// <remarks>
+    /// The spawn's own Z was used for every point in the radius, so on any slope the creature ended
+    /// up buried or floating by the full height difference. 1,946 wandering spawns roam more than
+    /// twenty yards, which on a hillside is a long way vertically.
+    /// </remarks>
+    [Fact]
+    public void AWanderDestination_SitsOnTheFloor()
+    {
+        Creature creature = CreatureFixture.Build(
+            wanderDistance: 10f,
+            movementType: 1,
+            position: new Position(0f, 0f, 100f, 0f));
+
+        // A floor that rises one yard per yard of x, so the answer is never the spawn height.
+        creature.FloorAt = (x, y, z) => 100f + x;
+
+        RandomMovementGenerator generator = new(10f);
+
+        for (int i = 0; i < 50; i++)
+        {
+            Assert.True(generator.TryGetDestination(
+                creature, RandomMovementGenerator.MaxWaitMs + 1, out MovementDecision decision));
+
+            Assert.Equal(100f + decision.Destination.X, decision.Destination.Z, 0.001f);
+        }
+    }
+
+    /// <summary>
+    /// With nothing able to answer, the spawn height is used and the creature still wanders.
+    /// </summary>
+    /// <remarks>
+    /// Deliberate, and the reverse of the obvious choice. Refusing to move without a height reads as
+    /// safer until you notice that a fresh clone has no extracted client data at all — <c>data/</c>
+    /// is three gigabytes and uncommitted — at which point every wandering creature in the world
+    /// silently freezes. Degrading to the old behaviour is what the rest of the codebase does with
+    /// missing client data.
+    /// </remarks>
+    [Fact]
+    public void WithNoHeightAvailable_TheCreatureStillWanders()
+    {
+        Creature creature = CreatureFixture.Build(
+            wanderDistance: 10f,
+            movementType: 1,
+            position: new Position(0f, 0f, 100f, 0f));
+
+        creature.FloorAt = (x, y, z) => null;
+
+        RandomMovementGenerator generator = new(10f);
+
+        Assert.True(generator.TryGetDestination(
+            creature, RandomMovementGenerator.MaxWaitMs + 1, out MovementDecision decision));
+
+        Assert.Equal(100f, decision.Destination.Z, 0.001f);
+    }
+
+    /// <summary>Real terrain: a creature wandering in Elwynn ends up on the ground there.</summary>
+    /// <remarks>
+    /// The synthetic tests above prove the height is consulted; this proves the thing consulted is
+    /// the map. A resolver wired to the wrong map, or a wander that never left the spawn point,
+    /// would pass both of them.
+    /// </remarks>
+    [RequiresMapsFact]
+    public void OnRealTerrain_DestinationsFollowTheGround()
+    {
+        // The human starting area, which is on a slope.
+        Position spawn = new(-8949.95f, -132.493f, 83.5312f, 0f);
+
+        TerrainMap terrain = new TerrainManager(ClientData.DataDirectory).GetMap(0);
+
+        Creature creature = CreatureFixture.Build(
+            wanderDistance: 20f, movementType: 1, position: spawn);
+
+        creature.FloorAt = (x, y, z) => WorldHeight.GetFloor(terrain, null, x, y, z);
+
+        RandomMovementGenerator generator = new(20f);
+        int differed = 0;
+
+        for (int i = 0; i < 50; i++)
+        {
+            Assert.True(generator.TryGetDestination(
+                creature, RandomMovementGenerator.MaxWaitMs + 1, out MovementDecision decision));
+
+            float ground = terrain.GetHeight(decision.Destination.X, decision.Destination.Y);
+
+            Assert.Equal(ground, decision.Destination.Z, 0.01f);
+
+            if (Math.Abs(decision.Destination.Z - spawn.Z) > 0.5f)
+            {
+                differed++;
+            }
+        }
+
+        Assert.True(differed > 0, "every destination came back at the spawn height — is terrain being read?");
     }
 
     // ------------------------------------------------------------------ the store

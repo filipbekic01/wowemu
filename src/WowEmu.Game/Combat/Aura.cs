@@ -30,6 +30,22 @@ public static class AuraType
     /// <inheritdoc cref="ModIncreaseSpeed"/>
     public const uint ModDecreaseSpeed = 33;
 
+    /// <summary>Breathe under water indefinitely. Death knights, warlock pets, Water Breathing.</summary>
+    public const uint WaterBreathing = 82;
+
+    /// <summary>Slow Fall and Levitate: no fall damage at all while it lasts.</summary>
+    public const uint FeatherFall = 105;
+
+    /// <summary>Yards of a fall to ignore before it is measured. Safe Fall, the rogue talent.</summary>
+    public const uint SafeFall = 144;
+
+    /// <summary>A percentage change to how long a breath lasts.</summary>
+    /// <remarks>
+    /// Distinct from <see cref="WaterBreathing"/>, which removes the timer entirely rather than
+    /// lengthening it — the two look interchangeable and are not.
+    /// </remarks>
+    public const uint ModWaterBreathing = 155;
+
     /// <summary>Whether this server does anything at all with a type.</summary>
     /// <remarks>
     /// An unhandled type is still applied and still shown to the client — it just has no effect. A
@@ -37,7 +53,9 @@ public static class AuraType
     /// appeared, so <see cref="AuraEffect.IsHandled"/> is what the tests assert against rather than
     /// leaving it implicit.
     /// </remarks>
-    public static bool IsHandled(uint type) => type is PeriodicDamage or PeriodicHeal;
+    public static bool IsHandled(uint type) =>
+        type is PeriodicDamage or PeriodicHeal or ModStat or ModIncreaseSpeed or ModDecreaseSpeed
+            or WaterBreathing or FeatherFall or SafeFall or ModWaterBreathing;
 
     /// <summary>Whether a type ticks on a timer rather than applying once.</summary>
     public static bool IsPeriodic(uint type) => type is PeriodicDamage or PeriodicHeal;
@@ -86,12 +104,13 @@ public enum AuraFlags : byte
 /// </remarks>
 public sealed class AuraEffect
 {
-    internal AuraEffect(uint type, int amount, uint amplitudeMs, int effectIndex)
+    internal AuraEffect(uint type, int amount, uint amplitudeMs, int effectIndex, int miscValue)
     {
         Type = type;
         Amount = amount;
         AmplitudeMs = amplitudeMs;
         EffectIndex = effectIndex;
+        MiscValue = miscValue;
 
         // The first tick is a full period away, not immediate. A damage-over-time that ticks the
         // instant it lands is a direct hit with extra steps, and it front-loads every such spell.
@@ -109,6 +128,16 @@ public sealed class AuraEffect
 
     /// <summary>Which of the spell's three effect slots this came from.</summary>
     public int EffectIndex { get; }
+
+    /// <summary>
+    /// What the effect is about, when its type alone does not say.
+    /// </summary>
+    /// <remarks>
+    /// Meaning depends entirely on <see cref="Type"/>: for a stat modifier it is which attribute,
+    /// for a school modifier which school. Read straight from the spell rather than interpreted
+    /// here, because interpreting it needs to know the type and only the consumer does.
+    /// </remarks>
+    public int MiscValue { get; }
 
     /// <summary>Milliseconds until the next tick.</summary>
     public int PeriodicTimerMs { get; private set; }
@@ -285,9 +314,147 @@ public sealed class AuraContainer
     /// <summary>Whether a spell has an aura here from anyone.</summary>
     public bool Has(uint spellId) => _auras.Exists(a => a.Spell.Id == spellId);
 
+    /// <summary>
+    /// Whether anything here carries an effect of a type. <c>HasAuraType</c>.
+    /// </summary>
+    /// <remarks>
+    /// For the effects that are on or off rather than a quantity — water breathing, feather fall.
+    /// Asking <see cref="Total"/> and comparing to zero would answer wrongly for an effect whose
+    /// amount is legitimately zero, which most of the flag-shaped ones are.
+    /// </remarks>
+    public bool HasType(uint type) => _auras.Exists(a => AnyEffectIs(a, type));
+
+    private static bool AnyEffectIs(Aura aura, uint type)
+    {
+        foreach (AuraEffect effect in aura.Effects)
+        {
+            if (effect.Type == type)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     /// <summary>The aura a given caster's spell put here, if any.</summary>
     public Aura? Find(uint spellId, ObjectGuid caster) =>
         _auras.Find(a => a.Spell.Id == spellId && a.CasterGuid == caster);
+
+    /// <summary>
+    /// The largest positive amount any effect of a type carries. <c>GetMaxPositiveAuraModifier</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>Not a sum.</b> Two speed buffs do not add — upstream takes the strongest and ignores the
+    /// rest, which is why Sprint and a mount do not multiply into something absurd. Summing here
+    /// looks more natural and is a different game.
+    /// </remarks>
+    public int MaxPositive(uint type, int? miscValue = null)
+    {
+        int best = 0;
+
+        foreach (AuraEffect effect in EffectsOf(type, miscValue))
+        {
+            if (effect.Amount > best)
+            {
+                best = effect.Amount;
+            }
+        }
+
+        return best;
+    }
+
+    /// <summary>
+    /// The largest negative amount any effect of a type carries. <c>GetMaxNegativeAuraModifier</c>.
+    /// </summary>
+    /// <remarks>
+    /// The mirror of <see cref="MaxPositive"/>, and the same rule: the strongest slow applies, not
+    /// the total. Three 30% slows leave a target at 70% speed, not at nothing.
+    /// </remarks>
+    public int MaxNegative(uint type, int? miscValue = null)
+    {
+        int worst = 0;
+
+        foreach (AuraEffect effect in EffectsOf(type, miscValue))
+        {
+            if (effect.Amount < worst)
+            {
+                worst = effect.Amount;
+            }
+        }
+
+        return worst;
+    }
+
+    /// <summary>
+    /// Every effect of a type added together. <c>GetTotalAuraModifier</c>.
+    /// </summary>
+    /// <remarks>
+    /// This one <i>does</i> sum, and the difference from <see cref="MaxPositive"/> is per aura type
+    /// rather than a matter of taste: stat buffs stack, speed buffs do not.
+    /// </remarks>
+    public int Total(uint type, int? miscValue = null)
+    {
+        int total = 0;
+
+        foreach (AuraEffect effect in EffectsOf(type, miscValue))
+        {
+            total += effect.Amount;
+        }
+
+        return total;
+    }
+
+    /// <summary>
+    /// Every effect of a type multiplied together as percentages. <c>GetTotalAuraMultiplier</c>.
+    /// </summary>
+    /// <remarks>
+    /// Starts at 1.0 and multiplies in <c>1 + amount/100</c> for each, so two 10% buffs give 1.21
+    /// rather than 1.20.
+    /// </remarks>
+    public float TotalMultiplier(uint type, int? miscValue = null)
+    {
+        float multiplier = 1.0f;
+
+        foreach (AuraEffect effect in EffectsOf(type, miscValue))
+        {
+            multiplier *= 1.0f + (effect.Amount / 100.0f);
+        }
+
+        return multiplier;
+    }
+
+    /// <summary>
+    /// The effects of a type, optionally narrowed to one <c>MiscValue</c>.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="miscValue"/> is what makes a stat modifier answerable: the type says "changes
+    /// an attribute" and the misc value says which one. A stored <c>-1</c> means every attribute at
+    /// once — Mark of the Wild — so it matches any value asked for.
+    /// </remarks>
+    private IEnumerable<AuraEffect> EffectsOf(uint type, int? miscValue)
+    {
+        foreach (Aura aura in _auras)
+        {
+            foreach (AuraEffect effect in aura.Effects)
+            {
+                if (effect.Type != type)
+                {
+                    continue;
+                }
+
+                if (miscValue is { } wanted && effect.MiscValue != wanted && effect.MiscValue != AllStats)
+                {
+                    continue;
+                }
+
+                yield return effect;
+            }
+        }
+    }
+
+    /// <summary>A <c>MiscValue</c> of -1 on a stat modifier means all five at once.</summary>
+    public const int AllStats = -1;
 
     /// <summary>
     /// Applies an aura, replacing the same caster's earlier one.
@@ -314,7 +481,8 @@ public sealed class AuraContainer
                 continue;
             }
 
-            effects.Add(new AuraEffect(effect.ApplyAuraName, amountFor(effect), effect.Amplitude, index));
+            effects.Add(new AuraEffect(
+                effect.ApplyAuraName, amountFor(effect), effect.Amplitude, index, effect.MiscValue));
         }
 
         if (effects.Count == 0)

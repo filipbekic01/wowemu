@@ -742,8 +742,9 @@
               "text": "Real splines: Catmull-Rom, cyclic paths, parabolic arcs, facing targets"
             },
             {
-              "done": false,
-              "text": "Terrain height is not consulted when picking a destination"
+              "done": true,
+              "text": "Terrain height is consulted when picking a destination",
+              "note": "A wander destination now sits on the floor from Map.GetFloor — terrain and models — instead of reusing the spawn height for every point in the radius. On a slope that was wrong by the full height difference, and 1,946 wandering spawns roam more than twenty yards. Handed to the creature as a delegate when the map files it, so Creature still knows nothing about maps or terrain files. Falls back to the spawn height when nothing can answer rather than refusing to move: data/ is 3 GB and uncommitted, so a fresh clone has no tiles, and refusing would freeze every wandering creature in the world silently. Waypoint Z is left alone — that is authored data and already correct."
             },
             {
               "done": false,
@@ -802,18 +803,19 @@
               "note": "Swimming state is read and acted on — drowning, fatigue and lava all key off it. What is still not done is REFUSING a client that claims to swim where there is no water, and that is now purely a margin problem: a player who just jumped clear of a lake is legitimately dry at a position they send while still flagged swimming. Needs a tolerance in time and distance before it can reject anything."
             },
             {
-              "done": false,
-              "text": "Speed checks against applied speeds rather than a fixed ceiling — needs auras"
+              "done": true,
+              "text": "Speed checks against applied speeds rather than a fixed ceiling",
+              "note": "The validator is held to the player's own fastest forward speed times a tolerance of 2, instead of a flat 60 — four times tighter for a player at base run. The tolerance is deliberately loose because the elapsed time is the server's, so a stalled tick or a burst of queued packets inflates the measured speed; it has NOT been validated against a real client under latency. CMSG_FORCE_*_SPEED_CHANGE_ACK is now handled, which is what closes the ambiguity: while any ordered speed is unacknowledged the check falls back to the flat ceiling, because the client is legitimately at either the old value or the new one and the server cannot tell which. Only the LAST acknowledgement of a run is compared — several changes can be in flight and every earlier reply is stale on arrival. A mismatch re-sends the correct speed rather than kicking, which is a deliberate deviation from upstream for the same reason the rest of the validator corrects instead of disconnecting."
             },
             {
               "done": true,
               "text": "Drowning, fatigue and lava damage",
-              "note": "Mirror timers: a breath bar under water, a fatigue bar in dark water, and a fire timer on contact with lava or slime. Each drains while its condition holds, refills ten times faster once it stops, and bills once a SECOND while empty rather than once a tick — the expiry adds a second back instead of resetting. Damage is returned to the map to apply, so death is still noticed in one place. Ghosts do not drown."
+              "note": "Mirror timers: a breath bar under water, a fatigue bar in dark water, and a fire timer on contact with lava or slime. Each drains while its condition holds, refills ten times faster once it stops, and bills once a SECOND while empty rather than once a tick — the expiry adds a second back instead of resetting. Damage is returned to the map to apply, so death is still noticed in one place. Ghosts do not drown. Water Breathing disables the bar entirely while ModWaterBreathing multiplies its length — the two look interchangeable and are not. Gaining the first mid-drown clears a bar already running rather than freezing it part-drained."
             },
             {
               "done": true,
               "text": "Fall damage",
-              "note": "FallDamage.Calculate is upstream's line — nothing under 13.48 yards hurts, then 1.8% of maximum health per yard, capped at maximum health and fatal around 70. Measured from the last height the SERVER saw the player supported at, not from the client's own FallTime or fall-start position, both of which are what a client dodging fall damage would understate. Landing in liquid costs nothing, checked against the liquid at the landing point rather than the swimming flag, which the client clears while jumping under water."
+              "note": "FallDamage.Calculate is upstream's line — nothing under 13.48 yards hurts, then 1.8% of maximum health per yard, capped at maximum health and fatal around 70. Measured from the last height the SERVER saw the player supported at, not from the client's own FallTime or fall-start position, both of which are what a client dodging fall damage would understate. Landing in liquid costs nothing, checked against the liquid at the landing point rather than the swimming flag, which the client clears while jumping under water. Safe Fall and Slow Fall are wired now: Safe Fall takes yards off the measured drop and stacks, Slow Fall removes the damage outright — two different auras with two different behaviours, and reading either as the other is a rogue who never dies to a fall."
             },
             {
               "done": false,
@@ -1233,8 +1235,9 @@
               "text": "Stacking, charges, dispel and proc triggers"
             },
             {
-              "done": false,
-              "text": "MOD_STAT, MOD_DECREASE_SPEED and the rest — applied and shown, but they do nothing yet"
+              "done": true,
+              "text": "MOD_STAT, MOD_INCREASE_SPEED and MOD_DECREASE_SPEED do something",
+              "note": "Slows and speed buffs recompute the unit's speeds and go out on the wire — the controller gets SMSG_FORCE_*_SPEED_CHANGE with a counter it acknowledges, observers get SMSG_SPLINE_SET_* so their copy interpolates at the right rate. Only RUN carries an extra byte in the forced form, and leaving it out shifts the float. The rule that matters: speed modifiers take the STRONGEST (MaxPositive/MaxNegative) while stat modifiers SUM (Total) — that is per aura type upstream, not a convention, and picking one rule for both is wrong in one direction or the other. A buff and a slow compound (1.5 x 0.5 = 0.75) rather than cancelling. Recomputed from the unit's OWN base speeds, kept alongside the live ones, because a creature's template scales its walk and run at spawn. ModDamageDone is still unhandled."
             }
           ]
         },
@@ -2273,7 +2276,8 @@
         "Banned-addon list is always empty; client cache version is a static config value",
         "Logout is instant — upstream makes a player sit for 20 seconds unless resting or a GM",
         "SessionStatus.Transfer is never entered; nothing moves between maps yet",
-        "Liquid type overrides by zone are not applied. Upstream lets an area substitute its own liquid for entries below 21 (this is how Naxxramas gets slime where the geometry says water), which needs AreaTable.dbc. Everything else about liquid — terrain, WMO, type, depth and status — is resolved."
+        "Liquid type overrides by zone are not applied. Upstream lets an area substitute its own liquid for entries below 21 (this is how Naxxramas gets slime where the geometry says water), which needs AreaTable.dbc. Everything else about liquid — terrain, WMO, type, depth and status — is resolved.",
+        "The speed-change acknowledgement counter is sent and echoed back but never matched — the handler counts outstanding orders per move type rather than pairing each reply to its own order. Enough to know when the last reply has arrived, not enough to detect a client replaying an old one."
       ]
     },
     {

@@ -182,6 +182,17 @@ public interface IPlayerConnection
     void SendAuraRemoved(ObjectGuid target, byte slot);
 
     /// <summary>
+    /// Tells this client a unit now moves at a different speed.
+    /// </summary>
+    /// <param name="forced">
+    /// Whether this client is the one steering the unit. It picks between two different opcodes with
+    /// different payloads: the controller is <i>ordered</i> to a speed and acknowledges it, while
+    /// everyone else is simply told, so that their copy interpolates at the right rate. Sending an
+    /// onlooker the controller's packet leaves them waiting for an acknowledgement that will not come.
+    /// </param>
+    void SendSpeedChange(ObjectGuid unit, Combat.UnitMoveType type, float speed, bool forced);
+
+    /// <summary>
     /// Relays one periodic aura tick, for the combat log and the floating number.
     /// </summary>
     /// <remarks>
@@ -725,7 +736,8 @@ public sealed class Map(
             player.Environment.Refresh(liquid, player.IsAlive);
 
             EnvironmentUpdate update = player.Environment.Update(
-                gameplayDiff, player.MaxHealth, player.Level, player.IsAlive, GameRandom.Urand);
+                gameplayDiff, player.MaxHealth, player.Level, player.IsAlive, GameRandom.Urand,
+                player.Auras);
 
             foreach (MirrorTimerUpdate timer in update.Timers)
             {
@@ -1062,6 +1074,11 @@ public sealed class Map(
         if (worldObject is Creature creature)
         {
             _creatures.Add(creature);
+
+            // Handed over here rather than at construction: the creature is built by a grid loader
+            // that knows nothing about which map it is destined for, and the height it needs is the
+            // height of *this* map's terrain and models.
+            creature.FloorAt = GetFloor;
         }
     }
 
@@ -1453,6 +1470,11 @@ public sealed class Map(
         if (aura is not null)
         {
             BroadcastAuraApplied(target, aura);
+
+            // After the icon, not before: the speed packet is what actually slows the target, and a
+            // client that sees itself slow down before it is told why has nothing to blame.
+            RefreshSpeeds(target);
+            RefreshStats(target);
         }
     }
 
@@ -1506,9 +1528,15 @@ public sealed class Map(
                 ApplyAuraTick(unit, tick);
             }
 
-            foreach (Aura aura in expired)
+            if (expired.Count > 0)
             {
-                BroadcastAuraRemoved(unit, aura);
+                foreach (Aura aura in expired)
+                {
+                    BroadcastAuraRemoved(unit, aura);
+                }
+
+                RefreshSpeeds(unit);
+                RefreshStats(unit);
             }
         }
     }
@@ -1589,6 +1617,11 @@ public sealed class Map(
         }
 
         unit.Auras.Clear();
+
+        // Death takes every slow with it. Without this a creature that died slowed would respawn
+        // slowed, because the speeds are stored and nothing else recomputes them.
+        RefreshSpeeds(unit);
+        RefreshStats(unit);
     }
 
     private void BroadcastAuraApplied(Unit target, Aura aura)
@@ -1607,6 +1640,63 @@ public sealed class Map(
         foreach (Player watcher in WatchersOf(target))
         {
             watcher.Connection?.SendAuraRemoved(target.Guid, aura.Slot);
+        }
+    }
+
+    /// <summary>
+    /// Recomputes a unit's speeds after its auras changed, and tells whoever needs to know.
+    /// </summary>
+    /// <remarks>
+    /// Called from every place the aura set moves — applied, expired, cleared on death. Speeds do
+    /// not change on their own, so there is no per-tick equivalent and nothing to keep in step.
+    /// <para>
+    /// A player is told about its own speed on the controller opcode and everyone else on the
+    /// observer one; a creature has no controller, so its watchers get the observer opcode and that
+    /// is all.
+    /// </para>
+    /// </remarks>
+    /// <summary>
+    /// Recomputes a player's attributes and everything derived from them.
+    /// </summary>
+    /// <remarks>
+    /// Players only: a creature's attributes come from its class-level stats and nothing reads them
+    /// afterwards, so a stat buff on one would change a number no calculation consults.
+    /// <para>
+    /// The whole recompute rather than a delta, for the same reason equipping does it that way — a
+    /// delta is one missed call away from a character who gains strength every time a buff expires.
+    /// The changed fields reach observers through the ordinary update broadcast.
+    /// </para>
+    /// </remarks>
+    private static void RefreshStats(Unit unit)
+    {
+        if (unit is Player player)
+        {
+            PlayerCombatStats.Apply(player);
+        }
+    }
+
+    private void RefreshSpeeds(Unit unit)
+    {
+        IReadOnlyList<UnitMoveType> changed = unit.RefreshSpeeds();
+
+        if (changed.Count == 0)
+        {
+            return;
+        }
+
+        foreach (UnitMoveType type in changed)
+        {
+            float speed = UnitSpeed.Read(unit.Speeds, type);
+
+            if (unit is Player self)
+            {
+                self.Connection?.SendSpeedChange(self.Guid, type, speed, forced: true);
+            }
+
+            foreach (Player watcher in PlayersWhoSeeCore(unit.Guid))
+            {
+                watcher.Connection?.SendSpeedChange(unit.Guid, type, speed, forced: false);
+            }
         }
     }
 

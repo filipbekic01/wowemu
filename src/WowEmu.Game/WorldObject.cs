@@ -102,8 +102,21 @@ public abstract class WorldObject(ObjectGuid guid, TypeId typeId, int fieldCount
     /// <summary>Movement state, sent in every create block.</summary>
     public MovementInfo Movement { get; } = new();
 
-    /// <summary>The nine movement speeds.</summary>
+    /// <summary>The nine movement speeds, as clients are told them.</summary>
     public MovementSpeeds Speeds { get; } = new();
+
+    /// <summary>
+    /// The same nine with nothing modifying them.
+    /// </summary>
+    /// <remarks>
+    /// Kept alongside rather than derived, because a creature's template scales its walk and run
+    /// before any aura does — so "unmodified" is per-unit, not a constant. Recomputing a slowed wolf
+    /// from the global base speeds would hand it a human's pace and never hand it back.
+    /// <para>
+    /// Whatever sets <see cref="Speeds"/> at creation must set this to match. They start equal.
+    /// </para>
+    /// </remarks>
+    public MovementSpeeds BaseSpeeds { get; } = new();
 
     /// <summary>Copies the authoritative position into the movement block before serializing.</summary>
     public void SyncMovement()

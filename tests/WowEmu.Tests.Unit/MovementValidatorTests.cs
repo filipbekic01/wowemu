@@ -118,6 +118,65 @@ public sealed class MovementValidatorTests
         Assert.Contains("yards/second", verdict.Detail, StringComparison.Ordinal);
     }
 
+    /// <summary>
+    /// With the player's real speed known, the ceiling is that rather than the flat one.
+    /// </summary>
+    /// <remarks>
+    /// 30 yards a second is nowhere near the 60 the flat ceiling allows, so before the applied speed
+    /// was passed in this went through unchallenged. A player at base run speed is now held to
+    /// double it.
+    /// </remarks>
+    [Fact]
+    public void AKnownSpeed_TightensTheCeiling()
+    {
+        // 3 yards in 100 ms is 30 yards/second: under the flat ceiling, far over a runner's.
+        MovementInfo claimed = Offset(Origin, 3f, 0f);
+
+        Assert.True(MovementValidator.Validate(Origin, claimed, 100).Accepted);
+
+        MovementVerdict verdict = MovementValidator.Validate(
+            Origin, claimed, 100, floorAt: null, allowedSpeed: 7.0f);
+
+        Assert.Equal(MovementRejection.ImpossibleSpeed, verdict.Rejection);
+        Assert.Contains("ceiling", verdict.Detail, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// The tolerance is real headroom, not a rounding allowance.
+    /// </summary>
+    /// <remarks>
+    /// The elapsed time is the server's, so a stalled tick or a burst of queued packets inflates the
+    /// measured speed over a short window. A player genuinely running at 7 has to survive measuring
+    /// at 13.
+    /// </remarks>
+    [Fact]
+    public void AClientJustOverItsSpeed_IsStillAccepted()
+    {
+        // 1.3 yards in 100 ms is 13 yards/second — nearly double a runner's 7, and inside tolerance.
+        MovementVerdict verdict = MovementValidator.Validate(
+            Origin, Offset(Origin, 1.3f, 0f), 100, floorAt: null, allowedSpeed: 7.0f);
+
+        Assert.True(verdict.Accepted, verdict.Detail);
+    }
+
+    /// <summary>
+    /// With no known speed the flat ceiling applies, which is what an unacknowledged change gives.
+    /// </summary>
+    /// <remarks>
+    /// Between ordering a speed and the client confirming it, the client is legitimately at either
+    /// the old value or the new one. Holding it to either would refuse an honest client half the
+    /// time, so the check loosens for exactly as long as the ambiguity lasts.
+    /// </remarks>
+    [Fact]
+    public void WithNoKnownSpeed_TheFlatCeilingApplies()
+    {
+        // 50 yards/second: over any real speed, under the flat ceiling.
+        MovementVerdict verdict = MovementValidator.Validate(
+            Origin, Offset(Origin, 5f, 0f), 100, floorAt: null, allowedSpeed: null);
+
+        Assert.True(verdict.Accepted, verdict.Detail);
+    }
+
     [Fact]
     public void ContradictoryFlags_AreRefused()
     {
