@@ -24,7 +24,7 @@ internal static class InventoryFixture
     /// </remarks>
     public static Player Player(byte level = 1, byte race = 1, byte characterClass = 1)
     {
-        uint id = (uint)Interlocked.Increment(ref _nextCharacterId);
+        uint id = NextCharacterId();
 
         CharacterSummary summary = new(
             id, "Carrier", race, characterClass, 0, 0, 0, 0, 0, 0, level, 12, 0, 0f, 0f, 0f, 0, 0, 0);
@@ -43,6 +43,18 @@ internal static class InventoryFixture
 
     /// <summary>A guid source that never repeats, across every test in the run.</summary>
     public static uint NextGuid() => Interlocked.Increment(ref _nextItemGuid);
+
+    /// <summary>
+    /// A character id that never repeats, for any fixture that builds a player.
+    /// </summary>
+    /// <remarks>
+    /// Shared rather than per-fixture, and the reason is a real flake this caught: a player's guid is
+    /// derived from this id, so two fixtures that both hand out "1" build two different players with
+    /// the *same* guid. Anything keyed by guid — a threat list, a visibility set, a loot owner — then
+    /// treats them as one. It surfaced as MapLootTests.SomeoneElse_IsRefused passing or failing
+    /// depending on how xunit happened to interleave the classes that call this.
+    /// </remarks>
+    public static uint NextCharacterId() => (uint)Interlocked.Increment(ref _nextCharacterId);
 
     /// <summary>Gives a player an item directly, bypassing the rules.</summary>
     public static Item Place(Player player, ItemTemplate template, ItemPosition at, uint count = 1)

@@ -614,7 +614,8 @@ internal static class ExperienceFixture
 
     public static Player NewPlayer(byte level)
     {
-        CharacterSummary summary = new(1, "Leveller", 1, 1, 0, 0, 0, 0, 0, 0, 1, 12, 0, 0f, 0f, 0f, 0, 0, 0);
+        CharacterSummary summary = new(
+            InventoryFixture.NextCharacterId(), "Leveller", 1, 1, 0, 0, 0, 0, 0, 0, 1, 12, 0, 0f, 0f, 0f, 0, 0, 0);
         ChrRacesEntry race = new(1, 0, 1, 49, 50, 7, 0, 0, "Human", 0);
         ChrClassesEntry characterClass = new(1, 1, "Warrior", 4, 0);
         PlayerBaseStats stats = new(20, 0, 23, 20, 22, 20, 20);

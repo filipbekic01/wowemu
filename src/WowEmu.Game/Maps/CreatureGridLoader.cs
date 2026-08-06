@@ -74,6 +74,32 @@ public sealed class CreatureGridLoader(
         return loaded;
     }
 
+    /// <summary>
+    /// Builds every map's grid index up front. Returns how many maps were indexed.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Without this the index for a map is built on whichever tick the first player arrives on it —
+    /// measured at ~20 ms for Eastern Kingdoms, inside the login tick, paid by a player. Upstream
+    /// precomputes the equivalent at startup for the same reason.
+    /// </para>
+    /// <para>
+    /// This is the "same work for maps nobody visits" that the lazy build was avoiding. It is worth
+    /// it now that it has been measured: the whole set is one pass over the spawns already in
+    /// memory, and it moves the cost to the one place in the process where nobody is waiting on a
+    /// 50 ms budget.
+    /// </para>
+    /// </remarks>
+    public int BuildIndexes()
+    {
+        foreach (uint mapId in spawns.Maps)
+        {
+            IndexFor(mapId);
+        }
+
+        return _byMapAndGrid.Count;
+    }
+
     /// <summary>Groups a map's spawns by grid, once.</summary>
     private Dictionary<GridCoord, List<CreatureSpawn>> IndexFor(uint mapId)
     {

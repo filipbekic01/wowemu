@@ -168,6 +168,12 @@ internal static partial class Log
     public static partial void GameObjectContentLoaded(
         ILogger logger, int templates, int spawns, int maps);
 
+    [LoggerMessage(EventId = 2337, Level = LogLevel.Information,
+        Message = "Indexed spawns by grid for {CreatureMaps} creature and {ObjectMaps} gameobject map(s) "
+                + "in {ElapsedMs:F0} ms")]
+    public static partial void SpawnIndexesBuilt(
+        ILogger logger, int creatureMaps, int objectMaps, double elapsedMs);
+
     [LoggerMessage(EventId = 2318, Level = LogLevel.Debug,
         Message = "'{Name}' started attacking '{Target}' — {Address}")]
     public static partial void AttackStarted(ILogger logger, string name, string target, string address);

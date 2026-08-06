@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using WowEmu.Data.Client;
 using WowEmu.Data.Db;
+using WowEmu.Game.Maps;
 
 namespace WowEmu.WorldServer;
 
@@ -241,6 +242,17 @@ internal static class WorldStartup
             elapsedMs);
 
         Log.GameObjectContentLoaded(logger, objectTemplates.Count, objectSpawns.Count, objectSpawns.MapCount);
+
+        // Grid indexes up front, now that the spawns they read are in memory. Built lazily this used
+        // to land on whichever tick a player first reached a map — ~20 ms inside a 50 ms login tick,
+        // for Eastern Kingdoms alone.
+        long indexStarted = Stopwatch.GetTimestamp();
+
+        int creatureMaps = services.GetRequiredService<CreatureGridLoader>().BuildIndexes();
+        int objectMaps = services.GetRequiredService<GameObjectGridLoader>().BuildIndexes();
+
+        double indexElapsedMs = Stopwatch.GetElapsedTime(indexStarted).TotalMilliseconds;
+        Log.SpawnIndexesBuilt(logger, creatureMaps, objectMaps, indexElapsedMs);
         Log.ItemTemplatesLoaded(logger, items.Count);
         Log.QuestsLoaded(logger, quests.Count, questStarters.RowCount, questEnders.RowCount);
         Log.GossipLoaded(logger, gossip.MenuCount, gossip.OptionCount, gossip.TextCount, vendors.RowCount);

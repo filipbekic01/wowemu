@@ -134,6 +134,13 @@ public sealed class CreatureSpawnStore
     public IReadOnlyList<CreatureSpawn> ForMap(uint mapId) =>
         _byMap.TryGetValue(mapId, out List<CreatureSpawn>? spawns) ? spawns : [];
 
+    /// <summary>Every map that has at least one spawn.</summary>
+    /// <remarks>
+    /// So that per-map indexes can be built up front instead of on whichever tick a player first
+    /// arrives on the map — which is a login spike paid by a player rather than by startup.
+    /// </remarks>
+    public IReadOnlyCollection<uint> Maps => _byMap.Keys;
+
     /// <summary>A description of the loaded contents, for the startup log.</summary>
     public override string ToString() =>
         string.Create(CultureInfo.InvariantCulture, $"{Count} creature spawns across {MapCount} maps");

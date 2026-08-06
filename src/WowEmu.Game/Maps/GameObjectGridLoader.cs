@@ -54,6 +54,20 @@ public sealed class GameObjectGridLoader(
         return loaded;
     }
 
+    /// <summary>
+    /// Builds every map's grid index up front, so no login tick pays for one. Returns the map count.
+    /// </summary>
+    /// <remarks>See <see cref="CreatureGridLoader.BuildIndexes"/> for the reasoning.</remarks>
+    public int BuildIndexes()
+    {
+        foreach (uint mapId in spawns.Maps)
+        {
+            IndexFor(mapId);
+        }
+
+        return _byMapAndGrid.Count;
+    }
+
     private Dictionary<GridCoord, List<GameObjectSpawn>> IndexFor(uint mapId)
     {
         if (_byMapAndGrid.TryGetValue(mapId, out Dictionary<GridCoord, List<GameObjectSpawn>>? index))

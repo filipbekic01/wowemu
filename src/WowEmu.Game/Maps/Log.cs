@@ -21,10 +21,11 @@ internal static partial class Log
     /// The one-off per-map index build, timed separately from the grid load that triggered it.
     /// </summary>
     /// <remarks>
-    /// The two costs look identical from outside — both land on the tick a player logs in on — but
-    /// they have different fixes, so they are measured apart rather than together.
+    /// Debug rather than Information because these are now built for every map at startup, and a
+    /// line each would be 109 of them. The summary that startup prints is the one worth reading;
+    /// this is here for when one map is the problem.
     /// </remarks>
-    [LoggerMessage(EventId = 3005, Level = LogLevel.Information,
+    [LoggerMessage(EventId = 3005, Level = LogLevel.Debug,
         Message = "Map {MapId}: indexed {Spawns} creature spawn(s) into {Grids} grid(s) in {ElapsedMs} ms")]
     public static partial void SpawnIndexBuilt(
         ILogger logger, uint mapId, int spawns, int grids, double elapsedMs);

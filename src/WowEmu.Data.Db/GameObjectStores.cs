@@ -167,6 +167,9 @@ public sealed class GameObjectSpawnStore
     public IReadOnlyList<GameObjectSpawn> ForMap(uint mapId) =>
         _byMap.TryGetValue(mapId, out List<GameObjectSpawn>? spawns) ? spawns : [];
 
+    /// <summary>Every map that has at least one spawn. See the creature store for why.</summary>
+    public IReadOnlyCollection<uint> Maps => _byMap.Keys;
+
     /// <summary>A description of the loaded contents, for the startup log.</summary>
     public override string ToString() =>
         string.Create(CultureInfo.InvariantCulture, $"{Count} gameobject spawns across {MapCount} maps");

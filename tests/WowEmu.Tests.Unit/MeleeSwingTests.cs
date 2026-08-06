@@ -660,7 +660,10 @@ internal static class MapCombatFixture
             Quests = quests,
         };
 
-        CharacterSummary summary = new(1, "Fighter", 1, 1, 0, 0, 0, 0, 0, 0, 1, 12, 0, 0f, 0f, 0f, 0, 0, 0);
+        // Unique, not 1: a fixed id here collides with the ids InventoryFixture hands out, and two
+        // players sharing a guid make a stranger look like whoever made the kill.
+        CharacterSummary summary = new(
+            InventoryFixture.NextCharacterId(), "Fighter", 1, 1, 0, 0, 0, 0, 0, 0, 1, 12, 0, 0f, 0f, 0f, 0, 0, 0);
         ChrRacesEntry race = new(1, 0, 1, 49, 50, 7, 0, 0, "Human", 0);
         ChrClassesEntry characterClass = new(1, 1, "Warrior", 4, 0);
         PlayerBaseStats stats = new(20, 0, 23, 20, 22, 20, 20);

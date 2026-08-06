@@ -154,8 +154,27 @@ public static class UpdateBlockBuilder
         return writer.ToArray();
     }
 
-    /// <summary>Builds a values block for an object the observer already has.</summary>
-    public static byte[] BuildValuesBlock(ObjectGuid objectGuid, UpdateFieldStorage fields)
+    /// <summary>
+    /// Builds a values block for an object the observer already has.
+    /// </summary>
+    /// <param name="objectGuid">The object that changed.</param>
+    /// <param name="fields">Its field storage; the dirty mask decides what is sent.</param>
+    /// <param name="kind">Which per-index visibility table applies. Units by default.</param>
+    /// <param name="visibleTo">
+    /// What this observer may see. Defaults to <see langword="null"/>, meaning no filtering — which
+    /// is only correct when the block is going to the object's own client.
+    /// </param>
+    /// <remarks>
+    /// The filter is opt-in rather than always-on because the two callers want different things: an
+    /// object's own client is entitled to every dirty field, and passing it through the public mask
+    /// would strip a player's own coinage and quest log from their own update. Anything sent to a
+    /// third party must pass <paramref name="visibleTo"/>.
+    /// </remarks>
+    public static byte[] BuildValuesBlock(
+        ObjectGuid objectGuid,
+        UpdateFieldStorage fields,
+        UpdateObjectKind kind = UpdateObjectKind.Unit,
+        UpdateFieldVisibility? visibleTo = null)
     {
         ArgumentNullException.ThrowIfNull(fields);
 
@@ -164,7 +183,14 @@ public static class UpdateBlockBuilder
         writer.WriteUInt8((byte)UpdateType.Values);
         writer.WritePackedGuid(objectGuid);
 
-        WriteValues(writer, fields, fields.BuildDirtyMask());
+        UpdateMask mask = fields.BuildDirtyMask();
+
+        if (visibleTo is { } visible)
+        {
+            UpdateFieldVisibilityRules.Filter(mask, kind, visible);
+        }
+
+        WriteValues(writer, fields, mask);
 
         return writer.ToArray();
     }

@@ -180,7 +180,8 @@ public sealed class MapActivityTests
 
         Map map = new(0, new TerrainMap(0, Path.GetTempPath()), new TwoCreatures(near, far));
 
-        CharacterSummary summary = new(1, "Walker", 1, 1, 0, 0, 0, 0, 0, 0, 1, 12, 0, 0f, 0f, 0f, 0, 0, 0);
+        CharacterSummary summary = new(
+            InventoryFixture.NextCharacterId(), "Walker", 1, 1, 0, 0, 0, 0, 0, 0, 1, 12, 0, 0f, 0f, 0f, 0, 0, 0);
         ChrRacesEntry race = new(1, 0, 1, 49, 50, 7, 0, 0, "Human", 0);
         ChrClassesEntry characterClass = new(1, 1, "Warrior", 4, 0);
         PlayerBaseStats stats = new(20, 0, 23, 20, 22, 20, 20);
