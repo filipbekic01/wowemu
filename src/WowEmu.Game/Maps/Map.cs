@@ -377,6 +377,22 @@ public sealed class Map(
     /// </remarks>
     public float? GetFloor(float x, float y, float z) => WorldHeight.GetFloor(Terrain, Collision, x, y, z);
 
+    /// <summary>
+    /// The liquid at a point, and how deep in it the asker is.
+    /// </summary>
+    /// <param name="collisionHeight">
+    /// How tall the unit is — the depth at which it stops wading and is submerged. Upstream's
+    /// default for a player is 2.0 yards.
+    /// </param>
+    /// <remarks>
+    /// <b>Terrain liquid only.</b> A WMO carries its own liquid — every indoor pool, fountain and
+    /// flooded dungeon room — and while those chunks are parsed into the model records, nothing
+    /// queries them yet. So a "no liquid here" answer means "no liquid in the terrain here", and a
+    /// caller must not read it as proof that a player standing in an inn's fountain is lying.
+    /// </remarks>
+    public LiquidData GetLiquid(float x, float y, float z, float collisionHeight) =>
+        Terrain.GetLiquidData(x, y, z, collisionHeight);
+
     /// <summary>Whether one point on this map can see another.</summary>
     /// <remarks>Clear when there is no collision data: a missing file must not blind the world.</remarks>
     public bool IsInLineOfSight(Position from, Position to) =>

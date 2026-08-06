@@ -407,8 +407,9 @@
               "text": "Zone id derived from terrain on login and refreshed as the player moves"
             },
             {
-              "done": false,
-              "text": "Liquid data + queries (swimming, drowning, fall damage)"
+              "done": true,
+              "text": "Liquid data + queries",
+              "note": "The MLIQ chunk is parsed in all four of its shapes — per-chunk types and a cropped surface height map are independently optional, and all four combinations occur in the shipped data. GetLiquidLevel and GetLiquidData give level, floor, entry, type and a swim/wade/walk/above status. Verified against an independent Python reader over 4,249 real liquid samples, zero mismatches, once the Python used float32 like the C++ does. Swimming, drowning and fall damage are the gameplay half and are still open under phase 7 — this is the data they were waiting on."
             },
             {
               "done": false,
@@ -795,7 +796,8 @@
             },
             {
               "done": false,
-              "text": "Swim/fly distinction — needs the liquid chunk parsed"
+              "text": "Swim/fly distinction — needs the liquid chunk parsed",
+              "note": "No longer blocked on data — the terrain liquid chunk is parsed. Blocked instead on WMO liquid: indoor pools, fountains and flooded dungeon rooms live in the vmap, whose chunks are parsed into the model records but never queried. Refusing a swim claim where the terrain has no water would disconnect honest players standing in water the server cannot see, so the rule waits for StaticMapTree to answer liquid queries."
             },
             {
               "done": false,
@@ -2261,7 +2263,8 @@
         "MOTD comes from config, not from a database table",
         "Banned-addon list is always empty; client cache version is a static config value",
         "Logout is instant — upstream makes a player sit for 20 seconds unless resting or a GM",
-        "SessionStatus.Transfer is never entered; nothing moves between maps yet"
+        "SessionStatus.Transfer is never entered; nothing moves between maps yet",
+        "WMO liquid is parsed into the model records but StaticMapTree never queries it, so all indoor water is invisible to the server. Terrain liquid is queryable; the two need to be unified behind one call before any rule can treat \"no liquid\" as meaning dry."
       ]
     },
     {
@@ -2285,7 +2288,7 @@
       "category": "Combat",
       "items": [
         "There is no real Corpse object. A dead player's body is a remembered position, not something another player can see or walk up to — and the reclaim delay is sent to the client but never enforced, so reclaiming is allowed immediately.",
-        "LOOT DOES NOT EXIST, so UNIT_DYNFLAG_LOOTABLE is deliberately never set on a corpse — the flag would promise a lootable corpse that opens an empty window.",
+        "UNIT_DYNFLAG_LOOTABLE is set on a corpse that has loot and cleared when it is emptied, and — since values blocks are broadcast — it now actually reaches the client, which is what makes a corpse sparkle and accept a right click. It is not yet rewritten per observer, so everyone in sight sees the sparkle rather than only whoever may loot it.",
         "creature_addon is not vendored, so every creature is ReactState.Aggressive. A passive quest prop currently behaves like anything else and will fight back.",
         "A creature's facing is server-side only. CreatureAi.FaceTowards decides whether a swing lands, but the client is not told — that needs the facing-target form of SMSG_MONSTER_MOVE.",
         "Glancing blows exclude a pet victim upstream; pets do not exist here, so only the player half of that condition is modelled.",

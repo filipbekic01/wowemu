@@ -45,6 +45,32 @@ public sealed class TerrainMap(uint mapId, string mapsDirectory)
     /// <summary>Whether a coordinate has terrain under it at all.</summary>
     public bool HasTerrain(float x, float y) => GetTile(x, y) is not null;
 
+    /// <summary>
+    /// The height of the liquid surface at a world coordinate.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="MapGeometry.InvalidHeight"/> where there is no liquid. Callers must treat that as
+    /// "no answer" rather than as a surface far below — a comparison against it succeeds for every
+    /// real z, so a missing check reads as "standing above the water" everywhere on the map.
+    /// </remarks>
+    public float GetLiquidLevel(float x, float y)
+    {
+        TerrainTile? tile = GetTile(x, y);
+
+        return tile?.GetLiquidLevel(x, y) ?? MapGeometry.InvalidHeight;
+    }
+
+    /// <summary>The liquid at a point, and where that point sits in it.</summary>
+    /// <param name="collisionHeight">
+    /// How tall the unit asking is — the threshold between wading and being submerged.
+    /// </param>
+    public LiquidData GetLiquidData(float x, float y, float z, float collisionHeight)
+    {
+        TerrainTile? tile = GetTile(x, y);
+
+        return tile?.GetLiquidData(x, y, z, collisionHeight) ?? LiquidData.None;
+    }
+
     private TerrainTile? GetTile(float x, float y)
     {
         (int gridX, int gridY) = MapGeometry.GridFor(x, y);

@@ -52,8 +52,15 @@ public readonly record struct MovementVerdict(MovementRejection Rejection, strin
 /// The symmetric test — does the reported Z <i>match</i> the floor? — is still not made, and vmaps
 /// did not make it safe. It would have to know about transports, lifts, and the moment between
 /// leaving a surface and the fall being reported; each of those is an honest player disconnected.
-/// Swimming is in the same position: the liquid chunk is unparsed, so water is still
-/// indistinguishable from flying.
+/// </para>
+/// <para>
+/// Swimming is still not checked either, but the reason has moved. The terrain liquid chunk is
+/// parsed now — <see cref="TerrainMap.GetLiquidData"/> will say whether there is water at a point —
+/// so the obvious rule is available: refuse a client that claims to be swimming where there is no
+/// liquid. It is not applied, because a WMO carries its own liquid and nothing queries it yet. Every
+/// indoor pool, fountain and flooded dungeon room would read as open air, and the rule would
+/// disconnect honest players for standing in water the server cannot see. It becomes exactly right
+/// the day <c>StaticMapTree</c> answers liquid queries, and not before.
 /// </para>
 /// <para>
 /// So the checks here are the ones that are exactly right rather than nearly right: coordinates
