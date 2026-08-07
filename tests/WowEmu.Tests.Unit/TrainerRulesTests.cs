@@ -19,7 +19,7 @@ public sealed class TrainerRulesTests
     [Fact]
     public void AKnownSpell_IsRed()
     {
-        Player player = InventoryFixture.Player(level: 60);
+        Player player = InventoryFixture.Player(level: 60, proficiencies: false);
         player.Spells.Learn(Taught);
 
         Assert.Equal(TrainerSpellState.Red, TrainerRules.StateOf(player, Line()));
@@ -29,7 +29,7 @@ public sealed class TrainerRulesTests
     [Fact]
     public void TooLowALevel_IsGrey()
     {
-        Player player = InventoryFixture.Player(level: 5);
+        Player player = InventoryFixture.Player(level: 5, proficiencies: false);
 
         Assert.Equal(TrainerSpellState.Grey, TrainerRules.StateOf(player, Line(requiredLevel: 20)));
     }
@@ -38,7 +38,7 @@ public sealed class TrainerRulesTests
     [Fact]
     public void ALineWithNoRequirements_IsGreen()
     {
-        Player player = InventoryFixture.Player(level: 20);
+        Player player = InventoryFixture.Player(level: 20, proficiencies: false);
 
         Assert.Equal(TrainerSpellState.Green, TrainerRules.StateOf(player, Line()));
     }
@@ -53,7 +53,7 @@ public sealed class TrainerRulesTests
     [Fact]
     public void ASkillTheyDoNotHave_IsGrey()
     {
-        Player player = InventoryFixture.Player(level: 60);
+        Player player = InventoryFixture.Player(level: 60, proficiencies: false);
 
         Assert.Equal(
             TrainerSpellState.Grey,
@@ -64,7 +64,7 @@ public sealed class TrainerRulesTests
     [Fact]
     public void HavingTheSkillButNotTheRank_IsGrey()
     {
-        Player player = InventoryFixture.Player(level: 60);
+        Player player = InventoryFixture.Player(level: 60, proficiencies: false);
         player.Skills.Set(SkillType.Swords, 0, 99, 300);
 
         Assert.Equal(
@@ -76,7 +76,7 @@ public sealed class TrainerRulesTests
     [Fact]
     public void MeetingTheRankExactly_IsGreen()
     {
-        Player player = InventoryFixture.Player(level: 60);
+        Player player = InventoryFixture.Player(level: 60, proficiencies: false);
         player.Skills.Set(SkillType.Swords, 0, 100, 300);
 
         Assert.Equal(
@@ -96,13 +96,13 @@ public sealed class TrainerRulesTests
     [Fact]
     public void ARankOfZero_StillRequiresTheSkill()
     {
-        Player without = InventoryFixture.Player(level: 60);
+        Player without = InventoryFixture.Player(level: 60, proficiencies: false);
 
         Assert.Equal(
             TrainerSpellState.Grey,
             TrainerRules.StateOf(without, Line(requiredSkill: (ushort)SkillType.Swords, requiredRank: 0)));
 
-        Player with = InventoryFixture.Player(level: 60);
+        Player with = InventoryFixture.Player(level: 60, proficiencies: false);
         with.Skills.Set(SkillType.Swords, 0, 1, 300);
 
         Assert.Equal(
@@ -118,7 +118,7 @@ public sealed class TrainerRulesTests
     [Fact]
     public void ABonus_CountsTowardsTheRequirement()
     {
-        Player player = InventoryFixture.Player(level: 60);
+        Player player = InventoryFixture.Player(level: 60, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, 0, 95, 300);
         player.Skills.SetBonus(SkillType.Swords, temporary: 0, permanent: 10);

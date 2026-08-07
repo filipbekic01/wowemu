@@ -19,7 +19,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void TheFirstWord_HoldsTheIdAndTheStep()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, step: 2, value: 30, maxValue: 50);
 
@@ -33,7 +33,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void TheSecondWord_HoldsTheValueAndTheMaximum()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, step: 0, value: 30, maxValue: 50);
 
@@ -55,7 +55,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void TheBonusWord_PutsTheTemporaryOneFirst()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, 0, 30, 50);
         player.Skills.SetBonus(SkillType.Swords, temporary: 5, permanent: 9);
@@ -73,7 +73,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void TheShownValue_CountsBothBonuses()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, 0, 30, 50);
         player.Skills.SetBonus(SkillType.Swords, temporary: 5, permanent: 9);
@@ -95,7 +95,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void APenaltyPastZero_ReadsAsZero()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, 0, 5, 50);
         player.Skills.SetBonus(SkillType.Swords, temporary: -10, permanent: 0);
@@ -112,7 +112,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void Skills_TakeTheFirstFreeSlot()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, 0, 1, 5);
         player.Skills.Set(SkillType.Defense, 0, 1, 5);
@@ -133,7 +133,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void ForgettingASkill_ClearsTheBonusToo()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, 0, 30, 50);
         player.Skills.SetBonus(SkillType.Swords, temporary: 5, permanent: 9);
@@ -161,7 +161,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void ClearingAnUnknownSkill_ConsumesNoSlot()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         Assert.False(player.Skills.Set(SkillType.Swords, 0, value: 0, maxValue: 0));
         Assert.Equal(0, player.Skills.Count);
@@ -172,7 +172,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void SettingAKnownSkill_StaysInItsSlot()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, 0, 30, 50);
         player.Skills.Set(SkillType.Swords, 0, 40, 60);
@@ -191,7 +191,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void TheBlock_HoldsAHundredAndTwentySeven()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         for (uint skill = 1; skill <= PlayerSkills.MaxSkills; skill++)
         {
@@ -210,7 +210,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void Saving_LeavesTheBonusesOut()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, step: 2, value: 30, maxValue: 50);
         player.Skills.SetBonus(SkillType.Swords, temporary: 5, permanent: 9);
@@ -227,7 +227,7 @@ public sealed class PlayerSkillsTests
     [Fact]
     public void Restoring_ReplacesWhatIsThere()
     {
-        Player player = InventoryFixture.Player(level: 10);
+        Player player = InventoryFixture.Player(level: 10, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, 0, 30, 50);
 
@@ -255,7 +255,7 @@ public sealed class PlayerSkillCombatTests
     [Fact]
     public void WithoutTheSkill_TheLevelCapIsUsed()
     {
-        Player player = InventoryFixture.Player(level: 20);
+        Player player = InventoryFixture.Player(level: 20, proficiencies: false);
 
         Assert.Equal(100, player.WeaponSkillValue);
         Assert.Equal(100, player.DefenseSkillValue);
@@ -265,7 +265,7 @@ public sealed class PlayerSkillCombatTests
     [Fact]
     public void WithTheSkill_TheSkillIsUsed()
     {
-        Player player = InventoryFixture.Player(level: 20);
+        Player player = InventoryFixture.Player(level: 20, proficiencies: false);
 
         player.Skills.Set(SkillType.Unarmed, 0, 42, 100);
         player.Skills.Set(SkillType.Defense, 0, 37, 100);
@@ -284,7 +284,7 @@ public sealed class PlayerSkillCombatTests
     [Fact]
     public void TheWeaponInHand_PicksTheSkill()
     {
-        Player player = InventoryFixture.Player(level: 20);
+        Player player = InventoryFixture.Player(level: 20, proficiencies: false);
 
         player.Skills.Set(SkillType.Swords, 0, 100, 100);
         player.Skills.Set(SkillType.Axes, 0, 5, 100);
@@ -310,7 +310,7 @@ public sealed class PlayerSkillCombatTests
     [Fact]
     public void AnEmptyHand_IsUnarmed()
     {
-        Player player = InventoryFixture.Player(level: 20);
+        Player player = InventoryFixture.Player(level: 20, proficiencies: false);
 
         player.Skills.Set(SkillType.Unarmed, 0, 11, 100);
 

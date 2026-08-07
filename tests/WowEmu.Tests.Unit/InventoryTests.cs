@@ -22,7 +22,14 @@ internal static class InventoryFixture
     /// a guid are the same player to anything that compares them — loot ownership, threat, a
     /// visible set. A test about a <i>second</i> player would silently be about the first.
     /// </remarks>
-    public static Player Player(byte level = 1, byte race = 1, byte characterClass = 1)
+    /// <param name="proficiencies">
+    /// Whether to grant every weapon and armour proficiency. On by default because a real character
+    /// derives them at creation from their starting spells — a fixture without them is a character
+    /// who cannot hold anything, which turns every unrelated equip test into a proficiency test.
+    /// Pass false when the proficiency check is what is under test.
+    /// </param>
+    public static Player Player(
+        byte level = 1, byte race = 1, byte characterClass = 1, bool proficiencies = true)
     {
         uint id = NextCharacterId();
 
@@ -38,7 +45,27 @@ internal static class InventoryFixture
         player.MaxHealth = 100;
         player.Health = 100;
 
+        if (proficiencies)
+        {
+            GrantProficiencies(player);
+        }
+
         return player;
+    }
+
+    /// <summary>Every weapon and armour proficiency, as the mono 1/1 skills they really are.</summary>
+    private static void GrantProficiencies(Player player)
+    {
+        for (byte itemClass = 0; itemClass < 20; itemClass++)
+        {
+            for (byte subClass = 0; subClass < 24; subClass++)
+            {
+                if (SkillType.ForItem(itemClass, subClass) is var skill && skill != 0)
+                {
+                    player.Skills.Set(skill, 0, 1, 1);
+                }
+            }
+        }
     }
 
     /// <summary>A guid source that never repeats, across every test in the run.</summary>

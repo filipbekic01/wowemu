@@ -1557,8 +1557,8 @@
             },
             {
               "done": false,
-              "text": "Soulbinding, unique constraints, item limit categories and weapon proficiency",
-              "note": "All currently PASS, so a level-1 warrior can wear a staff."
+              "text": "Soulbinding, unique constraints and item limit categories",
+              "note": "Weapon and armour proficiency is done, now that skills exist. Three separate rules that sound like one: the item's own class and subclass imply a proficiency (a mono skill at 1/1, so the test is only whether it is present); the template can name a RequiredSkill with a rank; and it can name a RequiredSpell. The two skill failures are DIFFERENT refusals — lacking the skill entirely is NoRequiredProficiency, having it but not far enough is CantEquipSkill — and the client prints different text for each, so collapsing them tells a jewelcrafter they can never use a ring they just need more practice for. ORDER MATTERS TWICE. Upstream resolves the slot (FindEquipSlot) BEFORE calling CanUseItem, so a sword dragged onto the head slot is a wrong-slot mistake rather than a proficiency one; and inside CanUseItem the level check comes after skill and spell, so an item failing both reports the skill. The heirloom exception is ported: heirloom ARMOUR bends for the two classes whose armour genuinely upgrades (warrior/paladin into plate, hunter/shaman into mail), because the subclass says plate the whole time and the plain check would refuse the level-1 warrior it was bought for. One real regression this caused and fixed: starting gear is handed over through StoreInBestSlots, which equips through these same rules — so character creation had to be reordered to grant skills BEFORE applying gear, or every new character is created holding their weapon in a bag. There is no integration harness for character creation, so that ordering has no automated guard; the coupling it depends on is pinned by ProficiencyTests.GearIsOnlyWorn_IfItCanBeHeld. Still open here: soulbinding, unique constraints and item limit categories, none of which need skills."
             },
             {
               "done": false,
@@ -2394,7 +2394,7 @@
       "category": "Inventory",
       "items": [
         "No bank, no keyring, no buyback and no bag families. The slots exist in the array and nothing moves anything into them.",
-        "SOULBINDING, UNIQUE CONSTRAINTS, ITEM LIMIT CATEGORIES AND WEAPON PROFICIENCY ALL PASS. A level-1 warrior can wear a staff, and nothing is ever bound.",
+        "Soulbinding, unique constraints and item limit categories all pass — nothing is ever bound, and a player can carry two of a unique item. Weapon and armour proficiency IS enforced now.",
         "Only the five attributes are applied from an item. Ratings, resistances and spell power are read and ignored.",
         "Armour is the sum of the equipped items' columns and nothing else — agility's contribution needs the gt* DBCs.",
         "The inventory is saved on logout and on a dropped connection, never periodically. A server crash loses everything since login, exactly as it does for position.",

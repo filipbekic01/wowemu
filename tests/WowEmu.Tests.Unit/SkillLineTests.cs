@@ -49,7 +49,7 @@ public sealed class SkillLineTests
 
         Assert.Equal(SkillRange.Language, stores.Skills.RangeOf(info));
 
-        Player player = InventoryFixture.Player(level: 1, race: Human, characterClass: Warrior);
+        Player player = InventoryFixture.Player(level: 1, race: Human, characterClass: Warrior, proficiencies: false);
 
         Assert.True(SkillLearning.LearnDefault(player, stores.Skills, Common));
         Assert.Equal(SkillLines.LanguageValue, player.Skills.Value(Common));
@@ -112,7 +112,7 @@ public sealed class SkillLineTests
 
         Assert.Null(stores.Skills.RaceClassInfo(SkillType.Runeforging, Human, Warrior));
 
-        Player player = InventoryFixture.Player(level: 20, race: Human, characterClass: Warrior);
+        Player player = InventoryFixture.Player(level: 20, race: Human, characterClass: Warrior, proficiencies: false);
 
         Assert.False(SkillLearning.LearnDefault(player, stores.Skills, SkillType.Runeforging));
         Assert.False(player.Skills.Has(SkillType.Runeforging));
@@ -124,7 +124,7 @@ public sealed class SkillLineTests
     {
         DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
 
-        Player player = InventoryFixture.Player(level: 10, race: Human, characterClass: Warrior);
+        Player player = InventoryFixture.Player(level: 10, race: Human, characterClass: Warrior, proficiencies: false);
 
         Assert.True(SkillLearning.LearnDefault(player, stores.Skills, SkillType.Swords));
 
@@ -145,7 +145,7 @@ public sealed class SkillLineTests
     {
         DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
 
-        Player knight = InventoryFixture.Player(level: 55, race: Human, characterClass: DeathKnight);
+        Player knight = InventoryFixture.Player(level: 55, race: Human, characterClass: DeathKnight, proficiencies: false);
 
         Assert.True(SkillLearning.LearnDefault(knight, stores.Skills, SkillType.Swords));
 
@@ -164,7 +164,7 @@ public sealed class SkillLineTests
     {
         DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
 
-        Player player = InventoryFixture.Player(level: 20, race: Human, characterClass: Warrior);
+        Player player = InventoryFixture.Player(level: 20, race: Human, characterClass: Warrior, proficiencies: false);
 
         player.Skills.Set(SkillType.Unarmed, 0, 73, 100);
 
@@ -184,7 +184,7 @@ public sealed class SkillLineTests
     {
         DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
 
-        Player player = InventoryFixture.Player(level: 10, race: Human, characterClass: Warrior);
+        Player player = InventoryFixture.Player(level: 10, race: Human, characterClass: Warrior, proficiencies: false);
 
         SkillLearning.LearnDefault(player, stores.Skills, SkillType.Swords);
         player.Skills.Set(SkillType.Swords, 0, 40, 50);
@@ -208,7 +208,7 @@ public sealed class SkillLineTests
     {
         DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
 
-        Player player = InventoryFixture.Player(level: 10, race: Human, characterClass: Warrior);
+        Player player = InventoryFixture.Player(level: 10, race: Human, characterClass: Warrior, proficiencies: false);
 
         SkillLearning.LearnDefault(player, stores.Skills, SkillType.PlateMail);
 
@@ -233,7 +233,7 @@ public sealed class SkillLineTests
     {
         DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
 
-        Player player = InventoryFixture.Player(level: 10, race: Human, characterClass: Warrior);
+        Player player = InventoryFixture.Player(level: 10, race: Human, characterClass: Warrior, proficiencies: false);
 
         SkillLearning.LearnSkillsFromSpell(player, stores.Skills, PlateMailSpell);
 
@@ -253,7 +253,7 @@ public sealed class SkillLineTests
     {
         DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
 
-        Player player = InventoryFixture.Player(level: 20, race: Human, characterClass: Warrior);
+        Player player = InventoryFixture.Player(level: 20, race: Human, characterClass: Warrior, proficiencies: false);
 
         SkillLearning.LearnSkillsFromSpell(player, stores.Skills, SwordsSpell);
 
@@ -286,7 +286,7 @@ public sealed class SkillLineTests
 
         Assert.NotEqual(0u, info.Flags & SkillRaceClassInfoEntry.AlwaysMaxValue);
 
-        Player player = InventoryFixture.Player(level: 1, race: Human, characterClass: Warrior);
+        Player player = InventoryFixture.Player(level: 1, race: Human, characterClass: Warrior, proficiencies: false);
 
         Assert.True(SkillLearning.LearnDefault(player, stores.Skills, Arms));
         Assert.Equal(5, player.Skills.PureValue(Arms));

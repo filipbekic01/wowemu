@@ -1,4 +1,5 @@
 using WowEmu.Core;
+using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Protocol;
 
@@ -160,9 +161,9 @@ public readonly record struct ItemPosition(byte Bag, byte Slot)
 /// objects and keeps the player's update fields in step with them; nothing else writes
 /// <c>PLAYER_FIELD_INV_SLOT_HEAD</c> or the visible-item block.
 /// <para>
-/// <b>Not implemented:</b> the bank, the keyring, buyback, bag families, unique constraints, item
-/// limit categories, soulbinding and proficiency checks. Each is a separate refusal reason the
-/// client already knows how to print, so they slot in without changing the shape here.
+/// <b>Not implemented:</b> the bank, the keyring, bag families, unique constraints, item limit
+/// categories and soulbinding. Each is a separate refusal reason the client already knows how to
+/// print, so they slot in without changing the shape here.
 /// </para>
 /// </remarks>
 public sealed class Inventory(Player owner)
@@ -746,13 +747,106 @@ public sealed class Inventory(Player owner)
         _slots[InventorySlots.MainHand]?.Template.InventoryType == InventoryType.TwoHandWeapon;
 
     /// <summary>
+    /// Whether the character is trained for an item at all, independent of which slot it wants.
+    /// </summary>
+    /// <returns>The refusal, or null when nothing objects.</returns>
+    /// <remarks>
+    /// Port of <c>Player::CanUseItem</c>'s skill and spell checks. Three separate rules that all
+    /// look like "do you know how to use this":
+    /// <list type="bullet">
+    /// <item>
+    /// <b>The proficiency</b> — the skill implied by the item's own class and subclass. It is a
+    /// mono skill sitting at 1/1, so the test is only whether it is there at all; a value of zero
+    /// means the character was never taught to hold this kind of thing.
+    /// </item>
+    /// <item>
+    /// <b>The template's own required skill</b>, which is a different question and a different
+    /// answer. Lacking the skill entirely is <see cref="InventoryResult.NoRequiredProficiency"/>;
+    /// having it but not far enough along is <see cref="InventoryResult.CantEquipSkill"/> — the
+    /// client shows different text for each, and collapsing them tells a jewelcrafter they cannot
+    /// use a ring they simply need more practice for.
+    /// </item>
+    /// <item><b>A required spell</b>, which is how the riding skills and a few recipes gate.</item>
+    /// </list>
+    /// </remarks>
+    private InventoryResult? CanUse(ItemTemplate template)
+    {
+        if (!AllowsClass(template, owner.Class) || !AllowsRace(template, owner.Race))
+        {
+            return InventoryResult.YouCanNeverUseThatItem;
+        }
+
+        if (template.RequiredSkill != 0)
+        {
+            if (owner.Skills.Value(template.RequiredSkill) == 0)
+            {
+                return InventoryResult.NoRequiredProficiency;
+            }
+
+            if (owner.Skills.Value(template.RequiredSkill) < template.RequiredSkillRank)
+            {
+                return InventoryResult.CantEquipSkill;
+            }
+        }
+
+        if (template.RequiredSpell != 0 && !owner.Spells.Knows(template.RequiredSpell))
+        {
+            return InventoryResult.NoRequiredProficiency;
+        }
+
+        // After the skill and spell checks, not before: upstream's CanUseItem reaches the level last
+        // of the three, so an item that fails both reports the skill rather than the level.
+        if (template.RequiredLevel > owner.Level)
+        {
+            return InventoryResult.CantEquipLevel;
+        }
+
+        uint proficiency = SkillType.ForItem(template.Class, template.SubClass);
+
+        if (proficiency != 0 && owner.Skills.Value(proficiency) == 0 && !MorphsForThisClass(template, proficiency))
+        {
+            return InventoryResult.NoRequiredProficiency;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Whether a heirloom's armour type bends to fit a character who has not learned it yet.
+    /// </summary>
+    /// <remarks>
+    /// Heirloom armour changes type as its wearer levels — a warrior's shoulders are mail until 40
+    /// and plate after. The item's own subclass says plate the whole time, so the plain proficiency
+    /// check would refuse it to the level-1 warrior it was bought for. Upstream allows the two
+    /// classes whose armour genuinely upgrades, and only for the type they upgrade <i>into</i>.
+    /// </remarks>
+    private bool MorphsForThisClass(ItemTemplate template, uint proficiency)
+    {
+        if (template.Quality != ItemQuality.Heirloom || template.Class != ItemClass.Armor)
+        {
+            return false;
+        }
+
+        return owner.Class switch
+        {
+            ClassWarrior or ClassPaladin => proficiency == SkillType.PlateMail,
+            ClassHunter or ClassShaman => proficiency == SkillType.Mail,
+            _ => false,
+        };
+    }
+
+    private const byte ClassWarrior = 1;
+    private const byte ClassPaladin = 2;
+    private const byte ClassHunter = 3;
+    private const byte ClassShaman = 7;
+
+    /// <summary>
     /// Whether an item may be worn in a slot, and why not.
     /// </summary>
     /// <remarks>
-    /// Port of the checks in <c>CanEquipItem</c> that this phase can answer. Proficiency, unique
-    /// constraints and item limit categories need skills and a limit-category store, and are noted
-    /// as gaps rather than silently passing — <b>they currently pass</b>, so a level-1 warrior can
-    /// wear a staff.
+    /// Port of the checks in <c>CanEquipItem</c> and <c>CanUseItem</c> that this phase can answer.
+    /// Unique constraints and item limit categories still need a limit-category store and pass
+    /// silently; proficiency no longer does.
     /// </remarks>
     public InventoryResult CanEquip(Item item, byte slot)
     {
@@ -770,21 +864,21 @@ public sealed class Inventory(Player owner)
 
         ItemTemplate template = item.Template;
 
-        if (template.RequiredLevel > owner.Level)
-        {
-            return InventoryResult.CantEquipLevel;
-        }
-
-        if (!AllowsClass(template, owner.Class) || !AllowsRace(template, owner.Race))
-        {
-            return InventoryResult.YouCanNeverUseThatItem;
-        }
-
         // The slot the item actually wants, allowing a swap: the caller has named a slot, and this
         // is what says whether that slot is one of the item's candidates at all.
+        //
+        // Before the usability checks, matching upstream: CanEquipItem resolves the slot with
+        // FindEquipSlot and only then calls CanUseItem. Dragging a sword onto the head slot is a
+        // wrong-slot mistake whether or not the character could ever swing it, and answering
+        // "you lack the proficiency" there sends the player off to a trainer for nothing.
         if (!WantsSlot(template, slot))
         {
             return InventoryResult.ItemDoesNotGoToSlot;
+        }
+
+        if (CanUse(template) is { } refusal)
+        {
+            return refusal;
         }
 
         if (slot == InventorySlots.OffHand)

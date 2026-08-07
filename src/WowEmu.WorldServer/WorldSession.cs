@@ -4722,8 +4722,6 @@ public sealed class WorldSession(
             return;
         }
 
-        int placed = world.ApplyStartingGear(player, itemGuids.Next);
-
         foreach (uint spellId in world.StartingSpells.For(player.Race, player.Class))
         {
             player.Spells.Learn(spellId);
@@ -4731,7 +4729,13 @@ public sealed class WorldSession(
 
         // Skills come from the spells, not from a table of their own — SkillLineAbility ties the
         // two together, which is how a fresh warrior ends up with Swords and Defense.
+        //
+        // BEFORE the gear, and that order is load-bearing: starting items are put on through the
+        // equip rules, and those now refuse anything the character has no proficiency for. Granting
+        // the skills afterwards would leave every new character holding their weapon in a bag.
         GrantSkillsFromSpells(player);
+
+        int placed = world.ApplyStartingGear(player, itemGuids.Next);
 
         foreach (PlayerCreateAction button in world.StartingActions.For(player.Race, player.Class))
         {
