@@ -2003,8 +2003,9 @@
               "text": "Reputation"
             },
             {
-              "done": false,
-              "text": "Basic chat — say, yell, whisper"
+              "done": true,
+              "text": "Basic chat — say, yell, whisper, emote",
+              "note": "Say, yell, emote, text emote and whisper. THE SERVER DOES NOT GARBLE ANYTHING — it sends the real text plus the language id, and the client substitutes syllables for a language the listener has not learned. So nothing here redacts, and the language rules are entirely about who may SPEAK. A client may never choose LANG_UNIVERSAL: it is understood by everyone, so asking for it is asking to be understood by the other faction, and upstream logs it as a hacking attempt rather than a typo. A language with no skill (the binary ones, zombie) is not the same as an invented language id, which also has no skill — collapsing the two lets a client speak in language 9999. EARSHOT IS BY DISTANCE, NOT BY THE WATCHER SET: a yell carries 300 yards, far past visibility, so reusing the speaker's watchers makes a yell reach exactly as far as a say (40). The speaker is included — everyone's own line comes back from the server rather than being echoed by the client. A whisper echoes as CHAT_MSG_WHISPER_INFORM addressed to the RECEIVER; sending back a copy of the original shows the sender whispering to themselves. Message validation refuses rather than escapes: the line is cut at the first newline (and refused if it starts with one), control characters other than tab are refused, and any '|0' is refused because it closes a hyperlink body and a crafted link makes the receiving client act on an item or quest the sender chose. The length prefix on the wire counts BYTES and includes the terminator. LIMITS: whisper reaches only the same map — finding a player anywhere means touching them from this map's worker, which the tick model forbids (PLAN.md 4.2), and crossing it needs a queue into the other map's loop rather than a lookup. Guild, party, raid and channel lines are refused by omission, since none of those systems exist and accepting one silently would look delivered to the sender."
             },
             {
               "done": false,

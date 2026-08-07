@@ -444,5 +444,9 @@ public sealed class MapGridLoadingTests
         }
 
         public void SendMovement(Opcode opcode, ObjectGuid mover, MovementInfo movement) => Moved.Add(mover);
+
+        public void SendChat(byte type, uint language, ObjectGuid sender, ObjectGuid receiver, string text)
+        {
+        }
     }
 }

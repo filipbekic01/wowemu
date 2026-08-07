@@ -770,6 +770,10 @@ internal static class MapCombatFixture
         {
         }
 
+        public void SendChat(byte type, uint language, ObjectGuid sender, ObjectGuid receiver, string text)
+        {
+        }
+
         public void QueueMonsterMove(ObjectGuid mover, CreatureMove move, uint splineId)
         {
         }

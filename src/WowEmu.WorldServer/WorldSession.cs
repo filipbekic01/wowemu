@@ -392,6 +392,10 @@ public sealed class WorldSession(
                 HandleGameObjectUse(payload);
                 return;
 
+            case Opcode.CMSG_MESSAGECHAT:
+                HandleMessageChat(payload);
+                return;
+
             case Opcode.CMSG_BUYBACK_ITEM:
                 HandleBuybackItem(payload);
                 return;
@@ -1700,6 +1704,133 @@ public sealed class WorldSession(
             // buyback tab drawing a square it has nothing for.
             _player.Buyback.Add(removed, paid, GameTime.Now);
         }
+    }
+
+    /// <summary>
+    /// Relays what a player typed. <c>CMSG_MESSAGECHAT</c>.
+    /// </summary>
+    /// <remarks>
+    /// Port of the say/yell/emote/whisper branches of <c>HandleMessagechatOpcode</c>. Guild, party,
+    /// raid and channel lines are refused by omission — there are no guilds, groups or channels to
+    /// carry them, and accepting one silently would look to the sender like it had been delivered.
+    /// <para>
+    /// <b>Whisper reaches only the same map.</b> Finding a player anywhere in the world means
+    /// touching them from this map's worker, which is the one thing the tick model does not allow
+    /// (PLAN.md §4.2). Crossing that needs a queue into the other map's loop, not a lookup.
+    /// </para>
+    /// </remarks>
+    private void HandleMessageChat(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt32(out uint type) || !reader.TryReadUInt32(out uint language))
+        {
+            return;
+        }
+
+        if (type >= ChatMsg.MaxType)
+        {
+            Log.ChatRefused(logger, _player.Name, type, "unknown message type");
+            return;
+        }
+
+        string? target = null;
+
+        if (type == ChatMsg.Whisper && !reader.TryReadCString(out target))
+        {
+            return;
+        }
+
+        if (!reader.TryReadCString(out string message))
+        {
+            return;
+        }
+
+        // Universal is the server's to choose. A client asking for it is asking to be understood by
+        // the other faction, which is why upstream treats it as a hacking attempt rather than a
+        // typo — refusing it is the whole of the language mechanic.
+        if (!Chat.CanSpeak(_player, language))
+        {
+            Log.ChatRefused(logger, _player.Name, type, "language not known");
+            return;
+        }
+
+        ChatRefusal refusal = Chat.Clean(message, out string text);
+
+        if (refusal != ChatRefusal.None)
+        {
+            string reason = refusal.ToString();
+
+            Log.ChatRefused(logger, _player.Name, type, reason);
+            return;
+        }
+
+        // The dead do not speak. Checked after the message is validated so that a corpse typing
+        // something malformed is still logged as malformed.
+        if (!_player.IsAlive)
+        {
+            return;
+        }
+
+        switch (type)
+        {
+            case ChatMsg.Say or ChatMsg.Yell or ChatMsg.Emote or ChatMsg.TextEmote:
+                Broadcast((byte)type, language, text);
+                return;
+
+            case ChatMsg.Whisper:
+                Whisper(target ?? string.Empty, language, text);
+                return;
+
+            default:
+                Log.ChatRefused(logger, _player.Name, type, "channel not implemented");
+                return;
+        }
+    }
+
+    /// <summary>Sends a spoken line to everyone in earshot, the speaker included.</summary>
+    private void Broadcast(byte type, uint language, string text)
+    {
+        foreach (Player listener in _map!.PlayersWithinEarshot(_player!.Position, Chat.RangeOf(type)))
+        {
+            listener.Connection?.SendChat(type, language, _player.Guid, ObjectGuid.Empty, text);
+        }
+    }
+
+    /// <summary>
+    /// Sends a whisper, and echoes it back to the sender.
+    /// </summary>
+    /// <remarks>
+    /// The echo is a different message type — <c>CHAT_MSG_WHISPER_INFORM</c>, addressed to the
+    /// receiver. Sending the sender a copy of the original instead shows them whispering to
+    /// themselves.
+    /// </remarks>
+    private void Whisper(string targetName, uint language, string text)
+    {
+        Player? target = null;
+
+        foreach (Player candidate in _map!.Players)
+        {
+            if (string.Equals(candidate.Name, targetName, StringComparison.OrdinalIgnoreCase))
+            {
+                target = candidate;
+                break;
+            }
+        }
+
+        if (target is null || ReferenceEquals(target, _player))
+        {
+            Log.ChatRefused(logger, _player!.Name, ChatMsg.Whisper, "no such player on this map");
+            return;
+        }
+
+        target.Connection?.SendChat(ChatMsg.Whisper, language, _player!.Guid, target.Guid, text);
+        SendChat(ChatMsg.WhisperInform, language, target.Guid, target.Guid, text);
     }
 
     /// <summary>
@@ -4434,6 +4565,19 @@ public sealed class WorldSession(
         };
 
         connection.Send(new ServerPacket(opcode, 0));
+    }
+
+    /// <summary>Sends one chat line to this client.</summary>
+    public void SendChat(
+        byte type, uint language, ObjectGuid sender, ObjectGuid receiver, string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        ServerPacket packet = new(Opcode.SMSG_MESSAGECHAT, 32 + text.Length);
+
+        ChatPackets.Write(packet.Body, type, language, sender, receiver, text);
+
+        connection.Send(packet);
     }
 
     /// <summary>Relays another player's movement to this client.</summary>

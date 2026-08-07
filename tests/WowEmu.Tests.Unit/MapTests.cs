@@ -597,6 +597,42 @@ public sealed class MapVisibilityTests
         Assert.Empty(watcherLink.AuraSnapshots);
     }
 
+    /// <summary>
+    /// A yell reaches people a say does not.
+    /// </summary>
+    /// <remarks>
+    /// The reason earshot is measured by distance rather than by the speaker's watcher set: that set
+    /// is bounded by visibility, so reusing it makes a yell carry exactly as far as a say. Three
+    /// hundred yards against forty is the whole difference between the two.
+    /// </remarks>
+    [Fact]
+    public void AYell_ReachesFurtherThanASay()
+    {
+        Map map = NewMap();
+
+        (Player speaker, _) = NewPlayer(1, 0f, 0f);
+        (Player near, _) = NewPlayer(2, 20f, 0f);
+        (Player far, _) = NewPlayer(3, 200f, 0f);
+        (Player distant, _) = NewPlayer(4, 400f, 0f);
+
+        map.Add(speaker);
+        map.Add(near);
+        map.Add(far);
+        map.Add(distant);
+
+        IReadOnlyList<Player> said = map.PlayersWithinEarshot(speaker.Position, Chat.SayRange);
+        IReadOnlyList<Player> yelled = map.PlayersWithinEarshot(speaker.Position, Chat.YellRange);
+
+        // The speaker hears their own line — it comes back from the server rather than being
+        // echoed locally.
+        Assert.Contains(speaker, said);
+        Assert.Contains(near, said);
+        Assert.DoesNotContain(far, said);
+
+        Assert.Contains(far, yelled);
+        Assert.DoesNotContain(distant, yelled);
+    }
+
     /// <summary>Hands one creature to whichever grid the player arrives in.</summary>
     private sealed class OneCreature(Creature creature) : IGridObjectLoader
     {
@@ -834,5 +870,11 @@ public sealed class MapVisibilityTests
         }
 
         public void SendMovement(Opcode opcode, ObjectGuid mover, MovementInfo movement) => Moved.Add(mover);
+
+        /// <summary>Every line this connection was told, as (type, text).</summary>
+        public List<(byte Type, string Text)> Heard { get; } = [];
+
+        public void SendChat(byte type, uint language, ObjectGuid sender, ObjectGuid receiver, string text) =>
+            Heard.Add((type, text));
     }
 }

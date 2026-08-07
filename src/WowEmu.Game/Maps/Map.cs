@@ -46,6 +46,9 @@ public interface IPlayerConnection
     /// <summary>Relays another player's movement. Immediate — movement is not batched.</summary>
     void SendMovement(Opcode opcode, ObjectGuid mover, MovementInfo movement);
 
+    /// <summary>Delivers one chat line. Immediate — a spoken line batched is a line delivered late.</summary>
+    void SendChat(byte type, uint language, ObjectGuid sender, ObjectGuid receiver, string text);
+
     /// <summary>
     /// Notes that a creature has started walking somewhere, to go out at the next flush.
     /// </summary>
@@ -2437,6 +2440,25 @@ public sealed class Map(
                 watcher.Connection?.QueueMeleeSwing(attacker.Guid, victim.Guid, info, victimHealthBeforeHit);
             }
         }
+    }
+
+    /// <summary>
+    /// Everyone close enough to hear a line, the speaker included.
+    /// </summary>
+    /// <remarks>
+    /// By distance rather than by visibility, and that is the point: a yell carries three hundred
+    /// yards, far past the radius anything is visible at. Walking the speaker's set of watchers is
+    /// the obvious implementation and it makes a yell reach exactly as far as a say.
+    /// <para>
+    /// The speaker is included. Everyone sees their own line in their own chat window, and it comes
+    /// back from the server rather than being echoed locally by the client.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<Player> PlayersWithinEarshot(Position from, float range)
+    {
+        float rangeSquared = range * range;
+
+        return [.. _players.Values.Where(player => from.GetExactDist2dSq(player.Position) <= rangeSquared)];
     }
 
     private List<Player> PlayersWhoSeeCore(ObjectGuid objectGuid) =>

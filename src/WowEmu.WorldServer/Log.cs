@@ -237,6 +237,10 @@ internal static partial class Log
     public static partial void SpellsAndTrainersLoaded(
         ILogger logger, int starting, int actions, int rows, int trainers);
 
+    [LoggerMessage(EventId = 2360, Level = LogLevel.Debug,
+        Message = "'{Name}' chat type {Type} refused: {Reason}")]
+    public static partial void ChatRefused(ILogger logger, string name, uint type, string reason);
+
     [LoggerMessage(EventId = 2337, Level = LogLevel.Debug,
         Message = "'{Name}' learned spell {Spell} — {Address}")]
     public static partial void SpellLearned(ILogger logger, string name, uint spell, string address);
