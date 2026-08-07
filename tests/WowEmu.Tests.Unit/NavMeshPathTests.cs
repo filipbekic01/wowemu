@@ -369,8 +369,33 @@ public sealed class NavMeshPathTests
         Directory.EnumerateFiles(Path.Combine(ClientData.DataDirectory, "mmaps"), "*.mmtile")
             .OrderBy(p => p, StringComparer.Ordinal);
 
-    /// <summary>Loads a map's parameters and every tile it has.</summary>
+    /// <summary>
+    /// A map's mesh, loaded once and shared.
+    /// </summary>
+    /// <remarks>
+    /// Eastern Kingdoms is 515 tiles and every test here wants it. Loading it per test cost about
+    /// thirteen seconds of the suite; loading it once costs a tenth of that. Safe to share because a
+    /// mesh is read-only once its tiles are in — each test builds its own query over it.
+    /// </remarks>
+    private static readonly Dictionary<uint, (DtNavMesh Mesh, int Loaded)> Loaded = [];
+    private static readonly Lock LoadLock = new();
+
     private static (DtNavMesh Mesh, int Loaded) LoadMap(uint mapId)
+    {
+        lock (LoadLock)
+        {
+            if (!Loaded.TryGetValue(mapId, out (DtNavMesh Mesh, int Loaded) cached))
+            {
+                cached = ReadMap(mapId);
+                Loaded[mapId] = cached;
+            }
+
+            return cached;
+        }
+    }
+
+    /// <summary>Loads a map's parameters and every tile it has.</summary>
+    private static (DtNavMesh Mesh, int Loaded) ReadMap(uint mapId)
     {
         string directory = Path.Combine(ClientData.DataDirectory, "mmaps");
 

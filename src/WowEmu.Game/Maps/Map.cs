@@ -1104,9 +1104,10 @@ public sealed class Map(
             _creatures.Add(creature);
 
             // Handed over here rather than at construction: the creature is built by a grid loader
-            // that knows nothing about which map it is destined for, and the height it needs is the
-            // height of *this* map's terrain and models.
+            // that knows nothing about which map it is destined for, and the height and the routes
+            // it needs are *this* map's.
             creature.FloorAt = GetFloor;
+            creature.RouteTo = RouteBetween;
         }
     }
 
@@ -1373,28 +1374,41 @@ public sealed class Map(
     /// next to its victim would otherwise pay a mesh query per tick to be told to go where it
     /// already is.
     /// </remarks>
-    private NavPath? FindRoute(Creature creature, Position destination)
+    private NavPath? FindRoute(Creature creature, Position destination) =>
+        RouteBetween(creature.Position, destination) is { } points
+            ? new NavPath(PathResult.Complete, points)
+            : null;
+
+    /// <summary>
+    /// A route between two points on this map, or null when there is none worth having.
+    /// </summary>
+    /// <remarks>
+    /// Null is the ordinary answer over most of the world and the caller walks a straight line on
+    /// it. Short journeys are refused outright: a creature adjusting its footing next to its victim
+    /// would otherwise pay a mesh query per tick to be told to go where it already is, and 68% of
+    /// wandering spawns have a radius under the threshold.
+    /// </remarks>
+    private IReadOnlyList<Position>? RouteBetween(Position from, Position to)
     {
         const float ShortestWorthPathing = 5.0f;
 
         if (NavMeshes is not { } navmeshes
-            || creature.Position.GetExactDist2dSq(destination)
-                < ShortestWorthPathing * ShortestWorthPathing)
+            || from.GetExactDist2dSq(to) < ShortestWorthPathing * ShortestWorthPathing)
         {
             return null;
         }
 
-        navmeshes.EnsureLoaded(MapId, creature.Position.X, creature.Position.Y);
-        navmeshes.EnsureLoaded(MapId, destination.X, destination.Y);
+        navmeshes.EnsureLoaded(MapId, from.X, from.Y);
+        navmeshes.EnsureLoaded(MapId, to.X, to.Y);
 
         if (navmeshes.For(MapId) is not { } generator)
         {
             return null;
         }
 
-        NavPath path = generator.Find(creature.Position, destination);
+        NavPath path = generator.Find(from, to);
 
-        return path.HasPath ? path : null;
+        return path.HasPath ? path.Points : null;
     }
 
     /// <summary>Whether one unit can see another, for aggro purposes.</summary>

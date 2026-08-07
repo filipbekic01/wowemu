@@ -878,8 +878,8 @@
             },
             {
               "done": true,
-              "text": "Creature chase follows a real route",
-              "note": "Map.SendCreatureMove asks the navmesh for a route and walks its corners, one move per corner, because the client interpolates a leg at a time. A straight line remains the FALLBACK and has to: 98 maps of several hundred have a navmesh, any tile can be missing, and a creature that refused to move without a route would stand still everywhere else. Re-pathing compares the target against where the creature is ultimately heading, not against the next corner — comparing corners re-paths every tick on any route with a bend. A route survives having a victim: Update withholds the GENERATOR's next destination during a fight, and the remaining corners are not the generator's."
+              "text": "Creature movement follows a real route",
+              "note": "Map.SendCreatureMove asks the navmesh for a route and walks its corners, one move per corner, because the client interpolates a leg at a time. A straight line remains the FALLBACK and has to: 98 maps of several hundred have a navmesh, any tile can be missing, and a creature that refused to move without a route would stand still everywhere else. Re-pathing compares the target against where the creature is ultimately heading, not against the next corner — comparing corners re-paths every tick on any route with a bend. A route survives having a victim: Update withholds the GENERATOR's next destination during a fight, and the remaining corners are not the generator's. Wander is routed too, through a RouteTo delegate the map hands the creature — the same arrangement as FloorAt, so Creature still knows nothing about maps. Worth it by measurement: 24,712 of 77,138 wandering spawns (32%) have a radius above the 5-yard pathing threshold; the other 68% are short hops that stay straight lines. A routed wander AMBLES — MoveAlong was written for chases and runs by default, and inheriting that would have every critter in the world moving as though alarmed."
             }
           ]
         },

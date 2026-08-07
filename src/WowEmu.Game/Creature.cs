@@ -257,6 +257,15 @@ public sealed class Creature : Unit
             return null;
         }
 
+        // Routed around the world where anything can route, and straight there where nothing can.
+        // A wander that crosses a fence is the ordinary case this fixes: 24,712 of the 77,138
+        // wandering spawns have a radius wide enough to put a destination on the far side of
+        // something.
+        if (RouteTo?.Invoke(Position, decision.Destination) is { Count: > 1 } route)
+        {
+            return MoveAlong(route, decision.Run);
+        }
+
         // The move starts from where the creature actually is, not from where the generator thinks
         // it should be. Upstream overwrites its path's first point with the unit's real position for
         // this reason — anything else makes the creature snap before it walks.
@@ -326,8 +335,12 @@ public sealed class Creature : Unit
     /// <see cref="CreatureMove.Create"/> refuses, and the whole route is dropped before it begins.
     /// </para>
     /// </remarks>
+    /// <param name="run">
+    /// Whether to run the route rather than walk it. A chase runs; a wandering animal ambles, and
+    /// running its route would make every critter in the world look alarmed.
+    /// </param>
     /// <returns>The first leg, or null when the route has nowhere to go.</returns>
-    public CreatureMove? MoveAlong(IReadOnlyList<Position> path)
+    public CreatureMove? MoveAlong(IReadOnlyList<Position> path, bool run = true)
     {
         ArgumentNullException.ThrowIfNull(path);
 
@@ -339,10 +352,21 @@ public sealed class Creature : Unit
         }
 
         // Index 1: point zero is where the creature is standing.
-        _pathLegs = new PathWalk(path, 1);
+        _pathLegs = new PathWalk(path, 1, run);
 
         return TryStartNextLeg();
     }
+
+    /// <summary>
+    /// A route between two points, supplied by the map this creature is on.
+    /// </summary>
+    /// <remarks>
+    /// A delegate rather than a map reference, the same arrangement as <see cref="FloorAt"/> and for
+    /// the same reason: a creature can still be built and tested with no world behind it. Null means
+    /// nobody can route, and the creature walks straight there — which is what it did before there
+    /// was a navmesh.
+    /// </remarks>
+    public Func<Position, Position, IReadOnlyList<Position>?>? RouteTo { get; set; }
 
     /// <summary>Whether a multi-corner route is part way through.</summary>
     public bool IsFollowingPath => _pathLegs is { HasMore: true };
@@ -364,7 +388,7 @@ public sealed class Creature : Unit
         {
             Position next = walk.Take();
 
-            CreatureMove? move = CreatureMove.Create(Position, next, Speeds.Run);
+            CreatureMove? move = CreatureMove.Create(Position, next, walk.Run ? Speeds.Run : Speeds.Walk);
 
             if (move is null)
             {
@@ -387,9 +411,11 @@ public sealed class Creature : Unit
     private PathWalk? _pathLegs;
 
     /// <summary>How far along a route the creature has got.</summary>
-    private sealed class PathWalk(IReadOnlyList<Position> points, int next)
+    private sealed class PathWalk(IReadOnlyList<Position> points, int next, bool run)
     {
         public bool HasMore => next < points.Count;
+
+        public bool Run { get; } = run;
 
         public Position Take() => points[next++];
     }

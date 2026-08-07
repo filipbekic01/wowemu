@@ -489,6 +489,68 @@ public sealed class WaypointTests
         Assert.Equal(20f, second!.Value.Destination.Y, 0.001f);
     }
 
+    /// <summary>
+    /// A wander that can be routed is routed, and ambles rather than runs.
+    /// </summary>
+    /// <remarks>
+    /// 24,712 of the 77,138 wandering spawns have a radius wide enough to put a destination on the
+    /// far side of something. The speed matters as much as the route: <c>MoveAlong</c> was written
+    /// for chases and runs by default, and a routed wander that inherited that would have every
+    /// critter in the world moving as though alarmed.
+    /// </remarks>
+    [Fact]
+    public void AWander_IsRoutedAndStillAmbles()
+    {
+        Creature creature = CreatureFixture.Build(
+            wanderDistance: 20f, movementType: 1, position: new Position(0f, 0f, 0f, 0f));
+
+        // A detour with a corner in it, whatever the generator asked for.
+        creature.RouteTo = (from, to) =>
+            [from, new Position(from.X + 15f, from.Y, 0f, 0f), to];
+
+        CreatureMove? move = creature.Update(RandomMovementGenerator.MaxWaitMs + 1);
+
+        Assert.NotNull(move);
+        Assert.True(creature.IsFollowingPath, "the wander did not take the route");
+
+        // A walked leg over a fixed distance takes longer than a run would.
+        float distance = move!.Value.Start.GetExactDist(move.Value.Destination);
+        uint walked = move.Value.DurationMs;
+        uint asRun = (uint)MathF.Ceiling(distance / creature.Speeds.Run * 1000f);
+
+        Assert.True(walked > asRun, $"the route was run, not walked: {walked}ms vs {asRun}ms as a run");
+    }
+
+    /// <summary>With nothing able to route, the wander walks straight there as it always did.</summary>
+    /// <remarks>
+    /// The fallback, and it has to stay one: most of the world has no navmesh tile loaded, and a
+    /// creature that refused to wander without a route would stand still everywhere else.
+    /// </remarks>
+    [Fact]
+    public void AWanderWithNoRouter_WalksStraightThere()
+    {
+        Creature creature = CreatureFixture.Build(
+            wanderDistance: 20f, movementType: 1, position: new Position(0f, 0f, 0f, 0f));
+
+        CreatureMove? move = creature.Update(RandomMovementGenerator.MaxWaitMs + 1);
+
+        Assert.NotNull(move);
+        Assert.False(creature.IsFollowingPath);
+    }
+
+    /// <summary>A router that declines is the same as not having one.</summary>
+    [Fact]
+    public void ARouterThatDeclines_FallsBackToAStraightLine()
+    {
+        Creature creature = CreatureFixture.Build(
+            wanderDistance: 20f, movementType: 1, position: new Position(0f, 0f, 0f, 0f));
+
+        creature.RouteTo = (from, to) => null;
+
+        Assert.NotNull(creature.Update(RandomMovementGenerator.MaxWaitMs + 1));
+        Assert.False(creature.IsFollowingPath);
+    }
+
     /// <summary>Ticks until the current leg finishes and reports whatever started next.</summary>
     private static CreatureMove? RunToNextLeg(Creature creature)
     {
