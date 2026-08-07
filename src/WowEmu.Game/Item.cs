@@ -202,6 +202,65 @@ public class Item : GameObjectBase
 
         return item;
     }
+
+    /// <summary>
+    /// The random-properties id, signed. Zero for an item with none, which is most of them.
+    /// </summary>
+    /// <remarks>
+    /// <b>Signed, and the sign is load-bearing</b> — positive names a row of
+    /// <c>ItemRandomProperties.dbc</c> and negative one of <c>ItemRandomSuffix.dbc</c>. Stored and
+    /// read as an int for that reason; as a uint a suffix becomes a four-billion-ish property id.
+    /// </remarks>
+    public int RandomPropertiesId
+    {
+        get => unchecked((int)Fields.GetUInt32(UpdateFields.ITEM_FIELD_RANDOM_PROPERTIES_ID));
+        set => Fields.SetUInt32(UpdateFields.ITEM_FIELD_RANDOM_PROPERTIES_ID, unchecked((uint)value));
+    }
+
+    /// <summary>
+    /// The suffix factor, which scales a scaled suffix's amounts to this item.
+    /// </summary>
+    /// <remarks>
+    /// The client computes the displayed stats from this and the suffix row, so an item with a
+    /// negative properties id and no factor shows "of the Bear" and grants nothing.
+    /// </remarks>
+    public uint SuffixFactor
+    {
+        get => Fields.GetUInt32(UpdateFields.ITEM_FIELD_PROPERTY_SEED);
+        set => Fields.SetUInt32(UpdateFields.ITEM_FIELD_PROPERTY_SEED, value);
+    }
+
+    /// <summary>The enchantment in a slot, or zero.</summary>
+    public uint GetEnchantment(int slot) =>
+        slot >= 0 && slot < EnchantmentSlot.Count
+            ? Fields.GetUInt32(EnchantmentField(slot))
+            : 0;
+
+    /// <summary>
+    /// Puts an enchantment in a slot.
+    /// </summary>
+    /// <remarks>
+    /// <b>Three words per slot, not one.</b> The id, then a duration and a charge count the client
+    /// reads for temporary enchants — writing one word per slot puts every enchant past the first
+    /// into the previous one's duration field.
+    /// </remarks>
+    public void SetEnchantment(int slot, uint enchantmentId, uint durationMs = 0, uint charges = 0)
+    {
+        if (slot < 0 || slot >= EnchantmentSlot.Count)
+        {
+            return;
+        }
+
+        int field = EnchantmentField(slot);
+
+        Fields.SetUInt32(field, enchantmentId);
+        Fields.SetUInt32(field + 1, durationMs);
+        Fields.SetUInt32(field + 2, charges);
+    }
+
+    /// <summary>Three words per slot, from the first slot's first word.</summary>
+    private static int EnchantmentField(int slot) =>
+        UpdateFields.ITEM_FIELD_ENCHANTMENT_1_1 + (slot * 3);
 }
 
 /// <summary>

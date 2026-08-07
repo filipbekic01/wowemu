@@ -66,6 +66,30 @@ public sealed class WorldServerOptions
     public byte Expansion { get; set; } = 2;
 
     /// <summary>
+    /// Whether one account may hold characters of both factions on this realm.
+    /// </summary>
+    /// <remarks>
+    /// <c>AllowTwoSide.Accounts</c>, and enabled upstream by default. Turning it off is what makes
+    /// a realm PvP in the sense players mean: you pick a side once and live with it.
+    /// </remarks>
+    public bool AllowTwoSideAccounts { get; set; } = true;
+
+    /// <summary>
+    /// The level an existing character must have reached before a death knight may be made.
+    /// </summary>
+    /// <remarks>
+    /// <c>CharacterCreating.MinLevelForHeroicCharacter</c>. <b>Any character on the account, on
+    /// this realm</b> — not the one being made, which has no level yet.
+    /// </remarks>
+    [Range(1, 80)]
+    public byte MinLevelForHeroicCharacter { get; set; } = 55;
+
+    /// <summary>How many death knights one account may hold on this realm.</summary>
+    /// <remarks><c>HeroicCharactersPerRealm</c>.</remarks>
+    [Range(1, 10)]
+    public byte HeroicCharactersPerRealm { get; set; } = 1;
+
+    /// <summary>
     /// Floor on how often the world tick runs, in milliseconds.
     /// </summary>
     /// <remarks>

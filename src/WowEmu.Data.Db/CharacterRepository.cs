@@ -29,7 +29,11 @@ public sealed record CharacterSummary(
     uint Experience = 0,
     uint Health = 0,
     uint[]? Powers = null,
-    long DeathExpireTime = 0);
+    long DeathExpireTime = 0,
+
+    /// <summary>The worn title's bit index, and every earned one as space-separated bit indices.</summary>
+    uint ChosenTitle = 0,
+    string? KnownTitles = null);
 
 /// <summary>
 /// Everything about a character that changes while it is being played.
@@ -56,7 +60,11 @@ public sealed record CharacterProgress(
     uint Health,
     uint[] Powers,
     uint PlayerFlags,
-    long DeathExpireTime)
+    long DeathExpireTime,
+
+    /// <summary>The worn title's bit index, and every earned one as space-separated bit indices.</summary>
+    uint ChosenTitle = 0,
+    string KnownTitles = "")
 {
     /// <summary>How many power types the client has.</summary>
     public const int PowerCount = 7;
@@ -140,7 +148,9 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
                     character.Power1, character.Power2, character.Power3, character.Power4,
                     character.Power5, character.Power6, character.Power7,
                 },
-                character.DeathExpireTime))
+                character.DeathExpireTime,
+                character.ChosenTitle,
+                character.KnownTitles))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
@@ -217,6 +227,8 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
         character.Health = progress.Health;
         character.PlayerFlags = progress.PlayerFlags;
         character.DeathExpireTime = progress.DeathExpireTime;
+        character.ChosenTitle = progress.ChosenTitle;
+        character.KnownTitles = progress.KnownTitles;
         character.LastLoginAt = DateTime.UtcNow;
 
         uint[] powers = progress.Powers;

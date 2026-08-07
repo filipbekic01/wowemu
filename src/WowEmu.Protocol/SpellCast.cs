@@ -120,12 +120,21 @@ public enum SpellCastResult : byte
     BadTargets = 12,
     LineOfSight = 47,
     Moving = 51,
+    /// <summary>"Your skill is not high enough." Also the skinning refusal.</summary>
+    LowCastLevel = 49,
+
     NotKnown = 63,
     NotReady = 67,
     NoPower = 85,
     OutOfRange = 97,
     SpellInProgress = 105,
     TargetsDead = 109,
+    /// <summary>The corpse still holds loot somebody has not taken.</summary>
+    TargetNotLooted = 121,
+
+    /// <summary>Nothing under the hide, or already skinned.</summary>
+    TargetUnskinnable = 126,
+
     TooClose = 128,
     UnitNotInFront = 134,
 

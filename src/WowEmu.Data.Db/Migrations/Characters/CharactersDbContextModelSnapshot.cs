@@ -57,6 +57,10 @@ namespace WowEmu.Data.Db.Migrations.Characters
                         .HasColumnType("smallint unsigned")
                         .HasColumnName("at_login_flags");
 
+                    b.Property<uint>("ChosenTitle")
+                        .HasColumnType("int unsigned")
+                        .HasColumnName("chosenTitle");
+
                     b.Property<byte>("Class")
                         .HasColumnType("tinyint unsigned")
                         .HasColumnName("class");
@@ -100,6 +104,10 @@ namespace WowEmu.Data.Db.Migrations.Characters
                     b.Property<uint>("Health")
                         .HasColumnType("int unsigned")
                         .HasColumnName("health");
+
+                    b.Property<string>("KnownTitles")
+                        .HasColumnType("longtext")
+                        .HasColumnName("knownTitles");
 
                     b.Property<DateTime?>("LastLoginAt")
                         .HasColumnType("datetime(6)")
@@ -254,6 +262,21 @@ namespace WowEmu.Data.Db.Migrations.Characters
                     b.ToTable("character_inventory", (string)null);
                 });
 
+            modelBuilder.Entity("WowEmu.Data.Db.CharacterQuestDailyEntity", b =>
+                {
+                    b.Property<uint>("CharacterId")
+                        .HasColumnType("int unsigned")
+                        .HasColumnName("guid");
+
+                    b.Property<uint>("QuestId")
+                        .HasColumnType("int unsigned")
+                        .HasColumnName("quest");
+
+                    b.HasKey("CharacterId", "QuestId");
+
+                    b.ToTable("character_queststatus_daily", (string)null);
+                });
+
             modelBuilder.Entity("WowEmu.Data.Db.CharacterQuestEntity", b =>
                 {
                     b.Property<uint>("CharacterId")
@@ -291,6 +314,55 @@ namespace WowEmu.Data.Db.Migrations.Characters
                     b.HasKey("CharacterId", "QuestId");
 
                     b.ToTable("character_queststatus", (string)null);
+                });
+
+            modelBuilder.Entity("WowEmu.Data.Db.CharacterQuestMonthlyEntity", b =>
+                {
+                    b.Property<uint>("CharacterId")
+                        .HasColumnType("int unsigned")
+                        .HasColumnName("guid");
+
+                    b.Property<uint>("QuestId")
+                        .HasColumnType("int unsigned")
+                        .HasColumnName("quest");
+
+                    b.HasKey("CharacterId", "QuestId");
+
+                    b.ToTable("character_queststatus_monthly", (string)null);
+                });
+
+            modelBuilder.Entity("WowEmu.Data.Db.CharacterQuestWeeklyEntity", b =>
+                {
+                    b.Property<uint>("CharacterId")
+                        .HasColumnType("int unsigned")
+                        .HasColumnName("guid");
+
+                    b.Property<uint>("QuestId")
+                        .HasColumnType("int unsigned")
+                        .HasColumnName("quest");
+
+                    b.HasKey("CharacterId", "QuestId");
+
+                    b.ToTable("character_queststatus_weekly", (string)null);
+                });
+
+            modelBuilder.Entity("WowEmu.Data.Db.CharacterReputationEntity", b =>
+                {
+                    b.Property<uint>("CharacterId")
+                        .HasColumnType("int unsigned")
+                        .HasColumnName("guid");
+
+                    b.Property<ushort>("FactionId")
+                        .HasColumnType("smallint unsigned")
+                        .HasColumnName("faction");
+
+                    b.Property<int>("Standing")
+                        .HasColumnType("int")
+                        .HasColumnName("standing");
+
+                    b.HasKey("CharacterId", "FactionId");
+
+                    b.ToTable("character_reputation", (string)null);
                 });
 
             modelBuilder.Entity("WowEmu.Data.Db.CharacterSkillEntity", b =>
@@ -365,11 +437,19 @@ namespace WowEmu.Data.Db.Migrations.Characters
                         .HasColumnType("int unsigned")
                         .HasColumnName("owner_guid");
 
+                    b.Property<int>("RandomPropertyId")
+                        .HasColumnType("int")
+                        .HasColumnName("randomPropertyId");
+
                     b.Property<string>("SpellCharges")
                         .IsRequired()
                         .HasMaxLength(64)
                         .HasColumnType("varchar(64)")
                         .HasColumnName("charges");
+
+                    b.Property<uint>("SuffixFactor")
+                        .HasColumnType("int unsigned")
+                        .HasColumnName("randomSuffix");
 
                     b.HasKey("Id");
 

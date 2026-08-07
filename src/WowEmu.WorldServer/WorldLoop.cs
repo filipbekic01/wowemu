@@ -3,6 +3,8 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WowEmu.Core;
+using WowEmu.Data.Db;
+using WowEmu.Game;
 using WowEmu.Game.Maps;
 
 namespace WowEmu.WorldServer;
@@ -34,13 +36,22 @@ public sealed class WorldLoop : BackgroundService
     private readonly ILogger<WorldLoop> _logger;
     private readonly WorldServerOptions _options;
     private readonly TickScheduler _scheduler;
+    private readonly IInventoryRepository _resets;
 
     private uint _sinceSave;
     private uint _sinceReport;
 
+    /// <summary>
+    /// When each shared reset next falls. <c>default</c> until the first tick has scheduled them.
+    /// </summary>
+    private DateTime _nextDailyReset;
+    private DateTime _nextWeeklyReset;
+    private DateTime _nextMonthlyReset;
+
     public WorldLoop(
         SessionRegistry sessions,
         MapManager maps,
+        IInventoryRepository resets,
         IOptions<WorldServerOptions> options,
         ILogger<WorldLoop> logger)
     {
@@ -48,6 +59,7 @@ public sealed class WorldLoop : BackgroundService
 
         _sessions = sessions;
         _maps = maps;
+        _resets = resets;
         _logger = logger;
         _options = options.Value;
         _scheduler = new TickScheduler("world", exception => Log.TickWorkFailed(logger, exception));
@@ -164,10 +176,67 @@ public sealed class WorldLoop : BackgroundService
 
         phaseStarted = Stopwatch.GetTimestamp();
         PeriodicSave(diff, sessions);
+        PeriodicResets(sessions);
         PeriodicReport(diff);
         double saveMs = Stopwatch.GetElapsedTime(phaseStarted).TotalMilliseconds;
 
         return new TickPhases(drainMs, packetsMs, mapsMs, saveMs);
+    }
+
+    /// <summary>
+    /// Runs the shared daily, weekly and monthly quest resets when their moment passes.
+    /// </summary>
+    /// <remarks>
+    /// <b>Driven by the wall clock, not by an interval.</b> These are server-wide instants: a
+    /// character who did a daily a minute before the reset may do it again a minute after. Counting
+    /// twenty-four hours from when each character did it instead lets a player walk their own reset
+    /// later every day, and a server restart would reset the countdown for everyone.
+    /// <para>
+    /// Both halves are needed. The database delete covers every character on the realm, including
+    /// the ones offline; the in-memory clear covers the ones logged in, whose state would otherwise
+    /// be written back over the delete at their next save.
+    /// </para>
+    /// </remarks>
+    private void PeriodicResets(IReadOnlyList<WorldSession> sessions)
+    {
+        DateTime now = DateTime.UtcNow;
+
+        Run(QuestResetPeriod.Daily, ref _nextDailyReset, QuestResetTime.NextDaily);
+        Run(QuestResetPeriod.Weekly, ref _nextWeeklyReset, QuestResetTime.NextWeekly);
+        Run(QuestResetPeriod.Monthly, ref _nextMonthlyReset, QuestResetTime.NextMonthly);
+
+        void Run(QuestResetPeriod period, ref DateTime next, Func<DateTime, DateTime> schedule)
+        {
+            if (next == default)
+            {
+                // First tick after startup. Scheduled, not fired: the rows on disk are whatever
+                // survived the last reset, and firing here would wipe them on every restart.
+                next = schedule(now);
+
+                return;
+            }
+
+            if (now < next)
+            {
+                return;
+            }
+
+            next = schedule(now);
+
+            foreach (WorldSession session in sessions)
+            {
+                session.ResetQuests(period);
+            }
+
+            _ = _scheduler.Factory.StartNew(
+                () => _resets.ResetAllQuestsAsync(period, CancellationToken.None),
+                CancellationToken.None).Unwrap();
+
+            // Into a local: the analyzer objects to ToString() inside a log call.
+            string name = period.ToString();
+
+            Log.QuestsReset(_logger, name, next);
+        }
     }
 
     /// <summary>

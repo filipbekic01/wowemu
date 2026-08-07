@@ -48,12 +48,20 @@ builder.Services.AddKeyedSingleton("creature_loot", (_, _) => new LootStore("cre
 builder.Services.AddKeyedSingleton("reference_loot", (_, _) => new LootStore("reference_loot_template"));
 builder.Services.AddKeyedSingleton("gameobject_loot", (_, _) => new LootStore("gameobject_loot_template"));
 
+// The gathering tables. Kept apart for the same reason: a skinning id and a creature loot id are
+// the same number for many creatures and mean different things.
+builder.Services.AddKeyedSingleton("skinning_loot", (_, _) => new LootStore("skinning_loot_template"));
+builder.Services.AddKeyedSingleton("pickpocket_loot", (_, _) => new LootStore("pickpocketing_loot_template"));
+builder.Services.AddKeyedSingleton("fishing_loot", (_, _) => new LootStore("fishing_loot_template"));
+builder.Services.AddKeyedSingleton("disenchant_loot", (_, _) => new LootStore("disenchant_loot_template"));
+
 builder.Services.AddSingleton<QuestStore>();
 builder.Services.AddSingleton<GossipStore>();
 builder.Services.AddSingleton<PlayerSpellStore>();
 builder.Services.AddSingleton<PlayerActionStore>();
 builder.Services.AddSingleton<TrainerStore>();
 builder.Services.AddSingleton<SpellRankStore>();
+builder.Services.AddSingleton<ItemEnchantmentStore>();
 builder.Services.AddSingleton<VendorStore>();
 
 // Starter and ender are separate tables, and very often name different NPCs for the same quest.
@@ -151,7 +159,9 @@ builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<NavMeshManager>(),
     services.GetRequiredService<DbcStores>().Skills,
     services.GetRequiredKeyedService<LootStore>("gameobject_loot"),
-    services.GetRequiredService<DbcStores>().Locks));
+    services.GetRequiredService<DbcStores>().Locks,
+    services.GetRequiredKeyedService<LootStore>("skinning_loot"),
+    services.GetRequiredKeyedService<LootStore>("pickpocket_loot")));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in

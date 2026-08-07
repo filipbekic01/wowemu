@@ -640,13 +640,19 @@ internal static class MapCombatFixture
         uint maxGold = 0,
         QuestStore? quests = null,
         LootStore? gameObjectLoot = null,
-        DbcStore<LockEntry>? locks = null)
+        DbcStore<LockEntry>? locks = null,
+        LootStore? skinningLoot = null,
+        LootStore? pickpocketLoot = null,
+        uint skinLootId = 0,
+        uint pickpocketLootId = 0)
     {
         Creature victim = CreatureFixture.Build(
             position: new Position(distance, 0f, 0f, 0f),
             lootId: lootId,
             minGold: minGold,
-            maxGold: maxGold);
+            maxGold: maxGold,
+            skinLootId: skinLootId,
+            pickpocketLootId: pickpocketLootId);
 
         // Creatures reach a map through the grid loader, not through Add — the same path the real
         // server uses, so the victim ends up filed in a cell and findable by a range query.
@@ -662,6 +668,8 @@ internal static class MapCombatFixture
             Quests = quests,
             GameObjectLoot = gameObjectLoot,
             LockTable = locks,
+            SkinningLoot = skinningLoot,
+            PickpocketLoot = pickpocketLoot,
         };
 
         // Unique, not 1: a fixed id here collides with the ids InventoryFixture hands out, and two

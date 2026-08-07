@@ -35,7 +35,8 @@ public sealed class WorldContent(
     PlayerSpellStore startingSpells,
     PlayerActionStore startingActions,
     TrainerStore trainers,
-    SpellRankStore spellRanks)
+    SpellRankStore spellRanks,
+    ItemEnchantmentStore itemEnchantments)
 {
     public TerrainManager Terrain { get; } = terrain;
 
@@ -80,6 +81,9 @@ public sealed class WorldContent(
 
     /// <summary>Which spells are ranks of the same spell, so a higher one supersedes a lower.</summary>
     public SpellRankStore SpellRanks { get; } = spellRanks;
+
+    /// <summary>Which random suffix an item rolls. <c>item_enchantment_template</c>.</summary>
+    public ItemEnchantmentStore ItemEnchantments { get; } = itemEnchantments;
 
     /// <summary>What is on a new character's action bars.</summary>
     public PlayerActionStore StartingActions { get; } = startingActions;

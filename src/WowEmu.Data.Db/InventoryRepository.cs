@@ -14,7 +14,11 @@ public readonly record struct StoredItem(
     int[] SpellCharges,
     uint Flags,
     uint BagId,
-    byte Slot);
+    byte Slot,
+
+    /// <summary>The rolled random-properties id, signed, and the factor its amounts scale from.</summary>
+    int RandomPropertyId = 0,
+    uint SuffixFactor = 0);
 
 /// <summary>One stored quest.</summary>
 public readonly record struct StoredQuest(uint QuestId, byte Status, byte Slot, ushort[] Killed);
@@ -76,6 +80,38 @@ public interface IInventoryRepository
         uint characterId,
         IReadOnlyCollection<(ushort Skill, ushort Value, ushort Max, ushort Step)> skills,
         CancellationToken cancellationToken = default);
+
+    /// <summary>What every faction this character has met thinks of them.</summary>
+    Task<IReadOnlyList<(ushort Faction, int Standing)>> LoadReputationAsync(
+        uint characterId, CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="SaveAsync"/>
+    Task SaveReputationAsync(
+        uint characterId,
+        IReadOnlyCollection<(ushort Faction, int Standing)> reputation,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Which repeating quests a character has done, by period.</summary>
+    Task<(IReadOnlyList<uint> Daily, IReadOnlyList<uint> Weekly, IReadOnlyList<uint> Monthly)>
+        LoadQuestResetsAsync(uint characterId, CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="SaveAsync"/>
+    Task SaveQuestResetsAsync(
+        uint characterId,
+        IReadOnlyCollection<uint> daily,
+        IReadOnlyCollection<uint> weekly,
+        IReadOnlyCollection<uint> monthly,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Clears one period's record for every character on the server.
+    /// </summary>
+    /// <remarks>
+    /// <b>Every character, not just the ones logged in.</b> The reset is a server-wide instant, and
+    /// clearing only online characters leaves everyone else holding yesterday's record until they
+    /// next log out — which is to say, indefinitely.
+    /// </remarks>
+    Task ResetAllQuestsAsync(QuestResetPeriod period, CancellationToken cancellationToken = default);
 
     /// <summary>Where a character comes back to, or null when they have never bound anywhere.</summary>
     Task<(uint MapId, uint AreaId, float X, float Y, float Z)?> LoadHomebindAsync(
@@ -149,7 +185,9 @@ public sealed class InventoryRepository(IDbContextFactory<CharactersDbContext> c
                 SpellCharges: ParseCharges(pair.item.SpellCharges),
                 Flags: pair.item.Flags,
                 BagId: pair.row.BagId,
-                Slot: pair.row.Slot));
+                Slot: pair.row.Slot,
+                RandomPropertyId: pair.item.RandomPropertyId,
+                SuffixFactor: pair.item.SuffixFactor));
         }
 
         return loaded;
@@ -191,6 +229,8 @@ public sealed class InventoryRepository(IDbContextFactory<CharactersDbContext> c
                 DurationSeconds = item.DurationSeconds,
                 SpellCharges = FormatCharges(item.SpellCharges),
                 Flags = item.Flags,
+                RandomPropertyId = item.RandomPropertyId,
+                SuffixFactor = item.SuffixFactor,
             });
 
             context.Inventory.Add(new CharacterInventoryEntity
@@ -424,6 +464,148 @@ public sealed class InventoryRepository(IDbContextFactory<CharactersDbContext> c
         }
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<(ushort Faction, int Standing)>> LoadReputationAsync(
+        uint characterId, CancellationToken cancellationToken = default)
+    {
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        List<CharacterReputationEntity> rows = await context.Reputation
+            .AsNoTracking()
+            .Where(row => row.CharacterId == characterId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return [.. rows.Select(row => (row.FactionId, row.Standing))];
+    }
+
+    public async Task SaveReputationAsync(
+        uint characterId,
+        IReadOnlyCollection<(ushort Faction, int Standing)> reputation,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(reputation);
+
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        // Whole-set, like the skills.
+        await context.Reputation
+            .Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach ((ushort faction, int standing) in reputation)
+        {
+            context.Reputation.Add(new CharacterReputationEntity
+            {
+                CharacterId = characterId,
+                FactionId = faction,
+                Standing = standing,
+            });
+        }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<(IReadOnlyList<uint> Daily, IReadOnlyList<uint> Weekly, IReadOnlyList<uint> Monthly)>
+        LoadQuestResetsAsync(uint characterId, CancellationToken cancellationToken = default)
+    {
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        List<uint> daily = await context.DailyQuests.AsNoTracking()
+            .Where(row => row.CharacterId == characterId).Select(row => row.QuestId)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        List<uint> weekly = await context.WeeklyQuests.AsNoTracking()
+            .Where(row => row.CharacterId == characterId).Select(row => row.QuestId)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        List<uint> monthly = await context.MonthlyQuests.AsNoTracking()
+            .Where(row => row.CharacterId == characterId).Select(row => row.QuestId)
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        return (daily, weekly, monthly);
+    }
+
+    public async Task SaveQuestResetsAsync(
+        uint characterId,
+        IReadOnlyCollection<uint> daily,
+        IReadOnlyCollection<uint> weekly,
+        IReadOnlyCollection<uint> monthly,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(daily);
+        ArgumentNullException.ThrowIfNull(weekly);
+        ArgumentNullException.ThrowIfNull(monthly);
+
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        // Whole-set per period, like the skills.
+        await context.DailyQuests.Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+        await context.WeeklyQuests.Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+        await context.MonthlyQuests.Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+
+        foreach (uint questId in daily)
+        {
+            context.DailyQuests.Add(new CharacterQuestDailyEntity
+            {
+                CharacterId = characterId,
+                QuestId = questId,
+            });
+        }
+
+        foreach (uint questId in weekly)
+        {
+            context.WeeklyQuests.Add(new CharacterQuestWeeklyEntity
+            {
+                CharacterId = characterId,
+                QuestId = questId,
+            });
+        }
+
+        foreach (uint questId in monthly)
+        {
+            context.MonthlyQuests.Add(new CharacterQuestMonthlyEntity
+            {
+                CharacterId = characterId,
+                QuestId = questId,
+            });
+        }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task ResetAllQuestsAsync(
+        QuestResetPeriod period, CancellationToken cancellationToken = default)
+    {
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        switch (period)
+        {
+            case QuestResetPeriod.Daily:
+                await context.DailyQuests.ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+                break;
+
+            case QuestResetPeriod.Weekly:
+                await context.WeeklyQuests.ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+                break;
+
+            case QuestResetPeriod.Monthly:
+                await context.MonthlyQuests.ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+                break;
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(period));
+        }
     }
 
     public async Task<IReadOnlyList<(byte Button, uint Packed)>> LoadActionsAsync(

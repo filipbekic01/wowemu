@@ -84,6 +84,24 @@ public sealed class CharacterEntity
     public uint Power6 { get; set; }
     public uint Power7 { get; set; }
 
+    /// <summary>
+    /// Which title is worn, as a bit index. Zero for none.
+    /// </summary>
+    /// <remarks>
+    /// <b>A bit index, not a <c>CharTitles.dbc</c> id</b> — the field the client reads holds the
+    /// index, and the two are unrelated numbers.
+    /// </remarks>
+    public uint ChosenTitle { get; set; }
+
+    /// <summary>
+    /// Every title earned, as space-separated bit indices.
+    /// </summary>
+    /// <remarks>
+    /// A string rather than a row of integer columns, matching upstream, because the mask is 192
+    /// bits and splitting it across columns puts the boundary in a place nothing else cares about.
+    /// </remarks>
+    public string? KnownTitles { get; set; }
+
     /// <summary>When the escalating corpse-reclaim penalty runs out, in unix seconds.</summary>
     /// <remarks>
     /// Without it, logging out and back in resets the penalty — which makes chain-dying free for
@@ -145,6 +163,18 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
 
     public DbSet<CharacterHomebindEntity> Homebinds => Set<CharacterHomebindEntity>();
 
+    /// <summary>What every faction thinks of every character. <c>character_reputation</c>.</summary>
+    public DbSet<CharacterReputationEntity> Reputation => Set<CharacterReputationEntity>();
+
+    /// <summary>Dailies done since the last reset. <c>character_queststatus_daily</c>.</summary>
+    public DbSet<CharacterQuestDailyEntity> DailyQuests => Set<CharacterQuestDailyEntity>();
+
+    /// <summary>Weeklies done since the last reset. <c>character_queststatus_weekly</c>.</summary>
+    public DbSet<CharacterQuestWeeklyEntity> WeeklyQuests => Set<CharacterQuestWeeklyEntity>();
+
+    /// <summary>Monthlies done since the last reset. <c>character_queststatus_monthly</c>.</summary>
+    public DbSet<CharacterQuestMonthlyEntity> MonthlyQuests => Set<CharacterQuestMonthlyEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -178,6 +208,9 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
             entity.Property(character => character.PositionY).HasColumnName("position_y");
             entity.Property(character => character.PositionZ).HasColumnName("position_z");
             entity.Property(character => character.Orientation).HasColumnName("orientation");
+
+            entity.Property(character => character.ChosenTitle).HasColumnName("chosenTitle");
+            entity.Property(character => character.KnownTitles).HasColumnName("knownTitles");
 
             entity.Property(character => character.Health).HasColumnName("health");
             entity.Property(character => character.Power1).HasColumnName("power1");
@@ -216,6 +249,8 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
             entity.Property(item => item.DurationSeconds).HasColumnName("duration");
             entity.Property(item => item.SpellCharges).HasColumnName("charges").HasMaxLength(64);
             entity.Property(item => item.Flags).HasColumnName("flags");
+            entity.Property(item => item.RandomPropertyId).HasColumnName("randomPropertyId");
+            entity.Property(item => item.SuffixFactor).HasColumnName("randomSuffix");
 
             entity.HasIndex(item => item.OwnerId).HasDatabaseName("ix_item_instance_owner");
         });
@@ -289,6 +324,45 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
             entity.Property(row => row.Value).HasColumnName("value");
             entity.Property(row => row.MaxValue).HasColumnName("max");
             entity.Property(row => row.Step).HasColumnName("step");
+        });
+
+        modelBuilder.Entity<CharacterReputationEntity>(entity =>
+        {
+            entity.ToTable("character_reputation");
+
+            // Composite: a character has one standing per faction.
+            entity.HasKey(row => new { row.CharacterId, row.FactionId });
+
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.FactionId).HasColumnName("faction");
+            entity.Property(row => row.Standing).HasColumnName("standing");
+        });
+
+        modelBuilder.Entity<CharacterQuestDailyEntity>(entity =>
+        {
+            entity.ToTable("character_queststatus_daily");
+            entity.HasKey(row => new { row.CharacterId, row.QuestId });
+
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.QuestId).HasColumnName("quest");
+        });
+
+        modelBuilder.Entity<CharacterQuestWeeklyEntity>(entity =>
+        {
+            entity.ToTable("character_queststatus_weekly");
+            entity.HasKey(row => new { row.CharacterId, row.QuestId });
+
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.QuestId).HasColumnName("quest");
+        });
+
+        modelBuilder.Entity<CharacterQuestMonthlyEntity>(entity =>
+        {
+            entity.ToTable("character_queststatus_monthly");
+            entity.HasKey(row => new { row.CharacterId, row.QuestId });
+
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.QuestId).HasColumnName("quest");
         });
 
         modelBuilder.Entity<CharacterActionEntity>(entity =>

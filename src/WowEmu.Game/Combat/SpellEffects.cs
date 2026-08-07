@@ -30,6 +30,15 @@ public static class SpellEffectId
     /// <summary>Weapon damage plus a flat bonus, dealt in no particular school.</summary>
     public const uint WeaponDamageNoSchool = 17;
 
+    /// <summary>Picks a living creature's pocket. <c>SPELL_EFFECT_PICKPOCKET</c>.</summary>
+    public const uint Pickpocket = 71;
+
+    /// <summary>Skins an emptied corpse. <c>SPELL_EFFECT_SKINNING</c>.</summary>
+    public const uint Skinning = 95;
+
+    /// <summary>Breaks an item down into enchanting materials. <c>SPELL_EFFECT_DISENCHANT</c>.</summary>
+    public const uint Disenchant = 99;
+
     /// <summary>Weapon damage plus a flat bonus.</summary>
     public const uint WeaponDamage = 58;
 

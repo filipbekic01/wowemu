@@ -30,6 +30,10 @@ namespace WowEmu.Data.Db.Migrations
                         .HasColumnType("datetime(6)")
                         .HasColumnName("created_at");
 
+                    b.Property<byte>("Expansion")
+                        .HasColumnType("tinyint unsigned")
+                        .HasColumnName("expansion");
+
                     b.Property<uint>("Flags")
                         .HasColumnType("int unsigned")
                         .HasColumnName("flags");

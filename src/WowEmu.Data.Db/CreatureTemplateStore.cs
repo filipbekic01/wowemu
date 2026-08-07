@@ -65,7 +65,19 @@ public sealed record CreatureTemplate(
     uint MaxGold,
 
     /// <summary>Which gossip menu right-clicking opens. Zero means it has no gossip of its own.</summary>
-    uint GossipMenuId)
+    uint GossipMenuId,
+
+    /// <summary>
+    /// What this creature's corpse yields to a skinner. Zero for most of the game.
+    /// </summary>
+    /// <remarks>
+    /// Separate from <see cref="LootId"/> and consulted only once the corpse has been emptied —
+    /// skinning is a second pass over a body someone has already looted.
+    /// </remarks>
+    uint SkinLootId = 0,
+
+    /// <summary>What this creature's pocket yields. Zero for anything that has no pockets.</summary>
+    uint PickpocketLootId = 0)
 {
     /// <summary>
     /// Picks one of the up-to-four display ids the entry may use.
@@ -172,7 +184,9 @@ public sealed class CreatureTemplateStore : ICreatureModelSource
                        family, Health_mod, Mana_mod, Armor_mod, MovementType, RegenHealth,
                        mindmg, maxdmg, dmg_multiplier, baseattacktime, rangeattacktime,
                        attackpower, rangedattackpower, flags_extra,
-                       lootid, mingold, maxgold, gossip_menu_id
+                       lootid, mingold, maxgold, gossip_menu_id,
+                       -- Appended: every reader index below is positional.
+                       skinloot, pickpocketloot
                 FROM creature_template
                 """;
 
@@ -224,7 +238,9 @@ public sealed class CreatureTemplateStore : ICreatureModelSource
                     LootId: reader.GetUInt32(36),
                     MinGold: reader.GetUInt32(37),
                     MaxGold: reader.GetUInt32(38),
-                    GossipMenuId: reader.GetUInt32(39));
+                    GossipMenuId: reader.GetUInt32(39),
+                    SkinLootId: reader.GetUInt32(40),
+                    PickpocketLootId: reader.GetUInt32(41));
 
                 _templates[template.Entry] = template;
             }

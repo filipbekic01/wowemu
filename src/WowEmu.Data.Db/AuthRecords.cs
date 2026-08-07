@@ -14,7 +14,10 @@ public sealed record AuthAccount(
     byte[] Verifier,
     byte[]? SessionKey,
     byte SecurityLevel,
-    uint Flags);
+    uint Flags,
+
+    /// <summary>The furthest expansion this account has bought. 0 vanilla, 1 TBC, 2 WotLK.</summary>
+    byte Expansion = 2);
 
 /// <summary>What the account CLI prints. Deliberately carries no secrets.</summary>
 public sealed record AuthAccountSummary(

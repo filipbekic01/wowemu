@@ -249,6 +249,23 @@ public sealed record DurabilityCostsEntry(uint ItemLevel, uint[] Multipliers)
 public sealed record DurabilityQualityEntry(uint Id, float Modifier);
 
 /// <summary>
+/// A row of <c>QuestFactionReward.dbc</c> — the ten reputation amounts a quest can pay.
+/// </summary>
+/// <remarks>
+/// <b>Two rows in the whole file.</b> Row 1 holds the gains and row 2 the identical losses, so a
+/// quest's <c>RewardFactionValueID</c> picks the row by its SIGN and the column by its magnitude.
+/// Reading the id as an amount pays 1 point where the table means 10, or 5 where it means 250.
+/// </remarks>
+public sealed record QuestFactionRewardEntry(uint Id, int[] Values)
+{
+    /// <summary>How many amounts a row carries.</summary>
+    public const int Count = 10;
+
+    /// <summary>The amount at a column, or zero when it is out of range.</summary>
+    public int At(int index) => index >= 0 && index < Values.Length ? Values[index] : 0;
+}
+
+/// <summary>
 /// A row of <c>Faction.dbc</c> — one faction a character can have standing with.
 /// </summary>
 /// <remarks>
@@ -257,6 +274,129 @@ public sealed record DurabilityQualityEntry(uint Id, float Modifier);
 /// never shown. Writing standing by faction id runs off the end of the field block.
 /// </remarks>
 public sealed record FactionEntry(uint Id, int ReputationListId, uint ParentFactionId, string Name);
+
+/// <summary>
+/// A row of <c>CharTitles.dbc</c> — one title a character can wear.
+/// </summary>
+/// <remarks>
+/// <b><see cref="BitIndex"/> is not the id.</b> The id is what a quest names; the bit index is
+/// where the title sits in the client's 128-bit known-titles mask, and the two are unrelated
+/// numbers. Setting the bit for the id grants a title nobody asked for.
+/// </remarks>
+public sealed record CharTitleEntry(uint Id, uint BitIndex, string Name);
+
+/// <summary>What one enchantment does. <c>ItemEnchantmentType</c>.</summary>
+public static class EnchantmentEffect
+{
+    public const uint None = 0;
+    public const uint CombatSpell = 1;
+    public const uint Damage = 2;
+    public const uint EquipSpell = 3;
+    public const uint Resistance = 4;
+    public const uint Stat = 5;
+    public const uint Totem = 6;
+    public const uint UseSpell = 7;
+    public const uint PrismaticSocket = 8;
+}
+
+/// <summary>
+/// A row of <c>SpellItemEnchantment.dbc</c> — one enchantment an item can carry.
+/// </summary>
+/// <remarks>
+/// <b>Three effects per row, and each has its own type.</b> One enchantment can add a stat and a
+/// proc at once; reading only the first effect silently drops half of what many enchants do.
+/// </remarks>
+public sealed record SpellItemEnchantmentEntry(
+    uint Id,
+    uint Charges,
+    uint[] Types,
+    int[] Amounts,
+    uint[] SpellIds,
+    uint AuraId,
+    uint Slot,
+    uint GemItemId,
+    uint RequiredSkill,
+    uint RequiredSkillValue,
+    uint RequiredLevel,
+    string Name)
+{
+    /// <summary>How many effects a row carries. <c>MAX_SPELL_ITEM_ENCHANTMENT_EFFECTS</c>.</summary>
+    public const int Effects = 3;
+}
+
+/// <summary>
+/// A row of <c>ItemRandomProperties.dbc</c> — the "of the Bear" suffixes with fixed amounts.
+/// </summary>
+/// <remarks>
+/// Distinct from <see cref="ItemRandomSuffixEntry"/>, and the distinction is the whole of the
+/// system: a <b>positive</b> RandomProperty id means this table and its fixed enchantments, while a
+/// <b>negative</b> one means the suffix table and its scaled ones. Reading the sign wrong looks up
+/// the wrong table entirely.
+/// </remarks>
+public sealed record ItemRandomPropertiesEntry(uint Id, uint[] Enchantments, string Name)
+{
+    /// <summary>How many enchantments a row carries. <c>MAX_ITEM_ENCHANTMENT_EFFECTS</c>.</summary>
+    public const int Enchants = 5;
+}
+
+/// <summary>
+/// A row of <c>ItemRandomSuffix.dbc</c> — suffixes whose amounts scale with the item.
+/// </summary>
+/// <remarks>
+/// <b>The allocation percentages are in ten-thousandths.</b> They multiply the item's suffix factor
+/// and are divided by 10,000, so using them raw gives ten thousand times too much of every stat.
+/// </remarks>
+/// <summary>
+/// A row of <c>RandPropPoints.dbc</c> — how many stat points a random suffix is worth.
+/// </summary>
+/// <remarks>
+/// <b>Keyed by item level, not by an id of its own.</b> The first column is the item level, so the
+/// lookup is by the item's level and there is nothing else to join on.
+/// <para>
+/// Five figures per quality, indexed by a slot coefficient rather than by the inventory type
+/// directly — a chest and a two-hander share coefficient 0, and a ring and a cloak share 2.
+/// </para>
+/// </remarks>
+public sealed record RandomPropertyPointsEntry(
+    uint ItemLevel, uint[] Epic, uint[] Rare, uint[] Uncommon)
+{
+    /// <summary>How many slot coefficients there are.</summary>
+    public const int Coefficients = 5;
+
+    /// <summary>
+    /// The points for a quality, or zero for one that has no random properties.
+    /// </summary>
+    /// <param name="quality">
+    /// <c>ItemQuality</c> from the Db layer — uncommon, rare and epic are the only three that carry
+    /// points at all.
+    /// </param>
+    public uint For(uint quality, int coefficient)
+    {
+        if (coefficient < 0 || coefficient >= Coefficients)
+        {
+            return 0;
+        }
+
+        // The quality constants live in the Db layer with the item template that carries them;
+        // duplicating them here would be two records of the same fact.
+        return quality switch
+        {
+            2 => Uncommon[coefficient],
+            3 => Rare[coefficient],
+            4 => Epic[coefficient],
+
+            // Legendary and artifact have no random properties at all, and neither do the greys.
+            _ => 0,
+        };
+    }
+}
+
+public sealed record ItemRandomSuffixEntry(
+    uint Id, uint[] Enchantments, uint[] AllocationPct, string Name)
+{
+    /// <inheritdoc cref="ItemRandomPropertiesEntry.Enchants"/>
+    public const int Enchants = 5;
+}
 
 /// <summary>
 /// A row of <c>Lock.dbc</c> — what it takes to open something.
@@ -356,13 +496,19 @@ public static class SkillType
     public const uint Polearms = 229;
     public const uint Assassination = 253;
     public const uint PlateMail = 293;
+    public const uint Herbalism = 182;
+    public const uint Mining = 186;
+    public const uint Engineering = 202;
+    public const uint Enchanting = 333;
     public const uint Fishing = 356;
+    public const uint Skinning = 393;
     public const uint Mail = 413;
     public const uint Leather = 414;
     public const uint Cloth = 415;
     public const uint Shield = 433;
     public const uint FistWeapons = 473;
     public const uint Lockpicking = 633;
+    public const uint Inscription = 773;
     public const uint Runeforging = 776;
     public const uint Mounts = 777;
 
@@ -605,6 +751,37 @@ public sealed class DbcStores
     /// <summary>An id and a float — the one <c>gt*</c> table that does carry an id.</summary>
     private const string GameTableScalarFormat = "nf";
 
+    /// <summary>
+    /// Thirty-eight columns. The three <c>x</c> runs skip the maximum amounts (which 3.3.5 does not
+    /// use) and the name flags. <c>SpellItemEnchantmentfmt</c>.
+    /// </summary>
+    private const string SpellItemEnchantmentFormat =
+        "niiiiiiixxxiiissssssssssssssssxiiiiiii";
+
+    /// <summary>An id, a skipped internal name, five enchantments and sixteen names. <c>ItemRandomPropertiesfmt</c>.</summary>
+    private const string ItemRandomPropertiesFormat = "nxiiiiissssssssssssssssx";
+
+    /// <summary>Names first here, then the enchantments and their allocations. <c>ItemRandomSuffixfmt</c>.</summary>
+    private const string ItemRandomSuffixFormat = "nssssssssssssssssxxiiiiiiiiii";
+
+    /// <summary>
+    /// Sixteen columns, keyed by item level. <c>RandomPropertiesPointsfmt</c>.
+    /// </summary>
+    /// <remarks>
+    /// The struct's comments in <c>DBCStructure.h</c> count a hidden key that is not there, so its
+    /// indices run one high. The format string is what defines the offsets.
+    /// </remarks>
+    private const string RandomPropertyPointsFormat = "niiiiiiiiiiiiiii";
+
+    /// <summary>
+    /// Thirty-seven columns: an id, two blocks of sixteen names, and the bit index last.
+    /// <c>CharTitlesEntryfmt</c>.
+    /// </summary>
+    private const string CharTitlesFormat = "nxssssssssssssssssxssssssssssssssssxi";
+
+    /// <summary>An id and ten amounts. <c>QuestFactionRewardfmt</c>.</summary>
+    private const string QuestFactionRewardFormat = "niiiiiiiiii";
+
     /// <summary>Fifty-seven columns, most of them localised text. <c>FactionEntryfmt</c>.</summary>
     private const string FactionFormat =
         "niiiiiiiiiiiiiiiiiiffixssssssssssssssssxxxxxxxxxxxxxxxxxx";
@@ -651,10 +828,22 @@ public sealed class DbcStores
         CombatRatingTable combatRatings,
         AttributeChanceTable attributeChances,
         DbcStore<LockEntry> locks,
-        DbcStore<FactionEntry> factions)
+        DbcStore<FactionEntry> factions,
+        DbcStore<QuestFactionRewardEntry> questFactionRewards,
+        DbcStore<CharTitleEntry> charTitles,
+        DbcStore<SpellItemEnchantmentEntry> itemEnchantments,
+        DbcStore<ItemRandomPropertiesEntry> itemRandomProperties,
+        DbcStore<ItemRandomSuffixEntry> itemRandomSuffixes,
+        DbcStore<RandomPropertyPointsEntry> randomPropertyPoints)
     {
         Locks = locks;
         Factions = factions;
+        QuestFactionRewards = questFactionRewards;
+        CharTitles = charTitles;
+        ItemEnchantments = itemEnchantments;
+        ItemRandomProperties = itemRandomProperties;
+        ItemRandomSuffixes = itemRandomSuffixes;
+        RandomPropertyPoints = randomPropertyPoints;
         CombatRatings = combatRatings;
         AttributeChances = attributeChances;
         Skills = skills;
@@ -733,6 +922,24 @@ public sealed class DbcStores
 
     /// <summary>Every faction a character can have standing with.</summary>
     public DbcStore<FactionEntry> Factions { get; }
+
+    /// <summary>The ten reputation amounts a quest can pay, in gains and losses.</summary>
+    public DbcStore<QuestFactionRewardEntry> QuestFactionRewards { get; }
+
+    /// <summary>Every title in the game, and where each sits in the known-titles mask.</summary>
+    public DbcStore<CharTitleEntry> CharTitles { get; }
+
+    /// <summary>Every enchantment an item can carry. <c>SpellItemEnchantment.dbc</c>.</summary>
+    public DbcStore<SpellItemEnchantmentEntry> ItemEnchantments { get; }
+
+    /// <summary>The fixed-amount random suffixes. Reached by a POSITIVE RandomProperty id.</summary>
+    public DbcStore<ItemRandomPropertiesEntry> ItemRandomProperties { get; }
+
+    /// <summary>The scaled random suffixes. Reached by a NEGATIVE one, by its absolute value.</summary>
+    public DbcStore<ItemRandomSuffixEntry> ItemRandomSuffixes { get; }
+
+    /// <summary>How many stat points a random suffix is worth, by item level.</summary>
+    public DbcStore<RandomPropertyPointsEntry> RandomPropertyPoints { get; }
 
     /// <summary>
     /// The zone an area belongs to, which is the area itself when it is already a zone.
@@ -998,7 +1205,125 @@ public sealed class DbcStores
                     Id: record.GetUInt32(0),
                     ReputationListId: record.GetInt32(1),
                     ParentFactionId: record.GetUInt32(18),
-                    Name: record.GetLocalizedString(23, locale))));
+                    Name: record.GetLocalizedString(23, locale))),
+
+            DbcStore<QuestFactionRewardEntry>.Load(
+                Path.Combine(directory, "QuestFactionReward.dbc"),
+                QuestFactionRewardFormat,
+                idField: 0,
+                (in DbcRecord record) =>
+                {
+                    int[] values = new int[QuestFactionRewardEntry.Count];
+
+                    for (int i = 0; i < values.Length; i++)
+                    {
+                        values[i] = record.GetInt32(1 + i);
+                    }
+
+                    return new QuestFactionRewardEntry(record.GetUInt32(0), values);
+                }),
+
+            DbcStore<CharTitleEntry>.Load(
+                Path.Combine(directory, "CharTitles.dbc"),
+                CharTitlesFormat,
+                idField: 0,
+                (in DbcRecord record) => new CharTitleEntry(
+                    Id: record.GetUInt32(0),
+                    // Last column, after both name blocks and their string flags.
+                    BitIndex: record.GetUInt32(36),
+                    Name: record.GetLocalizedString(2, locale))),
+
+            DbcStore<SpellItemEnchantmentEntry>.Load(
+                Path.Combine(directory, "SpellItemEnchantment.dbc"),
+                SpellItemEnchantmentFormat,
+                idField: 0,
+                (in DbcRecord record) =>
+                {
+                    uint[] types = new uint[SpellItemEnchantmentEntry.Effects];
+                    int[] amounts = new int[SpellItemEnchantmentEntry.Effects];
+                    uint[] spellIds = new uint[SpellItemEnchantmentEntry.Effects];
+
+                    for (int i = 0; i < SpellItemEnchantmentEntry.Effects; i++)
+                    {
+                        types[i] = record.GetUInt32(2 + i);
+                        amounts[i] = record.GetInt32(5 + i);
+
+                        // 11, not 8: columns 8 to 10 are the maximum amounts, which 3.3.5 never
+                        // uses and the format string skips.
+                        spellIds[i] = record.GetUInt32(11 + i);
+                    }
+
+                    return new SpellItemEnchantmentEntry(
+                        Id: record.GetUInt32(0),
+                        Charges: record.GetUInt32(1),
+                        Types: types,
+                        Amounts: amounts,
+                        SpellIds: spellIds,
+                        AuraId: record.GetUInt32(31),
+                        Slot: record.GetUInt32(32),
+                        GemItemId: record.GetUInt32(33),
+                        RequiredSkill: record.GetUInt32(35),
+                        RequiredSkillValue: record.GetUInt32(36),
+                        RequiredLevel: record.GetUInt32(37),
+                        Name: record.GetLocalizedString(14, locale));
+                }),
+
+            DbcStore<ItemRandomPropertiesEntry>.Load(
+                Path.Combine(directory, "ItemRandomProperties.dbc"),
+                ItemRandomPropertiesFormat,
+                idField: 0,
+                (in DbcRecord record) =>
+                {
+                    uint[] enchantments = new uint[ItemRandomPropertiesEntry.Enchants];
+
+                    for (int i = 0; i < enchantments.Length; i++)
+                    {
+                        enchantments[i] = record.GetUInt32(2 + i);
+                    }
+
+                    return new ItemRandomPropertiesEntry(
+                        record.GetUInt32(0), enchantments, record.GetLocalizedString(7, locale));
+                }),
+
+            DbcStore<ItemRandomSuffixEntry>.Load(
+                Path.Combine(directory, "ItemRandomSuffix.dbc"),
+                ItemRandomSuffixFormat,
+                idField: 0,
+                (in DbcRecord record) =>
+                {
+                    uint[] enchantments = new uint[ItemRandomSuffixEntry.Enchants];
+                    uint[] allocations = new uint[ItemRandomSuffixEntry.Enchants];
+
+                    for (int i = 0; i < enchantments.Length; i++)
+                    {
+                        enchantments[i] = record.GetUInt32(19 + i);
+                        allocations[i] = record.GetUInt32(24 + i);
+                    }
+
+                    return new ItemRandomSuffixEntry(
+                        record.GetUInt32(0), enchantments, allocations,
+                        record.GetLocalizedString(1, locale));
+                }),
+
+            DbcStore<RandomPropertyPointsEntry>.Load(
+                Path.Combine(directory, "RandPropPoints.dbc"),
+                RandomPropertyPointsFormat,
+                idField: 0,
+                (in DbcRecord record) =>
+                {
+                    uint[] epic = new uint[RandomPropertyPointsEntry.Coefficients];
+                    uint[] rare = new uint[RandomPropertyPointsEntry.Coefficients];
+                    uint[] uncommon = new uint[RandomPropertyPointsEntry.Coefficients];
+
+                    for (int i = 0; i < RandomPropertyPointsEntry.Coefficients; i++)
+                    {
+                        epic[i] = record.GetUInt32(1 + i);
+                        rare[i] = record.GetUInt32(6 + i);
+                        uncommon[i] = record.GetUInt32(11 + i);
+                    }
+
+                    return new RandomPropertyPointsEntry(record.GetUInt32(0), epic, rare, uncommon);
+                }));
     }
 
     /// <summary>One of the bare-float <c>gt*</c> tables, keyed by row position.</summary>

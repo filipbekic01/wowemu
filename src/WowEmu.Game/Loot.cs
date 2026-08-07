@@ -51,6 +51,9 @@ public enum LootError : byte
     PlayerNotFound = 10,
     PlayerTimeout = 11,
     NoLoot = 12,
+
+    /// <summary>"Your target has already had its pockets picked."</summary>
+    AlreadyPickpocketed = 15,
 }
 
 /// <summary>

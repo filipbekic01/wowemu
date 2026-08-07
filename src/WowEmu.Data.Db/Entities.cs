@@ -30,6 +30,15 @@ public sealed class AccountEntity
 
     public byte SecurityLevel { get; set; }
 
+    /// <summary>
+    /// The furthest expansion this account has bought. 0 vanilla, 1 TBC, 2 WotLK.
+    /// </summary>
+    /// <remarks>
+    /// Per account, not per realm — it is what a player paid for, and it gates which races and
+    /// classes they may create. Defaulted to WotLK because that is what this server serves.
+    /// </remarks>
+    public byte Expansion { get; set; } = 2;
+
     /// <summary>Account flags echoed back in the logon proof. Zero for a normal account.</summary>
     public uint Flags { get; set; }
 

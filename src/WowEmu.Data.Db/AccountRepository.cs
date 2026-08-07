@@ -217,5 +217,6 @@ public sealed class AccountRepository(IDbContextFactory<AuthDbContext> contextFa
         entity.Verifier,
         entity.SessionKey,
         entity.SecurityLevel,
-        entity.Flags);
+        entity.Flags,
+        entity.Expansion);
 }

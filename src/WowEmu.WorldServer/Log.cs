@@ -93,6 +93,11 @@ internal static partial class Log
     public static partial void CharacterCreated(
         ILogger logger, string name, uint characterId, string account, string address);
 
+    [LoggerMessage(EventId = 2339, Level = LogLevel.Information,
+        Message = "Refused character '{Name}' on {Rule} grounds (race {Race}, class {Class}) from {Address}")]
+    public static partial void CharacterCreateRefused(
+        ILogger logger, string name, string rule, byte race, byte @class, string address);
+
     [LoggerMessage(EventId = 2301, Level = LogLevel.Information,
         Message = "Deleted character {CharacterId} for '{Account}' from {Address}")]
     public static partial void CharacterDeleted(ILogger logger, uint characterId, string account, string address);
@@ -326,6 +331,10 @@ internal static partial class Log
     [LoggerMessage(EventId = 2400, Level = LogLevel.Information,
         Message = "World tick running at a {MinUpdateMs} ms floor over {MapCount} map(s)")]
     public static partial void TickStarted(ILogger logger, uint minUpdateMs, int mapCount);
+
+    [LoggerMessage(EventId = 2405, Level = LogLevel.Information,
+        Message = "{Period} quest reset ran; next one at {Next:u}")]
+    public static partial void QuestsReset(ILogger logger, string period, DateTime next);
 
     [LoggerMessage(EventId = 2401, Level = LogLevel.Information,
         Message = "World tick stopped after {Ticks} tick(s); longest was {LongestMs:F1} ms")]

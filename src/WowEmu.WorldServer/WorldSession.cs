@@ -56,6 +56,7 @@ public sealed class WorldSession(
     private const byte CharCreateFailed = 0x31;
     private const byte CharCreateNameInUse = 0x32;
     private const byte CharCreateAccountLimit = 0x36;
+
     private const byte CharNameInvalidCharacter = 0x5C;
     private const byte CharDeleteSuccess = 0x47;
     private const byte CharDeleteFailed = 0x48;
@@ -101,6 +102,39 @@ public sealed class WorldSession(
 
     /// <summary>Whether a character is in the world and therefore worth saving.</summary>
     public bool HasPlayerInWorld => _player is not null;
+
+    /// <summary>
+    /// Clears this character's record for one repeating period.
+    /// </summary>
+    /// <remarks>
+    /// The in-memory half of the shared reset. Without it a logged-in character's next save writes
+    /// yesterday's record straight back over the delete the reset just did.
+    /// </remarks>
+    public void ResetQuests(QuestResetPeriod period)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        switch (period)
+        {
+            case QuestResetPeriod.Daily:
+                _player.QuestResets.ResetDaily();
+                break;
+
+            case QuestResetPeriod.Weekly:
+                _player.QuestResets.ResetWeekly();
+                break;
+
+            case QuestResetPeriod.Monthly:
+                _player.QuestResets.ResetMonthly();
+                break;
+
+            default:
+                break;
+        }
+    }
 
     /// <summary>
     /// Binds this session to the loop that drains its world queue.
@@ -297,6 +331,10 @@ public sealed class WorldSession(
 
             case Opcode.CMSG_CAST_SPELL:
                 HandleCastSpell(payload);
+                return;
+
+            case Opcode.CMSG_SET_TITLE:
+                HandleSetTitle(payload);
                 return;
 
             case Opcode.CMSG_CANCEL_CAST:
@@ -807,10 +845,48 @@ public sealed class WorldSession(
             return;
         }
 
-        if (await characters.CountForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(true)
-            >= MaxCharactersPerAccount)
+        byte expansionRefusal = CharacterCreationRules.CheckExpansion(
+            race,
+            characterClass,
+            // Capped by the realm's: an account entitled to more than the realm serves is only
+            // entitled to what the realm serves.
+            Math.Min(_account.Expansion, options.Expansion),
+            world.Stores.Races,
+            world.Stores.Classes);
+
+        if (expansionRefusal != CharCreateResult.Ok)
+        {
+            Log.CharacterCreateRefused(
+                logger, name, "expansion", race, characterClass, connection.RemoteAddress);
+
+            await SendCharacterCreateResultAsync(expansionRefusal, cancellationToken).ConfigureAwait(true);
+            return;
+        }
+
+        IReadOnlyList<CharacterSummary> existing = await characters
+            .ListForAccountAsync(_account.Id, cancellationToken).ConfigureAwait(true);
+
+        if (existing.Count >= MaxCharactersPerAccount)
         {
             await SendCharacterCreateResultAsync(CharCreateAccountLimit, cancellationToken).ConfigureAwait(true);
+            return;
+        }
+
+        byte rosterRefusal = CharacterCreationRules.CheckRoster(
+            existing,
+            race,
+            characterClass,
+            options.AllowTwoSideAccounts,
+            options.MinLevelForHeroicCharacter,
+            options.HeroicCharactersPerRealm,
+            world.Stores.Races);
+
+        if (rosterRefusal != CharCreateResult.Ok)
+        {
+            Log.CharacterCreateRefused(
+                logger, name, "roster", race, characterClass, connection.RemoteAddress);
+
+            await SendCharacterCreateResultAsync(rosterRefusal, cancellationToken).ConfigureAwait(true);
             return;
         }
 
@@ -1074,6 +1150,45 @@ public sealed class WorldSession(
         string spellName = spell.Name;
 
         Log.SpellCast(logger, _player.Name, spellName, target?.Name ?? "self", connection.RemoteAddress);
+    }
+
+    /// <summary>
+    /// Wears a title, or takes one off.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>WorldSession::HandleSetTitleOpcode</c>. <b>Signed, and -1 means none</b> — reading
+    /// it unsigned turns "take my title off" into a request for title 4,294,967,295.
+    /// <para>
+    /// The two failure modes are deliberately different: a title out of range clears the field,
+    /// while a title the character has not earned is ignored and leaves the current one alone. The
+    /// client only ever sends what it drew, so an unearned one came from somewhere else.
+    /// </para>
+    /// </remarks>
+    private void HandleSetTitle(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt32(out uint raw))
+        {
+            return;
+        }
+
+        // Signed on the wire: the client sends -1 to take a title off.
+        int title = unchecked((int)raw);
+
+        if (title <= 0 || title >= PlayerTitles.Count)
+        {
+            _player.Titles.Chosen = 0;
+
+            return;
+        }
+
+        _player.Titles.Wear((uint)title);
     }
 
     /// <summary>Abandons the cast in progress.</summary>
@@ -3241,10 +3356,22 @@ public sealed class WorldSession(
 
         _player.Quests.Reward(progress);
 
+        // Records the quest in its day, week or month bucket. A daily is marked Repeatable in the
+        // data, so without this the Rewarded status alone lets it be taken again immediately.
+        _player.QuestResets.Record(quest);
+
         uint experience = QuestReward.Experience(quest, _player.Level, world.Stores.QuestXp);
         uint money = quest.RewardMoney;
 
         _player.Money += money;
+
+        // Reputation before the level-up, so a quest that both pays a faction and levels the
+        // character does not have its reputation lost to a mid-way reload.
+        if (quest.RewardReputations is { } reputations)
+        {
+            _player.Reputation.AwardQuest(
+                reputations, world.Stores.QuestFactionRewards, world.Stores.Factions);
+        }
 
         if (experience > 0)
         {
@@ -3254,10 +3381,16 @@ public sealed class WorldSession(
             SendExperienceGain(ObjectGuid.Empty, experience, levels);
         }
 
+        GrantQuestTitle(quest);
+
         ServerPacket packet = new(Opcode.SMSG_QUESTGIVER_QUEST_COMPLETE, 24);
         QuestPackets.WriteComplete(packet.Body, questId, experience, money);
 
         connection.Send(packet);
+
+        // After the completion packet, as upstream is careful to do: some reward spells are gated
+        // on the quest already reading as complete, and casting first fails them silently.
+        CastQuestRewardSpell(quest);
 
         Log.QuestCompleted(logger, _player.Name, quest.LogTitle, questId, experience, connection.RemoteAddress);
 
@@ -5143,7 +5276,9 @@ public sealed class WorldSession(
                 Health: player.Health,
                 Powers: powers,
                 PlayerFlags: player.PlayerFlags,
-                DeathExpireTime: player.DeathExpireTime),
+                DeathExpireTime: player.DeathExpireTime,
+                ChosenTitle: player.Titles.Chosen,
+                KnownTitles: string.Join(' ', player.Titles.Known)),
             cancellationToken).ConfigureAwait(true);
 
         await inventory
@@ -5160,6 +5295,19 @@ public sealed class WorldSession(
 
         await inventory
             .SaveSkillsAsync(player.Guid.Counter, [.. player.Skills.Snapshot()], cancellationToken)
+            .ConfigureAwait(true);
+
+        await inventory
+            .SaveReputationAsync(player.Guid.Counter, ReputationSnapshot(player), cancellationToken)
+            .ConfigureAwait(true);
+
+        await inventory
+            .SaveQuestResetsAsync(
+                player.Guid.Counter,
+                [.. player.QuestResets.Daily],
+                [.. player.QuestResets.Weekly],
+                [.. player.QuestResets.Monthly],
+                cancellationToken)
             .ConfigureAwait(true);
 
         await inventory
@@ -5234,6 +5382,10 @@ public sealed class WorldSession(
         // objects have to exist for the client to be told about them in the same packet.
         await LoadInventoryAsync(player, cancellationToken).ConfigureAwait(true);
 
+        // Before the inventory is filled: it is the hook every item created from here on runs
+        // through, and an item made before it is set gets no suffix at all.
+        player.Inventory.OnItemCreated = RollRandomSuffix;
+
         // After the inventory, and it has to be: a collection quest's progress is recounted from
         // the bags, and counting before they are filled marks every one of them unstarted.
         await LoadQuestsAsync(player, cancellationToken).ConfigureAwait(true);
@@ -5242,6 +5394,8 @@ public sealed class WorldSession(
         // block carries the equipment.
         await LoadSpellsAsync(player, cancellationToken).ConfigureAwait(true);
         await LoadSkillsAsync(player, cancellationToken).ConfigureAwait(true);
+        await LoadReputationAsync(player, cancellationToken).ConfigureAwait(true);
+        await LoadQuestResetsAsync(player, cancellationToken).ConfigureAwait(true);
         await LoadHomebindAsync(player, cancellationToken).ConfigureAwait(true);
         await LoadActionsAsync(player, cancellationToken).ConfigureAwait(true);
 
@@ -5413,6 +5567,15 @@ public sealed class WorldSession(
             item.DurationSeconds = row.DurationSeconds;
             item.ItemFlags = row.Flags;
 
+            // Restored, not re-rolled. What an item rolled is part of the item, and re-rolling
+            // here would change a player's gear under them every session.
+            RandomSuffixes.Restore(
+                item,
+                row.RandomPropertyId,
+                world.Stores.ItemRandomProperties,
+                world.Stores.ItemRandomSuffixes,
+                world.Stores.RandomPropertyPoints);
+
             for (int i = 0; i < row.SpellCharges.Length && i < ItemConstants.MaxSpells; i++)
             {
                 item.SetSpellCharges(i, row.SpellCharges[i]);
@@ -5428,6 +5591,23 @@ public sealed class WorldSession(
             Log.InventoryRowsDropped(logger, player.Name, missing);
         }
     }
+
+    /// <summary>
+    /// Rolls a random suffix onto a freshly created item.
+    /// </summary>
+    /// <remarks>
+    /// <b>Once, when the item first exists.</b> Loading goes through <c>RandomSuffixes.Restore</c>
+    /// instead, so a sword keeps the suffix it was found with rather than being re-rolled at every
+    /// login — which would be indistinguishable from the item being swapped out.
+    /// </remarks>
+    private void RollRandomSuffix(Item item) =>
+        RandomSuffixes.Apply(
+            item,
+            world.ItemEnchantments,
+            world.Stores.ItemRandomProperties,
+            world.Stores.ItemRandomSuffixes,
+            world.Stores.RandomPropertyPoints,
+            () => GameRandom.Urand(0, 9999) / 100f);
 
     /// <summary>Turns a stored row's bag guid back into the bag slot the inventory addresses.</summary>
     private static ItemPosition PositionFor(Player player, in StoredItem row)
@@ -5534,6 +5714,96 @@ public sealed class WorldSession(
 
         GrantSkillsFromSpells(player);
     }
+
+    /// <summary>
+    /// Casts a quest's reward spell on the character who handed it in.
+    /// </summary>
+    /// <remarks>
+    /// <b>Two columns, and the cast one wins.</b> <c>RewardSpell</c> is only the icon the client
+    /// draws on the reward pane; <c>RewardSpellCast</c> is what actually fires. Reading the display
+    /// one first casts the wrong spell for every quest that sets both.
+    /// <para>
+    /// Triggered, so it costs nothing and ignores range, cooldown and line of sight — the reward is
+    /// already earned and the character may be standing anywhere by now.
+    /// </para>
+    /// </remarks>
+    private void CastQuestRewardSpell(QuestTemplate quest)
+    {
+        uint spellId = quest.RewardSpellCast > 0
+            ? (uint)quest.RewardSpellCast
+            : quest.RewardSpell;
+
+        if (spellId == 0 || _player is null)
+        {
+            return;
+        }
+
+        if (!world.Spells.Spells.TryGet(spellId, out SpellEntry spell))
+        {
+            return;
+        }
+
+        _map?.CompleteCast(_player, spell, _player, castCount: 0);
+    }
+
+    /// <summary>
+    /// Hands out a quest's title, if it has one.
+    /// </summary>
+    /// <remarks>
+    /// <b>The column is a <c>CharTitles.dbc</c> id, not the bit to set.</b> The known-titles field
+    /// is a 128-bit mask and the bit index is a separate column of the same row — setting the bit
+    /// for the id grants some other title entirely, or none at all past 128.
+    /// </remarks>
+    private void GrantQuestTitle(QuestTemplate quest)
+    {
+        if (quest.RewardTitle == 0 || _player is null)
+        {
+            return;
+        }
+
+        _player.Titles.Learn(quest.RewardTitle, world.Stores.CharTitles);
+    }
+
+    /// <summary>
+    /// Puts back what every faction thinks of a character.
+    /// </summary>
+    /// <remarks>
+    /// <b>Before the login sequence, like the skills.</b> Standing reaches the client as its own
+    /// packet sent from <c>Set</c>, and the client has no memory of it between sessions — a
+    /// character restored after the sequence has the right standing server-side and a reputation
+    /// pane full of Neutral.
+    /// </remarks>
+    private async Task LoadReputationAsync(Player player, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<(ushort Faction, int Standing)> stored = await inventory
+            .LoadReputationAsync(player.Guid.Counter, cancellationToken)
+            .ConfigureAwait(true);
+
+        foreach ((ushort faction, int standing) in stored)
+        {
+            player.Reputation.Set(faction, standing, world.Stores.Factions);
+        }
+    }
+
+    /// <summary>
+    /// Puts back which repeating quests a character has already done.
+    /// </summary>
+    /// <remarks>
+    /// The rows are whatever survived the last server-wide reset, so anything stale has already
+    /// been deleted from under them — the load does not need to check the clock itself.
+    /// </remarks>
+    private async Task LoadQuestResetsAsync(Player player, CancellationToken cancellationToken)
+    {
+        (IReadOnlyList<uint> daily, IReadOnlyList<uint> weekly, IReadOnlyList<uint> monthly) =
+            await inventory.LoadQuestResetsAsync(player.Guid.Counter, cancellationToken)
+                .ConfigureAwait(true);
+
+        player.QuestResets.Restore(daily, weekly, monthly);
+    }
+
+    /// <summary>Every faction this character has a standing with, for saving.</summary>
+    private static List<(ushort Faction, int Standing)> ReputationSnapshot(Player player) =>
+        [.. player.Reputation.All.Select(pair => ((ushort)pair.Key, pair.Value))];
 
     /// <summary>
     /// Puts back where a character comes home to, and tells the client.
@@ -5660,7 +5930,9 @@ public sealed class WorldSession(
                 SpellCharges: charges,
                 Flags: item.ItemFlags,
                 BagId: bagId,
-                Slot: position.Slot));
+                Slot: position.Slot,
+                RandomPropertyId: item.RandomPropertiesId,
+                SuffixFactor: item.SuffixFactor));
         }
 
         return rows;

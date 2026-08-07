@@ -59,6 +59,16 @@ public sealed class Player : Unit
 
     private PlayerSkills? _skills;
 
+    /// <summary>Which titles this character has earned, and which one is worn.</summary>
+    public PlayerTitles Titles => _titles ??= new PlayerTitles(this);
+
+    private PlayerTitles? _titles;
+
+    /// <summary>Which repeating quests this character has already done this period.</summary>
+    public PlayerQuestResets QuestResets => _questResets ??= new PlayerQuestResets(this);
+
+    private PlayerQuestResets? _questResets;
+
     /// <summary>Drowning, fatigue and standing in lava.</summary>
     public PlayerEnvironment Environment { get; } = new();
 
@@ -113,12 +123,42 @@ public sealed class Player : Unit
     /// stand. It costs a corpse its state exactly once, on the first login after this landed.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Puts back the titles a character has earned and the one they were wearing.
+    /// </summary>
+    /// <remarks>
+    /// Space-separated bit indices, matching upstream's column. Anything unparseable is skipped
+    /// rather than throwing: the column is free text and a character should still be able to log
+    /// in if one entry is malformed.
+    /// <para>
+    /// The worn title is restored last and only if it is still known, so a title revoked between
+    /// sessions cannot be left displayed.
+    /// </para>
+    /// </remarks>
+    private static void RestoreTitles(Player player, CharacterSummary character)
+    {
+        foreach (string part in (character.KnownTitles ?? string.Empty)
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (uint.TryParse(part, out uint bit))
+            {
+                player.Titles.LearnByBit(bit);
+            }
+        }
+
+        player.Titles.Wear(character.ChosenTitle);
+    }
+
     private static void RestoreSavedState(Player player, CharacterSummary character)
     {
         // Outside the health guard: the penalty window is a window in absolute time and decays on
         // its own, so it is meaningful even for a character with nothing else saved. Carrying it is
         // what stops chain-dying being free for anyone willing to sit through a loading screen.
         player.DeathExpireTime = character.DeathExpireTime;
+
+        // Also outside the guard, and for the same reason: an earned title is not part of the
+        // living/dead state and a character with nothing else saved can still have one.
+        RestoreTitles(player, character);
 
         if (character.Health == 0)
         {

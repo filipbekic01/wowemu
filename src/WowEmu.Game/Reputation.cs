@@ -1,4 +1,5 @@
 using WowEmu.Data.Client;
+using WowEmu.Data.Db;
 
 namespace WowEmu.Game;
 
@@ -131,6 +132,66 @@ public sealed class Reputation(Player owner)
 
         Announce(factionId, clamped, factions);
     }
+
+    /// <summary>
+    /// Pays out a quest's reputation rewards.
+    /// </summary>
+    /// <remarks>
+    /// <b>Five factions, not one.</b> A quest commonly pays its own faction and a parent city at
+    /// once, so reading only the first slot loses most of the reputation in the game.
+    /// <para>
+    /// Each slot's value is an <i>index</i>, not an amount: its sign picks the gains row or the
+    /// losses row of <c>QuestFactionReward.dbc</c>, and its magnitude picks the column. Paying it
+    /// raw awards 1 point where the table means 10, or 5 where it means 250.
+    /// </para>
+    /// </remarks>
+    public void AwardQuest(
+        IReadOnlyList<QuestReputationReward> rewards,
+        DbcStore<QuestFactionRewardEntry> amounts,
+        DbcStore<FactionEntry>? factions = null)
+    {
+        ArgumentNullException.ThrowIfNull(rewards);
+        ArgumentNullException.ThrowIfNull(amounts);
+
+        foreach (QuestReputationReward reward in rewards)
+        {
+            // The faction id alone decides whether a slot is used, as upstream does. A slot with an
+            // override and a zero index is a real reward, and skipping on the index loses it.
+            if (!reward.IsUsed)
+            {
+                continue;
+            }
+
+            int amount;
+
+            // The override wins outright when set — upstream does not consult the table at all,
+            // and a quest carrying both would otherwise pay the wrong one of the two.
+            if (reward.Override != 0)
+            {
+                amount = reward.OverrideAmount;
+            }
+            else
+            {
+                uint row = reward.ValueIndex > 0 ? GainsRow : LossesRow;
+
+                if (!amounts.TryGet(row, out QuestFactionRewardEntry? entry) || entry is null)
+                {
+                    continue;
+                }
+
+                amount = entry.At(Math.Abs(reward.ValueIndex));
+            }
+
+            if (amount != 0)
+            {
+                Gain(reward.FactionId, amount, factions);
+            }
+        }
+    }
+
+    /// <summary>The two rows of <c>QuestFactionReward.dbc</c>: gains, and the same figures negated.</summary>
+    private const uint GainsRow = 1;
+    private const uint LossesRow = 2;
 
     /// <summary>
     /// What a vendor or trainer of this faction charges, as a multiplier.

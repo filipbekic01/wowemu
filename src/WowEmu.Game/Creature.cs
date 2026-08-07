@@ -54,6 +54,30 @@ public sealed class Creature : Unit
     /// </remarks>
     public uint LootId { get; private init; }
 
+    /// <summary>
+    /// What this corpse yields to a skinner. Zero for most of the game.
+    /// </summary>
+    /// <remarks>
+    /// A separate table from <see cref="LootId"/> and reached only after the corpse has been
+    /// emptied — skinning is a second pass over a body someone has already looted.
+    /// </remarks>
+    public uint SkinLootId { get; private init; }
+
+    /// <summary>What this creature's pocket yields. Zero for anything with no pockets.</summary>
+    public uint PickpocketLootId { get; private init; }
+
+    /// <summary>
+    /// When this pocket can be picked again, in unix seconds. Zero for never picked.
+    /// </summary>
+    /// <remarks>
+    /// Per creature and not per player, matching upstream: a picked pocket is empty for everyone,
+    /// not merely for the rogue who emptied it.
+    /// </remarks>
+    public long PickpocketRestoreTime { get; set; }
+
+    /// <summary>The type flags, which say among other things what skill skins this.</summary>
+    public uint TypeFlags { get; private init; }
+
     /// <summary>Which gossip menu right-clicking opens. Zero means it has none of its own.</summary>
     public uint GossipMenuId { get; private init; }
 
@@ -465,6 +489,12 @@ public sealed class Creature : Unit
     /// <remarks><c>creature.spawntimesecs</c> — per spawn, not per template.</remarks>
     public uint RespawnDelayMs { get; private init; }
 
+    /// <summary>The corpse and respawn delays in whole seconds, for the pickpocket cooldown.</summary>
+    public long CorpseDelaySeconds => CorpseDelayMs / 1000;
+
+    /// <inheritdoc cref="CorpseDelaySeconds"/>
+    public long RespawnSeconds => RespawnDelayMs / 1000;
+
     /// <summary>Milliseconds until the corpse disappears. Zero unless there is a corpse.</summary>
     public uint CorpseRemainingMs { get; private set; }
 
@@ -701,6 +731,9 @@ public sealed class Creature : Unit
             CreatureType = template.CreatureType,
             Expansion = template.Expansion,
             LootId = template.LootId,
+            SkinLootId = template.SkinLootId,
+            PickpocketLootId = template.PickpocketLootId,
+            TypeFlags = template.TypeFlags,
             GossipMenuId = template.GossipMenuId,
             MinGold = template.MinGold,
             MaxGold = template.MaxGold,

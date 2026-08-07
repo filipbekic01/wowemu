@@ -164,6 +164,42 @@ public sealed class QuestLog(Player owner)
             return QuestTakeResult.WrongRace;
         }
 
+        if (quest.RequiredSkillId != 0
+            && owner.Skills.Value(quest.RequiredSkillId) < quest.RequiredSkillPoints)
+        {
+            return QuestTakeResult.NotEnoughSkill;
+        }
+
+        // Both directions. A minimum keeps a faction's later work back until they trust you; a
+        // MAXIMUM stops them offering their introductory work once they already do. Checking only
+        // the minimum — the obvious half — leaves those on offer forever.
+        if (quest.RequiredMinRepFaction != 0
+            && owner.Reputation.StandingWith(quest.RequiredMinRepFaction) < quest.RequiredMinRepValue)
+        {
+            return QuestTakeResult.NotEnoughReputation;
+        }
+
+        if (quest.RequiredMaxRepFaction != 0
+            && owner.Reputation.StandingWith(quest.RequiredMaxRepFaction) >= quest.RequiredMaxRepValue)
+        {
+            return QuestTakeResult.TooMuchReputation;
+        }
+
+        // Last of the requirement checks, matching upstream's order in CanTakeQuest. A daily is
+        // marked Repeatable in the data, so the Rewarded check above lets it through — this is the
+        // only thing standing between a player and doing the same daily all afternoon.
+        if (owner.QuestResets.IsDone(quest))
+        {
+            return QuestTakeResult.AlreadyDoneThisPeriod;
+        }
+
+        // Only after the "already done" check: a character at their limit who has already done
+        // this one should be told they did it, not that they are out of dailies.
+        if (quest.IsDaily && !owner.QuestResets.HasDailySlot)
+        {
+            return QuestTakeResult.DailyLimitReached;
+        }
+
         if (InLogCount >= QuestConstants.MaxLogSize)
         {
             return QuestTakeResult.LogFull;
@@ -853,6 +889,22 @@ public enum QuestTakeResult
     TooHighLevel,
     WrongClass,
     WrongRace,
+
+    /// <summary>The quest wants a profession the character has not taken far enough.</summary>
+    NotEnoughSkill,
+
+    /// <summary>A faction does not trust the character enough yet.</summary>
+    NotEnoughReputation,
+
+    /// <summary>A faction trusts the character too much — this is introductory work.</summary>
+    TooMuchReputation,
+
+    /// <summary>A repeating quest already done today, this week or this month.</summary>
+    AlreadyDoneThisPeriod,
+
+    /// <summary>All twenty-five daily slots are used.</summary>
+    DailyLimitReached,
+
     LogFull,
 }
 

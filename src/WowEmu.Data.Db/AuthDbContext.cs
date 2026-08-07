@@ -43,6 +43,7 @@ public sealed class AuthDbContext(DbContextOptions<AuthDbContext> options) : DbC
                 .HasColumnName("session_key").HasColumnType("binary(40)");
 
             entity.Property(account => account.SecurityLevel).HasColumnName("security_level");
+            entity.Property(account => account.Expansion).HasColumnName("expansion");
             entity.Property(account => account.Flags).HasColumnName("flags");
             entity.Property(account => account.CreatedAt).HasColumnName("created_at");
             entity.Property(account => account.LastLoginAt).HasColumnName("last_login_at");

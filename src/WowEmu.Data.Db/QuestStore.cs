@@ -12,6 +12,9 @@ public static class QuestConstants
     /// <summary>Item objectives. <c>QUEST_ITEM_OBJECTIVES_COUNT</c> — six, not four.</summary>
     public const int MaxItemObjectives = 6;
 
+    /// <summary>Factions one quest can pay. <c>QUEST_REPUTATIONS_COUNT</c>.</summary>
+    public const int MaxReputationRewards = 5;
+
     /// <summary>Items handed over unconditionally. <c>QUEST_REWARDS_COUNT</c>.</summary>
     public const int MaxRewards = 4;
 
@@ -165,6 +168,30 @@ public readonly record struct QuestObjective(int Entry, ushort Count)
 }
 
 /// <summary>One item a quest asks for, or hands over.</summary>
+/// <summary>
+/// One faction a quest pays reputation to.
+/// </summary>
+/// <remarks>
+/// <b>The value is an index, not an amount.</b> <c>RewardFactionValueID</c> selects a column of
+/// <c>QuestFactionReward.dbc</c>, scaled by the quest's level — paying it as raw reputation gives a
+/// quest that awards "1" a single point instead of the few hundred it means.
+/// </remarks>
+public readonly record struct QuestReputationReward(ushort FactionId, int ValueIndex, int Override = 0)
+{
+    /// <summary>Whether this slot is used at all.</summary>
+    public bool IsUsed => FactionId != 0;
+
+    /// <summary>
+    /// The override amount, in whole reputation. Zero when the slot uses the index instead.
+    /// </summary>
+    /// <remarks>
+    /// <b>Stored in hundredths.</b> The column holds 100000 for a thousand reputation, so paying it
+    /// raw hands out a hundred times too much — enough to take a character from Neutral to Exalted
+    /// on one quest.
+    /// </remarks>
+    public int OverrideAmount => Override / 100;
+}
+
 public readonly record struct QuestItem(uint ItemId, uint Count)
 {
     public bool IsUsed => ItemId != 0 && Count > 0;
@@ -296,10 +323,52 @@ public sealed record QuestTemplate(
     /// the field regardless and draws an objective line from it — a quest that asks for kills and
     /// reports zero shows a line the player can never satisfy.
     /// </remarks>
-    byte RequiredPlayerKills = 0)
+    byte RequiredPlayerKills = 0,
+
+    /// <summary>A skill the character must have, and how far along. Zero for neither.</summary>
+    ushort RequiredSkillId = 0,
+    ushort RequiredSkillPoints = 0,
+
+    /// <summary>A faction the character must stand well enough with.</summary>
+    ushort RequiredMinRepFaction = 0,
+    int RequiredMinRepValue = 0,
+
+    /// <summary>
+    /// And one they must <i>not</i> stand too well with.
+    /// </summary>
+    /// <remarks>
+    /// The odd one, and it is real: a few quests are offered only while you are <b>below</b> a
+    /// standing — how a faction stops giving you its introductory work once it likes you. Ignoring
+    /// the maximum leaves those on offer forever.
+    /// </remarks>
+    ushort RequiredMaxRepFaction = 0,
+    int RequiredMaxRepValue = 0,
+
+    /// <summary>
+    /// Up to five factions this quest pays reputation to, and how much.
+    /// </summary>
+    /// <remarks>
+    /// Five, not one — a quest commonly pays its own faction and a parent city at once. Reading only
+    /// the first loses most of the reputation in the game.
+    /// </remarks>
+    QuestReputationReward[]? RewardReputations = null,
+
+    /// <summary>
+    /// The title handed out on turn-in, as a <c>CharTitles.dbc</c> id. Zero for almost every quest.
+    /// </summary>
+    uint RewardTitle = 0)
 {
     /// <summary>Whether it stays available after being handed in. <b>A SpecialFlags bit.</b></summary>
     public bool IsRepeatable => (SpecialFlags & QuestSpecialFlags.Repeatable) != 0;
+
+    /// <summary>Whether it comes back every day.</summary>
+    public bool IsDaily => (Flags & QuestFlags.Daily) != 0;
+
+    /// <summary>Whether it comes back every week.</summary>
+    public bool IsWeekly => (Flags & QuestFlags.Weekly) != 0;
+
+    /// <summary>Whether it comes back every month. <b>A SpecialFlags bit, unlike the other two.</b></summary>
+    public bool IsMonthly => (SpecialFlags & QuestSpecialFlags.Monthly) != 0;
 
     /// <summary>Whether it resets on a schedule rather than being freely repeatable.</summary>
     /// <remarks>Daily and weekly are Flags bits; monthly is a SpecialFlags one.</remarks>
@@ -624,7 +693,25 @@ public sealed class QuestStore
 
                -- Appended rather than placed with the other chain columns: every reader index
                -- below is positional, so inserting a column mid-list silently shifts sixty of them.
-               ExclusiveGroup
+               ExclusiveGroup,
+
+               -- Appended for the same reason, and the count matters: these follow ExclusiveGroup
+               -- at index 78, so they are 79 to 84, then the reputation rewards at 85 to 99.
+               RequiredSkillId, RequiredSkillPoints,
+               RequiredMinRepFaction, RequiredMinRepValue,
+               RequiredMaxRepFaction, RequiredMaxRepValue,
+               RewardFactionID1, RewardFactionID2, RewardFactionID3, RewardFactionID4, RewardFactionID5,
+               -- RewardFactionValue, not RewardFactionValueId: our dump predates the rename, and
+               -- the values (-7..9) confirm it is still the DBC INDEX rather than the raw override
+               -- that newer AzerothCore added beside it.
+               RewardFactionValue1, RewardFactionValue2, RewardFactionValue3,
+               RewardFactionValue4, RewardFactionValue5,
+
+               -- 95 to 99, then the title at 100. The override is a raw amount in hundredths and
+               -- takes priority over the index beside it whenever it is set.
+               RewardFactionOverride1, RewardFactionOverride2, RewardFactionOverride3,
+               RewardFactionOverride4, RewardFactionOverride5,
+               RewardTitle
         FROM quest_template
         """;
 
@@ -693,6 +780,14 @@ public sealed class QuestStore
             objectiveText[i] = reader.GetString(73 + i);
         }
 
+        QuestReputationReward[] reputations = new QuestReputationReward[QuestConstants.MaxReputationRewards];
+
+        for (int i = 0; i < reputations.Length; i++)
+        {
+            reputations[i] = new QuestReputationReward(
+                reader.GetUInt16(85 + i), reader.GetInt32(90 + i), reader.GetInt32(95 + i));
+        }
+
         return new QuestTemplate(
             Id: reader.GetUInt32(0),
             Method: reader.GetByte(1),
@@ -730,6 +825,14 @@ public sealed class QuestStore
             RequestItemsText: reader.GetString(72),
             ObjectiveText: objectiveText,
             RequiredPlayerKills: reader.GetByte(77),
-            ExclusiveGroup: reader.GetInt32(78));
+            ExclusiveGroup: reader.GetInt32(78),
+            RequiredSkillId: reader.GetUInt16(79),
+            RequiredSkillPoints: reader.GetUInt16(80),
+            RequiredMinRepFaction: reader.GetUInt16(81),
+            RequiredMinRepValue: reader.GetInt32(82),
+            RequiredMaxRepFaction: reader.GetUInt16(83),
+            RequiredMaxRepValue: reader.GetInt32(84),
+            RewardReputations: reputations,
+            RewardTitle: reader.GetUInt16(100));
     }
 }

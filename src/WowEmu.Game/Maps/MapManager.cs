@@ -48,7 +48,9 @@ public sealed class MapManager(
     NavMeshManager? navmeshes = null,
     SkillLines? skills = null,
     LootStore? gameObjectLoot = null,
-    DbcStore<LockEntry>? locks = null) : IDisposable
+    DbcStore<LockEntry>? locks = null,
+    LootStore? skinningLoot = null,
+    LootStore? pickpocketLoot = null) : IDisposable
 {
     /// <summary>
     /// The four phases. Three update a category of map; the fourth is a pause.
@@ -96,6 +98,8 @@ public sealed class MapManager(
                 Skills = skills,
                 GameObjectLoot = gameObjectLoot,
                 LockTable = locks,
+                SkinningLoot = skinningLoot,
+                PickpocketLoot = pickpocketLoot,
             };
             _maps[mapId] = map;
         }

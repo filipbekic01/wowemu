@@ -45,6 +45,23 @@ public sealed class ItemInstanceEntity
     public string SpellCharges { get; set; } = string.Empty;
 
     public uint Flags { get; set; }
+
+    /// <summary>
+    /// The rolled random-properties id, signed. Zero for an item with none.
+    /// </summary>
+    /// <remarks>
+    /// <b>Signed, and stored signed.</b> Negative names a scaled suffix and positive a fixed one;
+    /// an unsigned column turns every "of the Bear" into a four-billion-ish property id that
+    /// resolves to nothing.
+    /// </remarks>
+    public int RandomPropertyId { get; set; }
+
+    /// <summary>The suffix factor the scaled amounts are computed from.</summary>
+    /// <remarks>
+    /// Saved rather than recomputed. It is derived from the template today, but it is <i>the
+    /// item's</i> and recomputing it would silently restat everyone's gear if the table changed.
+    /// </remarks>
+    public uint SuffixFactor { get; set; }
 }
 
 /// <summary>
@@ -154,6 +171,48 @@ public sealed class CharacterSkillEntity
 }
 
 /// <summary>
+/// What one faction thinks of one character.
+/// </summary>
+/// <remarks>
+/// <b>Faction id, not reputation list id.</b> The list id is a display slot the client uses and
+/// only 128 factions have one; storing that instead throws away every faction tracked behind the
+/// scenes and collides the ones left.
+/// </remarks>
+public sealed class CharacterReputationEntity
+{
+    public uint CharacterId { get; set; }
+
+    public ushort FactionId { get; set; }
+
+    /// <summary>Signed: standing runs down to -42,000 as well as up.</summary>
+    public int Standing { get; set; }
+}
+
+/// <summary>
+/// One repeating quest a character has done since its last reset.
+/// </summary>
+/// <remarks>
+/// Three tables rather than one with a period column, matching upstream. Each is truncated
+/// wholesale by its own reset, and a shared table would make each reset a filtered delete over
+/// rows the other two still need.
+/// </remarks>
+public abstract class CharacterQuestPeriodEntity
+{
+    public uint CharacterId { get; set; }
+
+    public uint QuestId { get; set; }
+}
+
+/// <inheritdoc cref="CharacterQuestPeriodEntity"/>
+public sealed class CharacterQuestDailyEntity : CharacterQuestPeriodEntity;
+
+/// <inheritdoc cref="CharacterQuestPeriodEntity"/>
+public sealed class CharacterQuestWeeklyEntity : CharacterQuestPeriodEntity;
+
+/// <inheritdoc cref="CharacterQuestPeriodEntity"/>
+public sealed class CharacterQuestMonthlyEntity : CharacterQuestPeriodEntity;
+
+/// <summary>
 /// Where a character comes back to — the innkeeper they last spoke to, or their starting zone.
 /// </summary>
 /// <remarks>
@@ -191,4 +250,12 @@ public sealed class CharacterActionEntity
     public uint Action { get; set; }
 
     public byte Type { get; set; }
+}
+
+/// <summary>Which of the three shared quest resets is being run.</summary>
+public enum QuestResetPeriod
+{
+    Daily,
+    Weekly,
+    Monthly,
 }

@@ -279,12 +279,14 @@
               "text": "M2 gate script (tools/harness/m2_world.py)"
             },
             {
-              "done": false,
-              "text": "Expansion gating (death knight level requirement)"
+              "done": true,
+              "text": "Expansion gating (death knight level requirement)",
+              "note": "Race and class expansion are separate refusals with separate codes (0x39 / 0x3A) because the client says different things — sending the race one for a class problem tells a human warrior's owner to buy Wrath for being human. Both read the expansion column out of ChrRaces/ChrClasses.dbc rather than a hard-coded list. The account's expansion is a new auth column (default 2) capped by the realm's, so an account entitled to more than the realm serves is only entitled to what it serves. Death knights: the unlock needs an EXISTING character at MinLevelForHeroicCharacter (55) — the one being made has no level yet, and reading it would refuse every death knight forever. Out of slots is a different refusal (0x3C) from not having met the level (0x3B): the player has met the requirement and the fix is different. Rules extracted to CharacterCreationRules as pure functions; a WorldSession is not constructible in a test."
             },
             {
-              "done": false,
-              "text": "Faction rules (no mixed-faction accounts on PvP realms)"
+              "done": true,
+              "text": "Faction rules (no mixed-faction accounts on PvP realms)",
+              "note": "AllowTwoSideAccounts, default true as upstream. Compared by TEAM from ChrRaces.dbc, not by race — the several races on a side are one team, and the obvious race comparison refuses a human account a dwarf. Draenei and blood elves make this concrete: neither sits adjacent to the older races in any ordering, so a hard-coded list gets both backwards. The account's side is its first character's; an account that is already mixed is left alone, matching upstream's own @todo, because refusing outright would strand accounts made before the rule was turned on."
             },
             {
               "done": true,
@@ -364,8 +366,9 @@
               "note": "2,307 rows. Fixes a real bug on the way in: the terrain stores an AREA id and everything keyed by zone wanted the ZONE, which are different numbers for a subzone — Northshire Valley is area 9 inside zone 12. Graveyard lookup is keyed by zone, so a ghost dying in any subzone found no graveyard at all. WorldObject now carries both AreaId and ZoneId. Also wires the liquid override: only 5 of the 2,307 areas override anything, and NONE of them has terrain liquid — every one is an instance whose water lives in a WMO — so the override had to reach the model path or it would have been dead code. Verified end to end: a point in Naxxramas comes back as entry 21 (\"Naxxramas - Slime\") instead of the generic 20 (\"WMO Slime\")."
             },
             {
-              "done": false,
-              "text": "SpellItemEnchantment — needed for equipment in the character list"
+              "done": true,
+              "text": "SpellItemEnchantment — needed for equipment in the character list",
+              "note": "Loaded with ItemRandomProperties, ItemRandomSuffix and RandPropPoints, which are useless apart. SpellItemEnchantment carries THREE effects per row, each with its own type — one enchant can add a stat and a proc at once, so reading only the first drops half of what many do. The spell ids sit at columns 11-13, not 8-10: those are the maximum amounts, which 3.3.5 never uses and the format string skips, and they look like plausible spell ids. RandPropPoints is keyed by ITEM LEVEL with no id of its own, and DBCStructure.h's comments count a hidden key that is not there, so its indices run one high — following them reads epic points as rare. All three field counts verified against the files (38/24/29)."
             },
             {
               "done": false,
@@ -1466,8 +1469,9 @@
               "text": "All 38,610 rows write as a query response without throwing; longest is 699 bytes"
             },
             {
-              "done": false,
-              "text": "Random properties, enchantments and gems"
+              "done": true,
+              "text": "Random properties, enchantments and gems",
+              "note": "Random properties and suffixes work end to end; gems and sockets do not. THE SIGN OF THE RANDOM-PROPERTIES ID PICKS THE TABLE: positive means ItemRandomProperties.dbc and fixed amounts, negative means ItemRandomSuffix.dbc by absolute value with amounts scaled by the item's suffix factor. Both tables have rows at low ids, so reading the sign wrong finds a real row and applies a different suffix. An item template's RandomProperty/RandomSuffix columns are NOT dbc ids — they key item_enchantment_template (vendored, 28,606 rows over 828 entries), whose chances usually do NOT sum to 100; a short total triggers a second draw scaled into the total that exists, and treating it as 'nothing happened' leaves most items unsuffixed. Suffix allocations are in TEN-THOUSANDTHS (3,200 means 32%), so raw use gives ten thousand times too much of every stat. The inventory type collapses to one of five point coefficients — a chest and a two-hander share one — and the types with no points return -1 rather than 0, because 0 is a real coefficient. Twelve enchantment slots of THREE words each (id/duration/charges) filling fields 22-57, exactly up to PROPERTY_SEED; suffixes go in slots 7-11 so an enchanter's work in slot 0 survives. Rolled ONCE at creation via Inventory.OnItemCreated and restored — not re-rolled — at login, and a stack split copies rather than re-rolls. Persisted as randomPropertyId (signed) and randomSuffix on item_instance. Still to build: gems, sockets and the enchanting spells that apply slots 0-6; only the arithmetic effect types (stat, resistance, damage) are resolvable without a live spell system."
             },
             {
               "done": true,
@@ -1686,9 +1690,9 @@
               "note": "The note here was stale — it said nobody has quests, and the quest system has existed for a while. The NeedsQuest flag was loaded from the loot template and never read, so quest drops were visible to everyone, which makes them worthless to the player who needs one: anyone can take it first. TWO CONDITIONS, both required (Player::HasQuestForItem): the quest must be IN THE LOG, and the player must still need MORE of the item. Someone holding all eight has no claim on a ninth, and showing it to them is how a full player blocks somebody else from a drop. FILTERED PER PLAYER, NOT PER CORPSE — one list for the corpse means either everybody loots the quest item or nobody does. The NUMBERING stays the corpse's: a player who cannot see slot 2 must still see slot 3 as slot 3, because the client sends the index back and renumbering hands them somebody else's item. THE TAKE PATH IS GUARDED SEPARATELY. Filtering only the window reads as working — nobody can click it — while anyone sending the packet by hand takes it anyway. With no quest store loaded, quest drops show to everyone: the same behaviour as before, and the safer failure, since hiding every quest item would make those quests impossible rather than untidy."
             },
             {
-              "done": false,
+              "done": true,
               "text": "Skinning, pickpocketing, fishing and disenchanting",
-              "note": "Gameobject loot is DONE — split out into the chest/lock item above. The four that remain each need a system that does not exist rather than loot work: skinning and disenchanting are spell effects, pickpocketing needs stealth, and fishing is a minigame with its own packets. The loot side of all four is the same code chests now use."
+              "note": "Skinning and pickpocketing work end to end; fishing and disenchanting have their rules and tables but not their spell plumbing. Four tables vendored (skinning 1,919 rows / 520 ids, pickpocketing 10,996 / 2,585, fishing 247 / 217, disenchant 124 / 56) plus skill_fishing_base_level. Skinning: the flag is set when the corpse is EMPTIED, not at death — flagging at death lets a skinner take the hide out from under whoever killed it, since the corpse sparkles for both and only one owns the loot. Checked against the table rather than the id, because a creature can carry an id whose table has no rows. Which skill skins comes from three type flags (herbalism/mining/engineering) rather than always skinning. The requirement uses TWO formulas picked by the SKINNER's own skill: below 100 it is (level-10)*10, at or above it level*5 — which is LOWER past level 20, so crossing 100 unlocks corpses that were refused a moment earlier. A third, level-keyed variant floors at zero for the skill-up roll. All three are genuinely different upstream. Pickpocketing is the one loot path wanting a LIVING target, so it cannot go through OpenLoot; its gold is generated rather than taken from the creature, over two independent rolls (one per level) whose triangular distribution a single roll on the sum would flatten. The pocket cooldown is a minute PLUS the corpse and respawn delays — 240s for a common creature, not 60 — so a rogue cannot farm one guard. Fishing's chance is SQUARED: half the required skill gives 25%, not 50%, floored at 1 so no zone is permanently unfishable. Still to build: the fishing bobber gameobject and its channel, and item-target spells for disenchanting."
             },
             {
               "done": true,
@@ -1802,8 +1806,9 @@
               "text": "Timed quests, area triggers, escort and event objectives"
             },
             {
-              "done": false,
-              "text": "Reputation and skill requirements, spell and title rewards, daily resets"
+              "done": true,
+              "text": "Reputation and skill requirements, spell and title rewards, daily resets",
+              "note": "All five parts. Requirements: RequiredSkillId/Points and the Min/Max reputation columns now gate CanTake. Reputation rewards: five slots, not one — the value is an INDEX into QuestFactionReward.dbc (sign picks the gains/losses row, magnitude the column), and RewardFactionOverride wins outright when set, in hundredths. Our dump names these RewardFactionValue/RewardFactionOverride where newer AzerothCore has RewardFactionValueId/RewardFactionValueIdOverride — same divergence family as creature_template_model and game_graveyard; the -7..9 range is what proves it is still the index form. Spell rewards: RewardSpellCast is what fires and RewardSpell is only the pane icon — our dump's names are upstream's RewardSpell/RewardDisplaySpell swapped, so reading the obvious one casts the wrong spell. Cast after the completion packet, as upstream is careful to do. Title rewards: new CharTitles.dbc store; the column is a dbc id and the mask wants the row's separate bit_index — they agree for the first few dozen rows, which is why using the id looks fine at first. CMSG_SET_TITLE handled, signed (-1 takes a title off). Daily resets: dailies in the 25-slot PLAYER_FIELD_DAILY_QUESTS_1 block the client counts from, weeklies/monthlies in server-side sets; all 466 dailies also carry Repeatable, so the ordinary rewarded check lets them through and SatisfyQuestDay is the real gate. Resets are server-wide wall-clock instants (03:00 daily, Wednesday weekly, 1st monthly), run from the world loop against every character on the realm plus the in-memory state of the logged-in ones — an interval timer instead would let a player walk their own reset later each day. Persisted: character_reputation, character_queststatus_daily/_weekly/_monthly, and chosenTitle/knownTitles on characters."
             },
             {
               "done": true,
@@ -2434,7 +2439,7 @@
       "items": [
         "No groups, so no round-robin, no need/greed rolls, no master looter and no free-for-all. Whoever is top of the threat list owns the corpse outright.",
         "QUEST DROPS ARE ROLLED AND SHOWN TO EVERYONE. The flag is read and nothing filters on it, because nobody has any quests to filter against.",
-        "Only creature corpses. Skinning, pickpocketing, fishing, disenchanting, gameobject and item loot all exist in the client and none of them are answered.",
+        "Creature corpses, chests, skinning and pickpocketing are answered. Fishing and disenchanting have their loot tables and their arithmetic but not their spell plumbing — fishing needs the bobber gameobject and its channel, disenchanting needs item-target spells. Item loot (containers, lockboxes) is not built either.",
         "The conditions system is not read, so a row gated on reputation or a quest state drops unconditionally.",
         "Drop rates are taken at face value — upstream scales them per item quality from its configuration, and all those rates are 1.0 by default.",
         "A looted corpse is not despawned early. The corpse delay owns that, so an emptied corpse lies there for the rest of it."
@@ -2445,9 +2450,9 @@
       "items": [
         "PrevQuestId is now enforced, in its positive and negative forms. ExclusiveGroup and the multi-prerequisite list the C++ builds from it are still not read, so a quest gated on a group is admitted on its first prerequisite alone. NextQuestId is read and unused.",
         "No timed quests, no area-trigger objectives, no escorts and no event objectives. Only creature kills and carried items count.",
-        "Reputation and skill requirements pass, and reputation, spell and title rewards are not paid.",
+        "Reputation and skill requirements are enforced, and reputation, spell and title rewards are paid. Reputation uses the QuestFactionReward.dbc index across all five slots with RewardFactionOverride taking priority; the reward spell is cast after the completion packet; titles resolve through CharTitles.dbc to a bit index. Honour, arena points, talent points and mail rewards are still read and unpaid.",
         "Only creatures give quests — gameobject_queststarter and _questender are not read.",
-        "Daily and weekly quests do not reset; a repeatable one can be taken again immediately.",
+        "Daily, weekly and monthly quests reset on shared wall-clock instants (03:00 daily, Wednesday weekly, the 1st monthly), driven from the world loop and applied to every character on the realm. Seasonal quests and the event calendar behind them are not built, so a seasonal quest never resets.",
         "An autocomplete quest (Flags 0x00010000, or Method 0) opens the details window instead of the request-items one. It is still completable — accept, then hand in — but the first click shows the wrong dialog. The blizzlike path ends in RewardQuest paying out a quest that was never in the log, which is not built.",
         "A quest whose SpecialFlags carry EXPLORATION_OR_EVENT, and the two that require player kills, are now permanently incomplete rather than wrongly complete. What would finish them is a script and a PvP-kill hook, neither of which exists.",
         "The questgiver marker is a port of GetQuestDialogStatus, but the low-level variants use a hardcoded Quests.LowLevelHideDiff of 4 and the reputation-flavoured statuses (AVAILABLE_REP, REWARD_REP) are never produced, because repeatable and daily handling is not there. Conditions (CONDITION_SOURCE_TYPE_QUEST_AVAILABLE) are not consulted either.",

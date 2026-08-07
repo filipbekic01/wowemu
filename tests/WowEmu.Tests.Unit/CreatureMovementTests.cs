@@ -479,6 +479,9 @@ internal static class CreatureFixture
         uint minGold = 0,
         uint maxGold = 0,
         uint gossipMenuId = 0,
+        uint skinLootId = 0,
+        uint pickpocketLootId = 0,
+        uint typeFlags = 0,
         IReadOnlyList<Waypoint>? path = null,
         CreatureEquipment? equipment = null,
         CreatureAddon? addon = null)
@@ -529,7 +532,7 @@ internal static class CreatureFixture
             UnitFlags2: 2048,
             DynamicFlags: 0,
             CreatureType: creatureType,
-            TypeFlags: 0,
+            TypeFlags: typeFlags,
             Family: 0,
             HealthModifier: 1.0f,
             ManaModifier: 1.0f,
@@ -547,7 +550,9 @@ internal static class CreatureFixture
             LootId: lootId,
             MinGold: minGold,
             MaxGold: maxGold,
-            GossipMenuId: gossipMenuId);
+            GossipMenuId: gossipMenuId,
+            SkinLootId: skinLootId,
+            PickpocketLootId: pickpocketLootId);
 
         CreatureBaseStats stats = new(100, 200, 300, 50, 60, 20, 5, 1.5f, 2f, 3f);
 

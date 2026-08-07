@@ -228,6 +228,16 @@ internal static class WorldStartup
         await lootReferences.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await gameObjectLoot.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
+        LootStore skinningLoot = services.GetRequiredKeyedService<LootStore>("skinning_loot");
+        LootStore pickpocketLoot = services.GetRequiredKeyedService<LootStore>("pickpocket_loot");
+        LootStore fishingLoot = services.GetRequiredKeyedService<LootStore>("fishing_loot");
+        LootStore disenchantLoot = services.GetRequiredKeyedService<LootStore>("disenchant_loot");
+
+        await skinningLoot.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await pickpocketLoot.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await fishingLoot.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await disenchantLoot.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
         if (creatureLoot.Count == 0)
         {
             throw new InvalidOperationException(
@@ -275,6 +285,10 @@ internal static class WorldStartup
         await startingActions.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await trainers.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await spellRanks.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        ItemEnchantmentStore itemEnchantments = services.GetRequiredService<ItemEnchantmentStore>();
+
+        await itemEnchantments.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
         // Measured into a local rather than inline: the analyzer objects to work inside a log call,
         // and the elapsed time has to be taken at the same point whether or not anyone is listening.

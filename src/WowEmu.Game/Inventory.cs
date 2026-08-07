@@ -177,6 +177,17 @@ public readonly record struct ItemPosition(byte Bag, byte Slot)
 /// </remarks>
 public sealed class Inventory(Player owner)
 {
+    /// <summary>
+    /// Run over every item this inventory creates, before it is placed.
+    /// </summary>
+    /// <remarks>
+    /// The seam for random suffixes, which need the DBC stores and the world's roll table — neither
+    /// of which an inventory has or should have. Rolled here rather than in <c>Item.Create</c>
+    /// because it must happen <b>once</b>, when the item first exists: rolling on load would give a
+    /// player's sword a new suffix every session.
+    /// </remarks>
+    public Action<Item>? OnItemCreated { get; set; }
+
     private readonly Item?[] _slots = new Item?[InventorySlots.SlotCount];
 
     /// <summary>
@@ -880,6 +891,8 @@ public sealed class Inventory(Player owner)
             Item created = Item.Create(nextGuidCounter(), template, owner.Guid);
             created.Count = amount;
 
+            OnItemCreated?.Invoke(created);
+
             Place(position, created);
             touched.Add(created);
         }
@@ -917,6 +930,8 @@ public sealed class Inventory(Player owner)
             }
 
             Item worn = Item.Create(nextGuidCounter(), template, owner.Guid);
+
+            OnItemCreated?.Invoke(worn);
 
             if (CanEquip(worn, slot) != InventoryResult.Ok)
             {
@@ -1411,6 +1426,11 @@ public sealed class Inventory(Player owner)
 
             Item created = Item.Create(nextGuidCounter(), source.Template, owner.Guid);
             created.Count = count;
+
+            // Copied, not rolled. A split is the same item in two piles, and re-rolling would let a
+            // player split a stack until the half they kept carried the suffix they wanted.
+            created.RandomPropertiesId = source.RandomPropertiesId;
+            created.SuffixFactor = source.SuffixFactor;
 
             Place(to, created);
             source.Count -= count;

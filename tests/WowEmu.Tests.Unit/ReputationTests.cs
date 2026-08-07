@@ -1,4 +1,5 @@
 using WowEmu.Data.Client;
+using WowEmu.Data.Db;
 using WowEmu.Game;
 
 namespace WowEmu.Tests.Unit;
@@ -134,7 +135,121 @@ public sealed class ReputationTests
         Assert.True(factions.Entries.Count(f => f.ReputationListId < 0) > shown);
     }
 
-    private const uint Stormwind = 72;
+    // ------------------------------------------------------------------ persistence
+
+    /// <summary>
+    /// Everything a character has met survives a save and load, negative standing included.
+    /// </summary>
+    /// <remarks>
+    /// Standing is signed and runs to -42,000. A column or a snapshot that treats it as unsigned
+    /// turns every faction a character has angered into a near-Exalted one, which is the opposite
+    /// of what happened and looks like a reward.
+    /// </remarks>
+    [Fact]
+    public void ADislikedFaction_SurvivesARoundTrip()
+    {
+        Player saved = Player();
+
+        saved.Reputation.Set(Stormwind, 12000);
+        saved.Reputation.Set(Ironforge, -8000);
+
+        // What the session writes out, in the shape the table stores.
+        List<(ushort Faction, int Standing)> rows =
+            [.. saved.Reputation.All.Select(pair => ((ushort)pair.Key, pair.Value))];
+
+        Player loaded = Player();
+
+        foreach ((ushort faction, int standing) in rows)
+        {
+            loaded.Reputation.Set(faction, standing);
+        }
+
+        Assert.Equal(12000, loaded.Reputation.StandingWith(Stormwind));
+        Assert.Equal(-8000, loaded.Reputation.StandingWith(Ironforge));
+    }
+
+    // ------------------------------------------------------------------ quest rewards
+
+    /// <summary>
+    /// A quest's reputation value is an index into a table, not an amount.
+    /// </summary>
+    /// <remarks>
+    /// Our dump's column runs -7 to 9, which is what gives it away. Paying it raw awards 1 point
+    /// where the table means 10, or 5 where it means 250 — a hundredfold error that still looks
+    /// like reputation being awarded.
+    /// </remarks>
+    [RequiresClientDataFact]
+    public void AQuestsRewardValue_IsAnIndex()
+    {
+        DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
+        Player player = Player();
+
+        player.Reputation.AwardQuest(
+            [new QuestReputationReward(Stormwind, 3)], stores.QuestFactionRewards, stores.Factions);
+
+        // Column 3 of the gains row is 75, not 3.
+        Assert.Equal(75, player.Reputation.StandingWith(Stormwind));
+    }
+
+    /// <summary>A negative index takes reputation away, from the losses row.</summary>
+    /// <remarks>
+    /// Two rows in the file and the sign picks which. Using the magnitude alone makes every quest
+    /// that costs you standing pay it instead.
+    /// </remarks>
+    [RequiresClientDataFact]
+    public void ANegativeIndex_TakesItAway()
+    {
+        DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
+        Player player = Player();
+
+        player.Reputation.AwardQuest(
+            [new QuestReputationReward(Stormwind, -3)], stores.QuestFactionRewards, stores.Factions);
+
+        Assert.Equal(-75, player.Reputation.StandingWith(Stormwind));
+    }
+
+    /// <summary>
+    /// All five slots pay, not just the first.
+    /// </summary>
+    /// <remarks>
+    /// A quest commonly pays its own faction and a parent city at once, so reading one slot loses
+    /// most of the reputation in the game.
+    /// </remarks>
+    [RequiresClientDataFact]
+    public void AllFiveSlots_Pay()
+    {
+        DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
+        Player player = Player();
+
+        player.Reputation.AwardQuest(
+            [
+                new QuestReputationReward(Stormwind, 3),
+                new QuestReputationReward(Ironforge, 2),
+            ],
+            stores.QuestFactionRewards,
+            stores.Factions);
+
+        Assert.Equal(75, player.Reputation.StandingWith(Stormwind));
+        Assert.Equal(25, player.Reputation.StandingWith(Ironforge));
+    }
+
+    /// <summary>An unused slot pays nothing.</summary>
+    [RequiresClientDataFact]
+    public void AnUnusedSlot_PaysNothing()
+    {
+        DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
+        Player player = Player();
+
+        player.Reputation.AwardQuest(
+            [new QuestReputationReward(0, 3), new QuestReputationReward(Stormwind, 0)],
+            stores.QuestFactionRewards,
+            stores.Factions);
+
+        Assert.Equal(0, player.Reputation.StandingWith(Stormwind));
+    }
+
+    private const ushort Ironforge = 47;
+    private const ushort Stormwind = 72;
 
     private static Player Player() => InventoryFixture.Player(level: 20, proficiencies: false);
 }

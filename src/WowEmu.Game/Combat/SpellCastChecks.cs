@@ -28,6 +28,69 @@ public static class SpellCastChecks
     public const float RangeTolerance = 1.0f;
 
     /// <summary>
+    /// The gathering spells, whose target rules are the opposite of everything else's.
+    /// </summary>
+    /// <returns>Null when the spell is not one of these, so the ordinary checks continue.</returns>
+    /// <remarks>
+    /// Port of the <c>SPELL_EFFECT_SKINNING</c> and pickpocket arms of <c>Spell::CheckCast</c>.
+    /// <para>
+    /// <b>The skinning requirement uses the caster's own skill to choose its formula.</b> Below 100
+    /// it is <c>(level - 10) * 10</c> and at or above it <c>level * 5</c> — which is <i>lower</i>
+    /// past level 20, so a skinner crossing 100 can suddenly touch corpses that were refused a
+    /// moment earlier. That is upstream's behaviour, not a rounding artefact.
+    /// </para>
+    /// </remarks>
+    private static SpellCastResult? CheckGathering(Unit caster, SpellEntry spell, Unit target)
+    {
+        if (caster is not Player player || target is not Creature creature)
+        {
+            return null;
+        }
+
+        foreach (SpellEffectEntry effect in spell.Effects)
+        {
+            switch (effect.Effect)
+            {
+                case SpellEffectId.Skinning:
+                    return CheckSkinning(player, creature);
+
+                case SpellEffectId.Pickpocket:
+                    // The one spell that wants a living target, so the ordinary dead check is
+                    // exactly right for it and nothing special is needed here.
+                    return creature.IsAlive ? SpellCastResult.Ok : SpellCastResult.TargetsDead;
+
+                default:
+                    break;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>Whether a corpse can be skinned by this character.</summary>
+    private static SpellCastResult CheckSkinning(Player player, Creature creature)
+    {
+        if ((creature.UnitFlags & (uint)UnitFlags.Skinnable) == 0)
+        {
+            return SpellCastResult.TargetUnskinnable;
+        }
+
+        // Skinning is a second pass. A corpse somebody has not finished looting is not ready, and
+        // taking the hide first would strand whatever is left underneath it.
+        if (creature.Loot is { IsEmpty: false })
+        {
+            return SpellCastResult.TargetNotLooted;
+        }
+
+        uint skill = Skinning.SkillFor(creature.TypeFlags);
+        int value = (int)player.Skills.Value(skill);
+
+        return Skinning.CanSkin(creature.Level, value)
+            ? SpellCastResult.Ok
+            : SpellCastResult.LowCastLevel;
+    }
+
+    /// <summary>
     /// Checks a cast.
     /// </summary>
     /// <param name="caster">Who is casting.</param>
@@ -83,6 +146,13 @@ public static class SpellCastChecks
         if (target is null || ReferenceEquals(target, caster))
         {
             return SpellCastResult.Ok;
+        }
+
+        // Before the alive check, and it has to be: skinning targets a corpse, and "your target is
+        // dead" is exactly what a skinner is aiming at.
+        if (CheckGathering(caster, spell, target) is { } gathering)
+        {
+            return gathering;
         }
 
         if (!target.IsAlive)

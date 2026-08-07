@@ -49,10 +49,10 @@ public static class Locks
     public static uint SkillFor(uint lockType) => lockType switch
     {
         LockType.Picklock => SkillType.Lockpicking,
-        LockType.Herbalism => Herbalism,
-        LockType.Mining => Mining,
+        LockType.Herbalism => SkillType.Herbalism,
+        LockType.Mining => SkillType.Mining,
         LockType.Fishing => SkillType.Fishing,
-        LockType.Inscription => Inscription,
+        LockType.Inscription => SkillType.Inscription,
         _ => 0,
     };
 
@@ -137,9 +137,4 @@ public static class Locks
 
         return anyRequirement ? LockResult.Locked : LockResult.Ok;
     }
-
-    /// <summary>Herbalism and the two that are not in <see cref="SkillType"/> yet.</summary>
-    private const uint Herbalism = 182;
-    private const uint Mining = 186;
-    private const uint Inscription = 773;
 }

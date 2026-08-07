@@ -407,6 +407,12 @@ public sealed class Map(
     /// <summary>What chests hold.</summary>
     public LootStore? GameObjectLoot { get; init; }
 
+    /// <summary>What corpses yield to a skinner. <c>skinning_loot_template</c>.</summary>
+    public LootStore? SkinningLoot { get; init; }
+
+    /// <summary>What pockets yield. <c>pickpocketing_loot_template</c>.</summary>
+    public LootStore? PickpocketLoot { get; init; }
+
     /// <summary>
     /// What it takes to open a locked thing.
     /// </summary>
@@ -1651,9 +1657,54 @@ public sealed class Map(
             watcher.Connection?.SendSpellGo(caster.Guid, spell.Id, castCount, targetGuid, caster.Power);
         }
 
+        // Before the damage effects, and it has to be: skinning targets a corpse, and the damage
+        // path refuses anything that is not alive. Routing a skin through it does nothing at all.
+        if (ApplyGatheringEffects(caster, target, spell))
+        {
+            return;
+        }
+
         // Effects after the impact packet, not before. The client draws the spell landing from
         // SMSG_SPELL_GO, so a damage log that arrives first shows a number before its cause.
         ApplySpellEffects(caster, target ?? caster, spell);
+    }
+
+    /// <summary>
+    /// Handles the gathering effects, which want a creature rather than a victim.
+    /// </summary>
+    /// <returns>
+    /// True when the spell was one of these, whether or not it yielded anything — the damage path
+    /// must not also run, or a skinning knife would hit the corpse for its spell damage.
+    /// </returns>
+    /// <remarks>
+    /// The skill gate lives in the cast check upstream rather than here. This is what happens once
+    /// the spell has landed.
+    /// </remarks>
+    private bool ApplyGatheringEffects(Player caster, Unit? target, SpellEntry spell)
+    {
+        if (target is not Creature creature)
+        {
+            return false;
+        }
+
+        foreach (SpellEffectEntry effect in spell.Effects)
+        {
+            switch (effect.Effect)
+            {
+                case SpellEffectId.Skinning:
+                    Skin(caster, creature);
+                    return true;
+
+                case SpellEffectId.Pickpocket:
+                    Pickpocket(caster, creature, DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+                    return true;
+
+                default:
+                    break;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -2310,7 +2361,7 @@ public sealed class Map(
         Quests is null || viewer.Quests.NeedsItem(itemId, Quests);
 
     /// <summary>Stops a corpse or a chest sparkling once there is nothing left in it.</summary>
-    private static void ClearIfEmpty(WorldObject holder, Loot loot)
+    private void ClearIfEmpty(WorldObject holder, Loot loot)
     {
         if (!loot.IsEmpty)
         {
@@ -2322,6 +2373,11 @@ public sealed class Map(
             case Creature creature:
                 creature.Loot = null;
                 creature.DynamicFlags &= ~UnitDynamicFlags.Lootable;
+
+                // Only now. Skinning is a second pass over a body someone has already emptied, and
+                // flagging it at death would let a skinner take the hide out from under whoever
+                // killed it — the corpse sparkles for both and only one of them owns the loot.
+                MakeSkinnable(creature);
                 break;
 
             case GameObject chest:
@@ -2334,6 +2390,139 @@ public sealed class Map(
             default:
                 break;
         }
+    }
+
+    /// <summary>
+    /// Flags an emptied corpse as skinnable, if there is anything under the hide.
+    /// </summary>
+    /// <remarks>
+    /// <b>Checked against the table, not just the id.</b> A creature can carry a skin loot id whose
+    /// table has no rows; flagging on the id alone makes the corpse sparkle and then hands the
+    /// skinner nothing, which reads as a lost item rather than as a creature with no hide.
+    /// </remarks>
+    private void MakeSkinnable(Creature creature)
+    {
+        if (creature.SkinLootId == 0 || SkinningLoot is null
+            || !SkinningLoot.TryGet(creature.SkinLootId, out LootTemplate? template)
+            || template is null)
+        {
+            return;
+        }
+
+        creature.UnitFlags |= (uint)UnitFlags.Skinnable;
+    }
+
+    /// <summary>
+    /// Skins an emptied corpse.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Spell::EffectSkinning</c> together with its <c>CheckCast</c> arm. The skill gate
+    /// is the caller's — this is what happens once it passes.
+    /// <para>
+    /// The flag comes off before the loot goes on. A corpse that is both skinnable and holding
+    /// skinning loot can be skinned twice, and the second pass rolls a fresh hide.
+    /// </para>
+    /// </remarks>
+    /// <returns>False when there is nothing to skin.</returns>
+    public bool Skin(Player player, Creature creature)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+        ArgumentNullException.ThrowIfNull(creature);
+
+        if ((creature.UnitFlags & (uint)UnitFlags.Skinnable) == 0
+            || SkinningLoot is null || _lootReferences is null || _items is null
+            || !SkinningLoot.TryGet(creature.SkinLootId, out LootTemplate? template)
+            || template is null)
+        {
+            return false;
+        }
+
+        creature.UnitFlags &= ~(uint)UnitFlags.Skinnable;
+
+        Loot loot = new() { Owner = player.Guid };
+
+        LootRoll.Fill(
+            loot,
+            template,
+            _lootReferences,
+            _items,
+            () => GameRandom.Urand(0, 9999) / 100f,
+            count => (int)GameRandom.Urand(0, (uint)count - 1),
+            GameRandom.Urand);
+
+        creature.Loot = loot;
+        creature.DynamicFlags |= UnitDynamicFlags.Lootable;
+
+        player.LootTarget = creature.Guid;
+
+        player.Connection?.SendLootWindow(
+            creature.Guid, LootKind.Skinning, loot.Gold, VisibleSlots(loot, player));
+
+        return true;
+    }
+
+    /// <summary>
+    /// Picks a living creature's pocket.
+    /// </summary>
+    /// <remarks>
+    /// Port of the <c>LOOT_PICKPOCKETING</c> arm of <c>Player::SendLoot</c>. <b>The target has to be
+    /// alive</b>, which makes this the one loot path that does not run through
+    /// <see cref="OpenLoot"/> — that one refuses anything still breathing.
+    /// <para>
+    /// The gold is generated here rather than taken from the creature: a picked pocket does not
+    /// reduce what the corpse later drops, and moving it would make pickpocketing a way to steal a
+    /// group's money before the kill.
+    /// </para>
+    /// </remarks>
+    /// <returns>False when there is nothing to take, or the pocket is still empty from last time.</returns>
+    public bool Pickpocket(Player player, Creature creature, long nowSeconds)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+        ArgumentNullException.ThrowIfNull(creature);
+
+        if (!creature.IsAlive || _lootReferences is null || _items is null || PickpocketLoot is null)
+        {
+            return false;
+        }
+
+        if (nowSeconds < creature.PickpocketRestoreTime)
+        {
+            player.Connection?.SendLootError(creature.Guid, LootError.AlreadyPickpocketed);
+
+            return false;
+        }
+
+        creature.PickpocketRestoreTime = nowSeconds
+            + Pickpocketing.CooldownSeconds(creature.CorpseDelaySeconds, creature.RespawnSeconds);
+
+        Loot loot = new()
+        {
+            Owner = player.Guid,
+            Gold = Pickpocketing.Money(
+                (byte)creature.Level, player.Level, bound => (int)GameRandom.Urand(0, (uint)bound - 1)),
+        };
+
+        if (creature.PickpocketLootId != 0
+            && PickpocketLoot.TryGet(creature.PickpocketLootId, out LootTemplate? template)
+            && template is not null)
+        {
+            LootRoll.Fill(
+                loot,
+                template,
+                _lootReferences,
+                _items,
+                () => GameRandom.Urand(0, 9999) / 100f,
+                count => (int)GameRandom.Urand(0, (uint)count - 1),
+                GameRandom.Urand);
+        }
+
+        creature.Loot = loot;
+        player.LootTarget = creature.Guid;
+
+        player.Connection?.SendLootWindow(
+            creature.Guid, LootKind.Pickpocketing, loot.Gold, VisibleSlots(loot, player));
+
+        return true;
     }
 
     /// <summary>
