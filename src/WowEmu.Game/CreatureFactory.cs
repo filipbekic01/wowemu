@@ -21,7 +21,8 @@ public sealed class CreatureFactory(
     CreatureTemplateStore templates,
     CreatureStatsStore stats,
     WaypointStore? waypoints = null,
-    CreatureAddonStore? addons = null)
+    CreatureAddonStore? addons = null,
+    CreatureEquipStore? equipment = null)
 {
     /// <summary>
     /// Builds one creature, or explains why it cannot be built.
@@ -68,7 +69,11 @@ public sealed class CreatureFactory(
 
         creature = Creature.Create(
             spawn, template, templates, baseStats, level, useOppositeGenderModel, displayId,
-            PathFor(spawn));
+            PathFor(spawn),
+
+            // Drawn after the gender roll and before nothing else, so the generator is consumed in
+            // upstream's order — and only for the 176 spawns that ask for a random outfit.
+            equipment?.For(spawn.Entry, spawn.EquipmentId, GameRandom.Urand));
 
         if (creature is null)
         {

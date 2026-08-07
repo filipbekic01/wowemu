@@ -484,7 +484,8 @@ public sealed class CreatureTests
         DynamicFlags: 0,
         WanderDistance: 0f,
         MovementType: 0,
-        RespawnDelaySeconds: 120);
+        RespawnDelaySeconds: 120,
+        EquipmentId: 0);
 
     private static CreatureTemplate Template() => new(
         Entry: SampleEntry,

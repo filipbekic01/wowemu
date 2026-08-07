@@ -38,6 +38,7 @@ builder.Services.AddSingleton<CreatureStatsStore>();
 builder.Services.AddSingleton<CreatureSpawnStore>();
 builder.Services.AddSingleton<WaypointStore>();
 builder.Services.AddSingleton<CreatureAddonStore>();
+builder.Services.AddSingleton<CreatureEquipStore>();
 builder.Services.AddSingleton<GameObjectTemplateStore>();
 builder.Services.AddSingleton<ItemTemplateStore>();
 

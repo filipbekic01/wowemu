@@ -172,6 +172,10 @@ internal static partial class Log
         string direction,
         string address);
 
+    [LoggerMessage(EventId = 2332, Level = LogLevel.Information,
+        Message = "Loaded {Outfits} creature outfits across {Entries} entries")]
+    public static partial void CreatureEquipmentLoaded(ILogger logger, int outfits, int entries);
+
     [LoggerMessage(EventId = 2315, Level = LogLevel.Error,
         Message = "Handler for {Opcode} threw ({Address})")]
     public static partial void PacketHandlerFailed(

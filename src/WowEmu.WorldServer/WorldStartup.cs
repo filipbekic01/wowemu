@@ -164,6 +164,9 @@ internal static class WorldStartup
         CreatureAddonStore addons = services.GetRequiredService<CreatureAddonStore>();
         await addons.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
+        CreatureEquipStore equipment = services.GetRequiredService<CreatureEquipStore>();
+        await equipment.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
         if (templates.TemplateCount == 0 || spawns.Count == 0 || creatureStats.Count == 0)
         {
             throw new InvalidOperationException(
@@ -253,6 +256,8 @@ internal static class WorldStartup
         Log.GameObjectContentLoaded(logger, objectTemplates.Count, objectSpawns.Count, objectSpawns.MapCount);
 
         Log.WaypointContentLoaded(logger, waypoints.Count, waypoints.PathCount, addons.Count, addons.PathCount);
+
+        Log.CreatureEquipmentLoaded(logger, equipment.Count, equipment.EntryCount);
 
         // Grid indexes up front, now that the spawns they read are in memory. Built lazily this used
         // to land on whichever tick a player first reached a map — ~20 ms inside a 50 ms login tick,

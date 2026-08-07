@@ -499,7 +499,8 @@ public sealed class Creature : Unit
         byte level,
         bool useOppositeGenderModel,
         uint displayId,
-        IReadOnlyList<Waypoint>? path = null)
+        IReadOnlyList<Waypoint>? path = null,
+        CreatureEquipment? equipment = null)
     {
         ArgumentNullException.ThrowIfNull(template);
         ArgumentNullException.ThrowIfNull(models);
@@ -542,6 +543,17 @@ public sealed class Creature : Unit
         };
 
         creature.Name = template.Name;
+
+        // Weapons the client draws but nothing carries. Three item template ids, and writing them
+        // is the whole of it — a creature's sword is a model, not an item, and never enters any
+        // inventory.
+        if (equipment is { } outfit)
+        {
+            for (int slot = 0; slot < CreatureEquipment.SlotCount; slot++)
+            {
+                creature.Fields.SetUInt32(UpdateFields.UNIT_VIRTUAL_ITEM_SLOT_ID + slot, outfit[slot]);
+            }
+        }
 
         UpdateFieldStorage fields = creature.Fields;
 

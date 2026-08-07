@@ -17,9 +17,9 @@ namespace WowEmu.Data.Db;
 /// </para>
 /// <para>
 /// A struct, and a narrow one. There are ~146,000 of these resident for the life of the process, so
-/// columns belonging to systems no phase has built are deliberately not read. Equipment, respawn
-/// timers and waypoint indices are still absent; wander distance and movement type arrived with the
-/// phase that needed them, which is how this is meant to grow.
+/// columns belonging to systems no phase has built are deliberately not read. Waypoint indices are
+/// still absent; wander distance, movement type, respawn timers and equipment arrived with the
+/// phases that needed them, which is how this is meant to grow.
 /// </para>
 /// </remarks>
 public readonly record struct CreatureSpawn(
@@ -37,7 +37,8 @@ public readonly record struct CreatureSpawn(
     uint DynamicFlags,
     float WanderDistance,
     byte MovementType,
-    uint RespawnDelaySeconds)
+    uint RespawnDelaySeconds,
+    sbyte EquipmentId)
 {
     /// <summary>
     /// Whether this spawn exists at a given difficulty.
@@ -85,7 +86,7 @@ public sealed class CreatureSpawnStore
             SELECT guid, id, map, spawnMask, phaseMask, modelid,
                    position_x, position_y, position_z, orientation,
                    curhealth, curmana, npcflag, unit_flags, dynamicflags,
-                   spawndist, MovementType, spawntimesecs
+                   spawndist, MovementType, spawntimesecs, equipment_id
             FROM creature
             """;
 
@@ -115,7 +116,11 @@ public sealed class CreatureSpawnStore
                 DynamicFlags: reader.GetUInt32(14),
                 WanderDistance: reader.GetFloat(15),
                 MovementType: reader.GetByte(16),
-                RespawnDelaySeconds: reader.GetUInt32(17));
+                RespawnDelaySeconds: reader.GetUInt32(17),
+
+                // Signed on purpose: -1 means "pick one at random", and reading the column as
+                // unsigned turns 176 armed spawns into ones asking for outfit 255.
+                EquipmentId: reader.GetSByte(18));
 
             if (!_byMap.TryGetValue(mapId, out List<CreatureSpawn>? spawns))
             {

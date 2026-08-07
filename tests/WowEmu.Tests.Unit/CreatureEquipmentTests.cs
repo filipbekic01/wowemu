@@ -1,0 +1,164 @@
+using WowEmu.Data.Db;
+using WowEmu.Game;
+using WowEmu.Protocol;
+
+namespace WowEmu.Tests.Unit;
+
+/// <summary>
+/// The weapons a creature is drawn holding.
+/// </summary>
+/// <remarks>
+/// Three item ids in <c>UNIT_VIRTUAL_ITEM_SLOT_ID</c>, and nothing more — a creature's sword is a
+/// model the client looks up, never an item anything carries, loots or drops. 49,183 of the 146,000
+/// spawns name an outfit and were being drawn empty-handed.
+/// </remarks>
+public sealed class CreatureEquipmentTests
+{
+    private const uint Entry = 299;
+
+    /// <summary>A spawn asking for a variant gets that variant.</summary>
+    [Fact]
+    public void ANamedVariant_IsTheOneReturned()
+    {
+        CreatureEquipStore store = new();
+        store.Add(Entry, 1, new CreatureEquipment(11, 12, 13));
+        store.Add(Entry, 2, new CreatureEquipment(21, 22, 23));
+
+        Assert.Equal(new CreatureEquipment(21, 22, 23), store.For(Entry, 2, Never)!.Value);
+    }
+
+    /// <summary>
+    /// Zero means unarmed, and is not a variant id.
+    /// </summary>
+    /// <remarks>
+    /// 96,587 spawns store it, so reading it as a lookup key would send two thirds of the world
+    /// through a dictionary miss to arrive at the same answer — and would arm anything whose entry
+    /// happened to define a variant 0.
+    /// </remarks>
+    [Fact]
+    public void ZeroMeansUnarmed()
+    {
+        CreatureEquipStore store = new();
+        store.Add(Entry, 1, new CreatureEquipment(11, 12, 13));
+
+        Assert.Null(store.For(Entry, 0, Never));
+    }
+
+    /// <summary>
+    /// Minus one picks one at random, and only then is the generator touched.
+    /// </summary>
+    /// <remarks>
+    /// The draw count is not incidental. PLAN §9 makes seeded comparison against the C++ the
+    /// sharpest tool available, and it only works if both sides consume the generator the same
+    /// number of times — so a draw on every one of 146,000 spawns instead of on the 176 that ask
+    /// for one would put every later roll out of step.
+    /// </remarks>
+    [Fact]
+    public void MinusOnePicksAtRandom_AndOnlyThenRolls()
+    {
+        CreatureEquipStore store = new();
+        store.Add(Entry, 1, new CreatureEquipment(11, 12, 13));
+        store.Add(Entry, 4, new CreatureEquipment(41, 42, 43));
+
+        int rolls = 0;
+
+        uint Counting(uint min, uint max)
+        {
+            rolls++;
+            return max;
+        }
+
+        // A named variant and an unarmed spawn roll nothing at all.
+        store.For(Entry, 1, Counting);
+        store.For(Entry, 0, Counting);
+        Assert.Equal(0, rolls);
+
+        // The random one rolls exactly once.
+        Assert.NotNull(store.For(Entry, -1, Counting));
+        Assert.Equal(1, rolls);
+    }
+
+    /// <summary>
+    /// The roll picks a position in the list, not an id.
+    /// </summary>
+    /// <remarks>
+    /// Upstream advances an iterator over an ordered map by <c>urand(0, size - 1)</c>. Variant ids
+    /// are not contiguous — this entry has 1 and 4 — so indexing the dictionary by the rolled number
+    /// finds nothing for every gap, and the creature is silently disarmed.
+    /// </remarks>
+    [Theory]
+    [InlineData(0u, 11u)]
+    [InlineData(1u, 41u)]
+    public void TheRoll_PicksAPositionRatherThanAnId(uint roll, uint expectedMainHand)
+    {
+        CreatureEquipStore store = new();
+        store.Add(Entry, 1, new CreatureEquipment(11, 12, 13));
+        store.Add(Entry, 4, new CreatureEquipment(41, 42, 43));
+
+        Assert.Equal(expectedMainHand, store.For(Entry, -1, (min, max) => roll)!.Value.MainHand);
+    }
+
+    /// <summary>An entry with no outfit at all comes back empty rather than throwing.</summary>
+    /// <remarks>
+    /// 10,711 entries of the ~9,800 templates have one, so most do — but a spawn naming a variant
+    /// its entry does not define is a data error upstream logs and shrugs at, and so does this.
+    /// </remarks>
+    [Fact]
+    public void AnUnknownEntryOrVariant_IsUnarmed()
+    {
+        CreatureEquipStore store = new();
+        store.Add(Entry, 1, new CreatureEquipment(11, 12, 13));
+
+        Assert.Null(store.For(entry: 12345, 1, Never));
+        Assert.Null(store.For(Entry, 7, Never));
+    }
+
+    /// <summary>The three slots reach the three fields, in order.</summary>
+    /// <remarks>
+    /// The end-to-end check. <c>UNIT_VIRTUAL_ITEM_SLOT_ID</c> is three consecutive fields and the
+    /// client reads main hand, off hand and ranged from them in that order — swapping any two puts
+    /// a bow in a guard's fist.
+    /// </remarks>
+    [Fact]
+    public void TheOutfit_ReachesTheThreeVirtualItemFields()
+    {
+        Creature creature = CreatureFixture.Build(equipment: new CreatureEquipment(1234, 5678, 9012));
+
+        Assert.Equal(1234u, creature.Fields.GetUInt32(UpdateFields.UNIT_VIRTUAL_ITEM_SLOT_ID));
+        Assert.Equal(5678u, creature.Fields.GetUInt32(UpdateFields.UNIT_VIRTUAL_ITEM_SLOT_ID + 1));
+        Assert.Equal(9012u, creature.Fields.GetUInt32(UpdateFields.UNIT_VIRTUAL_ITEM_SLOT_ID + 2));
+    }
+
+    /// <summary>A creature with no outfit leaves the fields alone.</summary>
+    [Fact]
+    public void NoOutfit_LeavesTheFieldsEmpty()
+    {
+        Creature creature = CreatureFixture.Build();
+
+        Assert.Equal(0u, creature.Fields.GetUInt32(UpdateFields.UNIT_VIRTUAL_ITEM_SLOT_ID));
+    }
+
+    /// <summary>The virtual item fields are public, so onlookers see the weapons too.</summary>
+    /// <remarks>
+    /// Worth pinning rather than assuming: the whole point of drawing a weapon is that other people
+    /// see it, and the per-observer filter would silently drop it if the generated flag table said
+    /// otherwise.
+    /// </remarks>
+    [Fact]
+    public void TheVirtualItemFields_ArePublic()
+    {
+        ReadOnlySpan<ushort> flags = UpdateFieldFlags.Unit;
+
+        for (int slot = 0; slot < CreatureEquipment.SlotCount; slot++)
+        {
+            UpdateFieldVisibility visibility =
+                (UpdateFieldVisibility)flags[UpdateFields.UNIT_VIRTUAL_ITEM_SLOT_ID + slot];
+
+            Assert.True(visibility.HasFlag(UpdateFieldVisibility.Public), $"slot {slot} is not public");
+        }
+    }
+
+    /// <summary>A roll that never fires, for the cases that must not draw.</summary>
+    private static uint Never(uint min, uint max) =>
+        throw new InvalidOperationException("the generator should not have been consulted");
+}

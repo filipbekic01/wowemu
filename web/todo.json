@@ -450,8 +450,9 @@
               "text": "game_graveyard_zone (700 rows) — which graveyard a zone releases you to"
             },
             {
-              "done": false,
-              "text": "creature_addon, creature_equip_template — auras and visible weapons on spawn"
+              "done": true,
+              "text": "creature_equip_template — visible weapons on spawn",
+              "note": "Vendored (10,731 outfits across 10,711 entries) and written to UNIT_VIRTUAL_ITEM_SLOT_ID. 49,183 spawns name an outfit and were drawn empty-handed. equipment_id is SIGNED: 0 means unarmed (96,587 spawns), a positive value names a variant, and -1 means pick one at random (176) — reading the column as unsigned turns those 176 into requests for outfit 255. The random pick advances a position through the ordered variants rather than indexing by the rolled number, because variant ids are not contiguous. The generator is only consulted for the -1 case, matching upstream, so seeded draw counts stay in step. creature_addon is vendored separately; its auras and emotes are still unread."
             },
             {
               "done": false,
