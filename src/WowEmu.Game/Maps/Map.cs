@@ -2300,9 +2300,39 @@ public sealed class Map(
         // swing did nothing, which is what makes a creature fight back after being missed.
         victim.Threat.AddThreat(attacker, damage.Damage);
 
+        TeachCombatSkills(attacker, victim, damage.Outcome);
+
         // Death is noticed here, where health changed, rather than polled somewhere later. A hit
         // that takes the last point and a hit that takes ten times it are the same kill.
         NoticeDeath(victim);
+    }
+
+    /// <summary>
+    /// Gives both sides of a melee exchange their chance at a skill-up.
+    /// </summary>
+    /// <remarks>
+    /// Both sides from one call, because the exchange is one event: the attacker learns to swing and
+    /// the victim learns to take it, and running them from separate places is how the two drift into
+    /// disagreeing about what happened.
+    /// <para>
+    /// <b>Only against creatures.</b> Upstream skips this entirely when the other side is a player
+    /// or a player's pet, which is what stops two characters standing in a city raising each other's
+    /// weapon skill to the cap for free.
+    /// </para>
+    /// </remarks>
+    private static void TeachCombatSkills(Unit attacker, Unit victim, MeleeHitOutcome outcome)
+    {
+        if (attacker is Player striker && victim is Creature
+            && SkillGain.Teaches(outcome, defending: false))
+        {
+            SkillGain.RollCombat(striker, victim, defending: false, GameRandom.Urand);
+        }
+
+        if (victim is Player struck && attacker is Creature
+            && SkillGain.Teaches(outcome, defending: true))
+        {
+            SkillGain.RollCombat(struck, attacker, defending: true, GameRandom.Urand);
+        }
     }
 
     /// <summary>
