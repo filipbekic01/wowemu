@@ -367,7 +367,10 @@ public sealed class MapPlayerDeathTests
         Assert.Null(creature.Victim);
         Assert.False(creature.Threat.Contains(player));
         Assert.NotEmpty(link.Deaths);
-        Assert.Equal(PlayerDeath.ReleaseTimerMs, link.Deaths[0]);
+
+        // The RECLAIM delay, not the release timer. A first death is thirty seconds; the six-minute
+        // release timer is a different thing and used to be sent here by mistake.
+        Assert.Equal(CorpseReclaim.Delays[0] * 1000, link.Deaths[0]);
     }
 
     /// <summary>Damage that takes a player to zero kills it, the same way it kills a creature.</summary>
@@ -416,6 +419,8 @@ public sealed class MapPlayerDeathTests
 
         map.Relocate(player, player.CorpsePosition);
 
+        ServeTheWait(player);
+
         Assert.True(map.ReclaimCorpse(player));
         Assert.True(player.IsAlive);
         Assert.False(player.IsGhost);
@@ -453,6 +458,180 @@ public sealed class MapPlayerDeathTests
         Assert.True(player.IsGhost);
         Assert.Equal(died.X, player.Position.X, 0.01f);
 
+        ServeTheWait(player);
+
         Assert.True(map.ReclaimCorpse(player));
     }
+
+    /// <summary>
+    /// Backdates the death so the reclaim wait has already passed.
+    /// </summary>
+    /// <remarks>
+    /// Moving the ghost's clock rather than the world's, because the wait is measured from when the
+    /// player died and nothing else in these tests depends on the time of day.
+    /// </remarks>
+    private static void ServeTheWait(Player player) =>
+        player.GhostTime -= player.ReclaimDelaySeconds + 1;
+}
+
+/// <summary>
+/// How long a ghost waits before it may take its body back.
+/// </summary>
+/// <remarks>
+/// The number was being sent to the client and never enforced, which is the worst of both: the
+/// client counted down a timer the server ignored, so an honest player waited and anyone clicking
+/// through did not.
+/// </remarks>
+public sealed class CorpseReclaimTests
+{
+    /// <summary>A first death costs thirty seconds.</summary>
+    [Fact]
+    public void AFirstDeath_CostsThirtySeconds()
+    {
+        Player player = InventoryFixture.Player();
+
+        CorpseReclaim.RecordDeath(player, Now);
+
+        Assert.Equal(30, CorpseReclaim.DelayFor(player, Now));
+    }
+
+    /// <summary>
+    /// Dying again immediately jumps straight to two minutes, skipping the middle rung.
+    /// </summary>
+    /// <remarks>
+    /// The counter-intuitive part, and it is upstream's arithmetic rather than an accident.
+    /// <c>UpdateCorpseReclaimDelay</c> sets the window to <i>one step beyond however many are
+    /// left</i>, so a second death with the whole first window still open lands at three steps —
+    /// which reads back as the third delay, not the second.
+    /// <para>
+    /// Written as an obvious 30/60/120 ladder — which is what the table looks like — the middle rung
+    /// appears where it should not and the penalty for chain-dying is half what it should be.
+    /// </para>
+    /// </remarks>
+    [Fact]
+    public void DyingAgainImmediately_JumpsToTwoMinutes()
+    {
+        Player player = InventoryFixture.Player();
+
+        CorpseReclaim.RecordDeath(player, Now);
+        Assert.Equal(30, CorpseReclaim.DelayFor(player, Now));
+
+        CorpseReclaim.RecordDeath(player, Now);
+        Assert.Equal(120, CorpseReclaim.DelayFor(player, Now));
+    }
+
+    /// <summary>
+    /// The middle rung is for dying again late in the window.
+    /// </summary>
+    /// <remarks>
+    /// Which is what makes 60 reachable at all: most of the first window has elapsed, so there is
+    /// only one step left and the new window is two. A player who dies, walks back, and dies again
+    /// four minutes later pays a minute rather than two.
+    /// </remarks>
+    [Fact]
+    public void DyingAgainLateInTheWindow_CostsAMinute()
+    {
+        Player player = InventoryFixture.Player();
+
+        CorpseReclaim.RecordDeath(player, Now);
+
+        long later = Now + 250;
+        CorpseReclaim.RecordDeath(player, later);
+
+        Assert.Equal(60, CorpseReclaim.DelayFor(player, later));
+    }
+
+    /// <summary>And it stops at two minutes however many times you die.</summary>
+    [Fact]
+    public void TheEscalation_StopsAtTwoMinutes()
+    {
+        Player player = InventoryFixture.Player();
+
+        for (int i = 0; i < 10; i++)
+        {
+            CorpseReclaim.RecordDeath(player, Now);
+        }
+
+        Assert.Equal(120, CorpseReclaim.DelayFor(player, Now));
+    }
+
+    /// <summary>
+    /// The penalty fades on its own once the window closes.
+    /// </summary>
+    /// <remarks>
+    /// A window rather than a death counter, which is what lets it decay without anything having to
+    /// remember to reset it — there is no "clear the count" call to forget to make.
+    /// </remarks>
+    [Fact]
+    public void ThePenalty_FadesOnItsOwn()
+    {
+        Player player = InventoryFixture.Player();
+
+        CorpseReclaim.RecordDeath(player, Now);
+        CorpseReclaim.RecordDeath(player, Now);
+
+        Assert.Equal(120, CorpseReclaim.DelayFor(player, Now));
+
+        // Long enough for the whole window to expire.
+        long later = Now + (CorpseReclaim.ExpireStepSeconds * CorpseReclaim.MaxDeathCount) + 1;
+
+        Assert.Equal(30, CorpseReclaim.DelayFor(player, later));
+
+        CorpseReclaim.RecordDeath(player, later);
+
+        Assert.Equal(30, CorpseReclaim.DelayFor(player, later));
+    }
+
+    /// <summary>The wait is measured from the death, not from the release.</summary>
+    /// <remarks>
+    /// A player who reads the release dialog for a minute has already served it. Counting from the
+    /// release would punish not clicking through.
+    /// </remarks>
+    [Fact]
+    public void TheWait_RunsFromTheDeath()
+    {
+        Player player = InventoryFixture.Player();
+
+        player.GhostTime = Now;
+        player.ReclaimDelaySeconds = 30;
+
+        Assert.False(CorpseReclaim.CanReclaim(player, Now));
+        Assert.Equal(30, CorpseReclaim.RemainingSeconds(player, Now));
+
+        Assert.False(CorpseReclaim.CanReclaim(player, Now + 29));
+        Assert.True(CorpseReclaim.CanReclaim(player, Now + 30));
+        Assert.Equal(0, CorpseReclaim.RemainingSeconds(player, Now + 30));
+    }
+
+    /// <summary>
+    /// The delay is fixed at death rather than recomputed on reclaim.
+    /// </summary>
+    /// <remarks>
+    /// The penalty window is decaying the whole time a ghost is walking back. Recomputing on reclaim
+    /// would shrink a wait the player is halfway through, so a long corpse run would shorten its own
+    /// penalty.
+    /// </remarks>
+    [Fact]
+    public void TheDelay_IsFixedAtDeath()
+    {
+        Player player = InventoryFixture.Player();
+
+        CorpseReclaim.RecordDeath(player, Now);
+        CorpseReclaim.RecordDeath(player, Now);
+
+        player.GhostTime = Now;
+        player.ReclaimDelaySeconds = CorpseReclaim.DelayFor(player, Now);
+
+        Assert.Equal(120, player.ReclaimDelaySeconds);
+
+        // The window keeps decaying while the ghost walks back, but this death still costs two
+        // minutes — recomputing on reclaim would let a long corpse run shorten its own penalty.
+        Assert.True(CorpseReclaim.DelayFor(player, Now + 400) < player.ReclaimDelaySeconds);
+
+        Assert.False(CorpseReclaim.CanReclaim(player, Now + 119));
+        Assert.True(CorpseReclaim.CanReclaim(player, Now + 120));
+    }
+
+    /// <summary>A fixed instant, so nothing here depends on when the tests run.</summary>
+    private const long Now = 1_700_000_000;
 }

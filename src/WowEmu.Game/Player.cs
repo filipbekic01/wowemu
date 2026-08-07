@@ -194,6 +194,31 @@ public sealed class Player : Unit
     public Position CorpsePosition { get; set; }
 
     /// <summary>
+    /// When this character became a ghost, in unix seconds. The reclaim wait counts from here.
+    /// </summary>
+    /// <remarks>
+    /// From the death, not from the release — a player who sits on the release screen for a minute
+    /// has already served the wait, and restarting it there would punish reading the dialog.
+    /// </remarks>
+    public long GhostTime { get; set; }
+
+    /// <summary>How long this particular death's reclaim wait is, in seconds.</summary>
+    /// <remarks>
+    /// Fixed at the moment of death rather than recomputed on reclaim. The penalty window is
+    /// decaying the whole time, so recomputing would shrink a wait the player is halfway through.
+    /// </remarks>
+    public int ReclaimDelaySeconds { get; set; }
+
+    /// <summary>
+    /// When the escalating death penalty runs out, in unix seconds.
+    /// </summary>
+    /// <remarks>
+    /// A window rather than a counter, which is what lets the penalty fade without anything having
+    /// to remember to reset it.
+    /// </remarks>
+    public long DeathExpireTime { get; set; }
+
+    /// <summary>
     /// Which side the character is on, from its race.
     /// </summary>
     /// <remarks>

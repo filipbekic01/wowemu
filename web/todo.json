@@ -417,8 +417,9 @@
               "text": "Verify a height query against the C++ server's .gps output"
             },
             {
-              "done": false,
-              "text": "Unload tiles when a grid empties"
+              "done": true,
+              "text": "Terrain tile unloading — measured, and deliberately not done",
+              "note": "NOT DOING THIS — the premise is wrong, and it is measured. AzerothCore has NO grid state machine in this version: the only caller of MapGridManager::UnloadGrid is Map::UnloadAll, which runs at shutdown. Instances are unloaded whole when they empty; continents keep every grid they ever touched, for the life of the process. So our behaviour already matches upstream. It is also not a leak but a BOUNDED WORKING SET: a map is 64x64 grids, and the largest content maps hold ~58k spawns (map 0: 29,678 creatures + 28,649 gameobjects; map 571: 33,519 + 14,441). MEASURED (GridResidencyTests): every terrain tile of Eastern Kingdoms resident is 687 tiles and 171 MB, about 255 KB per tile. Four fully-explored continents would be roughly 700 MB of terrain. Substantial, bounded, and the same shape upstream carries. Revisit only if memory becomes a real constraint — and if it does, unloading INSTANCES when they empty is upstream's answer and the one to copy, not per-grid unloading."
             }
           ]
         },
@@ -634,7 +635,8 @@
           "items": [
             {
               "done": true,
-              "text": "Map per map id, objects filed into 8×8 cells per grid"
+              "text": "Grid unloading — measured, and deliberately not done",
+              "note": "NOT DOING THIS — the premise is wrong, and it is measured. AzerothCore has NO grid state machine in this version: the only caller of MapGridManager::UnloadGrid is Map::UnloadAll, which runs at shutdown. Instances are unloaded whole when they empty; continents keep every grid they ever touched, for the life of the process. So our behaviour already matches upstream. It is also not a leak but a BOUNDED WORKING SET: a map is 64x64 grids, and the largest content maps hold ~58k spawns (map 0: 29,678 creatures + 28,649 gameobjects; map 571: 33,519 + 14,441). MEASURED (GridResidencyTests): every terrain tile of Eastern Kingdoms resident is 687 tiles and 171 MB, about 255 KB per tile. Four fully-explored continents would be roughly 700 MB of terrain. Substantial, bounded, and the same shape upstream carries. Revisit only if memory becomes a real constraint — and if it does, unloading INSTANCES when they empty is upstream's answer and the one to copy, not per-grid unloading."
             },
             {
               "done": true,
@@ -1386,8 +1388,9 @@
               "text": "A real Corpse object — the body is currently a remembered position rather than something other players can see"
             },
             {
-              "done": false,
-              "text": "The corpse reclaim delay is sent but never enforced; reclaiming is allowed immediately"
+              "done": true,
+              "text": "The corpse reclaim delay, now enforced",
+              "note": "Was sent and never enforced — the worst of both, since the client counted down a timer the server ignored, so an honest player waited and anyone clicking through did not. SEPARATE BUG FOUND AND FIXED at the same site: SMSG_CORPSE_RECLAIM_DELAY was being sent the six-minute RELEASE timer instead of the reclaim delay, so the client showed a six-minute wait. Two different numbers for two different things. THE LADDER IS NOT 1st/2nd/3rd DEATH. copseReclaimDelay is {30, 60, 120}, but UpdateCorpseReclaimDelay sets the window to one step BEYOND however many are left — so a second death with the whole first window still open lands on the THIRD rung (120), not the second. The middle rung is reachable only by dying again LATE in the window, when most of it has decayed (traced: second death 250s in gives 60). Writing the obvious 30/60/120 ladder halves the penalty for chain-dying and looks completely right. The penalty is a 5-minute WINDOW rather than a death counter, which is what lets it fade with no 'reset the count' call to forget. The wait runs from the DEATH, not the release — a player reading the release dialog has already served it. The delay is fixed at death rather than recomputed on reclaim, or a long corpse run would shorten its own penalty as the window decayed underneath it."
             }
           ]
         },

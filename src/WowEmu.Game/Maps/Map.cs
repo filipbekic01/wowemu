@@ -2277,6 +2277,14 @@ public sealed class Map(
             return false;
         }
 
+        // The delay the client was told about at death. It counts it down itself and greys the
+        // button, so enforcing it here changes nothing for an honest client — and everything for
+        // one that simply sends the packet anyway.
+        if (!CorpseReclaim.CanReclaim(player, GameTime.Now))
+        {
+            return false;
+        }
+
         Resurrect(player);
 
         return true;
@@ -2406,6 +2414,15 @@ public sealed class Map(
 
         PlayerDeath.Kill(player);
 
+        // The penalty window is pushed out first, then the delay is read from it — so this death's
+        // wait already includes this death. Reading it first gives the previous death's figure.
+        long now = GameTime.Now;
+
+        CorpseReclaim.RecordDeath(player, now);
+
+        player.GhostTime = now;
+        player.ReclaimDelaySeconds = CorpseReclaim.DelayFor(player, now);
+
         // Ten percent off what is worn, and nothing off what is carried — upstream passes
         // inventory: false here. The spirit healer's own twenty-five percent is a separate charge
         // and hits the bags as well, which is the difference between the two ways back.
@@ -2425,7 +2442,11 @@ public sealed class Map(
             }
         }
 
-        player.Connection?.SendPlayerDied(PlayerDeath.ReleaseTimerMs);
+        // The RECLAIM delay, not the release timer. They are different numbers for different things
+        // — the release timer is the six minutes after which a corpse releases itself, and sending
+        // it here made the client count down six minutes before it would let anyone take their body
+        // back. The packet is SMSG_CORPSE_RECLAIM_DELAY and it means what it says.
+        player.Connection?.SendPlayerDied(player.ReclaimDelaySeconds * 1000);
     }
 
     /// <summary>
