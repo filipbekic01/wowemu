@@ -237,6 +237,10 @@ internal static partial class Log
     public static partial void SpellsAndTrainersLoaded(
         ILogger logger, int starting, int actions, int rows, int trainers);
 
+    [LoggerMessage(EventId = 2362, Level = LogLevel.Debug,
+        Message = "'{Name}' took the spirit healer — {Address}")]
+    public static partial void SpiritHealerUsed(ILogger logger, string name, string address);
+
     [LoggerMessage(EventId = 2361, Level = LogLevel.Information,
         Message = "'{Name}' ran command '{Command}' — {Address}")]
     public static partial void CommandRun(ILogger logger, string name, string command, string address);

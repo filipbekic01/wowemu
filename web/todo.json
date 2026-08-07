@@ -1380,8 +1380,9 @@
               "note": "There is no cross-map transfer yet. Releasing somewhere unreachable is worse than not moving; standing over your own corpse, you can still reclaim."
             },
             {
-              "done": false,
-              "text": "Resurrection sickness, and the spirit healer's own resurrect"
+              "done": true,
+              "text": "Resurrection sickness, and the spirit healer's own resurrect",
+              "note": "This is what makes the two ways back from death DIFFERENT, and without it the corpse run has no reason to exist. Walking to your corpse is free and slow; the spirit healer is instant and charges twice: a QUARTER of your durability including the BAGS (dying itself takes a tenth off equipment only — same method, different arguments, and the difference is the whole design), plus resurrection sickness. The sickness is spell 15007 in three bands, not one. Below level 11 there is none at all — a character in their starting zone dies constantly and ten minutes of halved stats there is most of a play session. From 11 it is a minute per level above ten, reaching the full ten minutes at 20. THE DURATION IS OVERRIDDEN rather than taken from the spell: 15007 carries the full ten minutes, so casting it and leaving the duration alone gives a level-11 character the same sentence as a level-80 raider. Tested against a real client at two levels, which is the only way to catch that. No corpse-range check, unlike reclaiming — working wherever the ghost stands is the point. The NPC flag is checked server-side: the guid arrives from the client, and without it any creature in the world would resurrect you from anywhere."
             },
             {
               "done": false,

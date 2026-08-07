@@ -396,6 +396,10 @@ public sealed class WorldSession(
                 HandleMessageChat(payload);
                 return;
 
+            case Opcode.CMSG_SPIRIT_HEALER_ACTIVATE:
+                HandleSpiritHealerActivate(payload);
+                return;
+
             case Opcode.CMSG_BUYBACK_ITEM:
                 HandleBuybackItem(payload);
                 return;
@@ -1703,6 +1707,40 @@ public sealed class WorldSession(
             // its copy, so no destroy goes out — telling it to forget the item would leave the
             // buyback tab drawing a square it has nothing for.
             _player.Buyback.Add(removed, paid, GameTime.Now);
+        }
+    }
+
+    /// <summary>
+    /// Takes the spirit healer's offer. <c>CMSG_SPIRIT_HEALER_ACTIVATE</c>.
+    /// </summary>
+    /// <remarks>
+    /// The healer has to be one the player can actually interact with, checked here rather than
+    /// trusted from the packet — the guid arrives from the client, and without the flag check any
+    /// creature in the world would resurrect you from anywhere.
+    /// </remarks>
+    private void HandleSpiritHealerActivate(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid))
+        {
+            return;
+        }
+
+        if (FindInteractable(new ObjectGuid(rawGuid)) is not { } healer
+            || (healer.NpcFlags & NpcFlags.SpiritHealer) == 0)
+        {
+            return;
+        }
+
+        if (_map.SpiritHealerResurrect(_player))
+        {
+            Log.SpiritHealerUsed(logger, _player.Name, connection.RemoteAddress);
         }
     }
 

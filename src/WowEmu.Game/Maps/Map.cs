@@ -2306,6 +2306,87 @@ public sealed class Map(
         player.Connection?.SendResurrected();
     }
 
+    /// <summary>
+    /// The spirit healer's way back: instant, and it costs you.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>WorldSession::SendSpiritResurrect</c>. This is the other half of the death loop
+    /// and the only thing that makes the corpse run worth doing — walking back is free and slow,
+    /// and this is immediate and charges for it twice over:
+    /// <list type="bullet">
+    /// <item>
+    /// <b>A quarter of your durability, on everything you are carrying as well as wearing.</b>
+    /// Dying itself takes a tenth off equipment only; this reaches the bags too, which is the
+    /// difference between the two routes and easy to miss because both call the same method.
+    /// </item>
+    /// <item>
+    /// <b>Resurrection sickness</b>, which halves your stats for up to ten minutes.
+    /// </item>
+    /// </list>
+    /// <para>
+    /// No corpse-range check, unlike <see cref="ReclaimCorpse"/> — the whole point is that it works
+    /// wherever the ghost is standing.
+    /// </para>
+    /// </remarks>
+    /// <returns>False when the player was not a ghost to begin with.</returns>
+    public bool SpiritHealerResurrect(Player player)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        if (!player.IsGhost)
+        {
+            return false;
+        }
+
+        Resurrect(player);
+
+        // Before the sickness, because the sickness needs the player alive to take an aura — and
+        // after the resurrect for the same reason.
+        Durability.LoseAll(player, SpiritHealerDurabilityLoss, inventory: true);
+
+        ApplyResurrectionSickness(player);
+
+        return true;
+    }
+
+    /// <summary>
+    /// A quarter, and it reaches the bags. <c>DurabilityLoss.OnSpiritResurrect</c>.
+    /// </summary>
+    /// <remarks>
+    /// Two and a half times what dying costs, and over a wider set. Both numbers being a "durability
+    /// loss" makes them look interchangeable; they are the price of the two different routes back.
+    /// </remarks>
+    public const double SpiritHealerDurabilityLoss = 0.25;
+
+    /// <summary>Puts the sickness on a player who has just taken the quick way back.</summary>
+    private void ApplyResurrectionSickness(Player player)
+    {
+        int duration = ResurrectionSickness.DurationMsFor(player.Level);
+
+        if (duration <= 0 || _spells is null
+            || !_spells.Spells.TryGet(ResurrectionSickness.SpellId, out SpellEntry? spell) || spell is null)
+        {
+            return;
+        }
+
+        // The duration is overridden rather than taken from the spell: the spell carries the full
+        // ten minutes, and levels 11 to 19 serve less. Casting it and leaving the duration alone
+        // gives a level-11 character the same sentence as a level-80 raider.
+        Aura? aura = player.Auras.Apply(
+            spell,
+            player.Guid,
+            player.Level,
+            duration,
+            effect => SpellEffects.CalculateValue(
+                spell, effect, player.Level, (min, max) => (int)GameRandom.Urand((uint)min, (uint)max)));
+
+        if (aura is not null)
+        {
+            BroadcastAuraApplied(player, aura);
+            RefreshStats(player);
+        }
+    }
+
     /// <summary>How close a ghost must be to its corpse to reclaim it.</summary>
     public const float CorpseReclaimRange = 39.0f;
 

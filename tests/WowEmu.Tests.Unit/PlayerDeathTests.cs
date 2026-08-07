@@ -635,3 +635,148 @@ public sealed class CorpseReclaimTests
     /// <summary>A fixed instant, so nothing here depends on when the tests run.</summary>
     private const long Now = 1_700_000_000;
 }
+
+/// <summary>
+/// The spirit healer's way back, and what it costs.
+/// </summary>
+/// <remarks>
+/// The other half of the death loop. Walking to your corpse is free and slow; this is instant and
+/// charges twice — a quarter of your durability including the bags, and up to ten minutes of
+/// halved stats. Without the charge the corpse run has no reason to exist.
+/// </remarks>
+public sealed class SpiritHealerTests
+{
+    /// <summary>A ghost is put back on its feet where it stands.</summary>
+    /// <remarks>
+    /// No corpse-range check, unlike reclaiming — working wherever you are is the whole point.
+    /// </remarks>
+    [Fact]
+    public void AGhost_IsRaisedWhereItStands()
+    {
+        (Map map, Player player, _, _) = MapCombatFixture.Engaged();
+
+        map.KillPlayer(player);
+        map.ReleaseSpirit(player);
+
+        Position wherever = new(9999f, 9999f, 0f, 0f);
+        map.Relocate(player, wherever);
+
+        Assert.True(map.SpiritHealerResurrect(player));
+        Assert.True(player.IsAlive);
+        Assert.False(player.IsGhost);
+    }
+
+    /// <summary>Someone who is not a ghost gets nothing.</summary>
+    [Fact]
+    public void SomeoneWhoIsNotAGhost_GetsNothing()
+    {
+        (Map map, Player player, _, _) = MapCombatFixture.Engaged();
+
+        Assert.False(map.SpiritHealerResurrect(player));
+    }
+
+    /// <summary>
+    /// It costs a quarter of your durability, and it reaches the bags.
+    /// </summary>
+    /// <remarks>
+    /// Dying takes a tenth off equipment only. This is two and a half times that, over a wider set —
+    /// the difference between the two routes back, and easy to lose because both go through the same
+    /// method with different arguments.
+    /// </remarks>
+    [Fact]
+    public void ItCosts_AQuarterOfEverythingIncludingTheBags()
+    {
+        (Map map, Player player, _, _) = MapCombatFixture.Engaged();
+
+        Item worn = InventoryFixture.Place(
+            player,
+            ItemFixture.Build(entry: 1, maxDurability: 100, inventoryType: InventoryType.Chest),
+            new ItemPosition(InventorySlots.Backpack, InventorySlots.Chest));
+
+        Item carried = InventoryFixture.Place(
+            player,
+            ItemFixture.Build(entry: 2, maxDurability: 100),
+            InventoryFixture.Backpack());
+
+        map.KillPlayer(player);
+
+        // Dying already took a tenth off what is worn, and nothing off what is carried.
+        Assert.Equal(90u, worn.Durability);
+        Assert.Equal(100u, carried.Durability);
+
+        map.ReleaseSpirit(player);
+        map.SpiritHealerResurrect(player);
+
+        // Then a quarter of the MAXIMUM off both — 25 points, not a quarter of what is left.
+        Assert.Equal(65u, worn.Durability);
+        Assert.Equal(75u, carried.Durability);
+    }
+
+    /// <summary>
+    /// The sickness lasts longer the higher you are, up to ten minutes.
+    /// </summary>
+    /// <remarks>
+    /// Three bands. Below eleven there is none at all — a character in their starting zone dies
+    /// constantly and ten minutes of halved stats there is most of a play session. From eleven it is
+    /// a minute per level above ten, reaching the full ten minutes at twenty.
+    /// </remarks>
+    [Theory]
+    [InlineData(1, 0)]
+    [InlineData(10, 0)]
+    [InlineData(11, 60_000)]
+    [InlineData(15, 5 * 60_000)]
+    [InlineData(19, 9 * 60_000)]
+    [InlineData(20, 10 * 60_000)]
+    [InlineData(80, 10 * 60_000)]
+    public void TheSickness_ScalesWithLevel(byte level, int expected) =>
+        Assert.Equal(expected, ResurrectionSickness.DurationMsFor(level));
+
+    /// <summary>
+    /// The sickness is actually put on, at the duration the level earns rather than the spell's own.
+    /// </summary>
+    /// <remarks>
+    /// Against a real client, because the point is the override: spell 15007 carries the full ten
+    /// minutes, so casting it and leaving the duration alone gives a level-11 character the same
+    /// sentence as a level-80 raider. The two assertions below are the same aura at two levels, and
+    /// they differ only because the duration is overridden.
+    /// </remarks>
+    [RequiresClientDataFact]
+    public void TheSickness_IsAppliedAtTheLevelsOwnDuration()
+    {
+        SpellStores stores = SpellStores.Load(ClientData.DbcDirectory);
+
+        Assert.Equal(4 * 60_000, DurationOfSicknessOn(stores, level: 14));
+        Assert.Equal(10 * 60_000, DurationOfSicknessOn(stores, level: 40));
+    }
+
+    /// <summary>And a character below the threshold takes none at all.</summary>
+    [RequiresClientDataFact]
+    public void BelowTheThreshold_NoSicknessIsApplied()
+    {
+        SpellStores stores = SpellStores.Load(ClientData.DbcDirectory);
+
+        Assert.Null(DurationOfSicknessOn(stores, level: 5));
+    }
+
+    /// <summary>Raises a ghost of the given level and reports how long its sickness lasts.</summary>
+    private static int? DurationOfSicknessOn(SpellStores stores, byte level)
+    {
+        (Map map, Player player, _, _) = MapCombatFixture.Engaged(spells: stores);
+
+        player.Level = level;
+
+        map.KillPlayer(player);
+        map.ReleaseSpirit(player);
+        map.SpiritHealerResurrect(player);
+
+        return player.Auras.Find(ResurrectionSickness.SpellId, player.Guid)?.MaxDurationMs;
+    }
+
+    /// <summary>The starting levels are exempt entirely.</summary>
+    [Fact]
+    public void TheStartingLevels_AreExempt()
+    {
+        Assert.False(ResurrectionSickness.Applies(10));
+        Assert.True(ResurrectionSickness.Applies(11));
+    }
+}
