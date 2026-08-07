@@ -249,6 +249,16 @@ public sealed record DurabilityCostsEntry(uint ItemLevel, uint[] Multipliers)
 public sealed record DurabilityQualityEntry(uint Id, float Modifier);
 
 /// <summary>
+/// A row of <c>BankBagSlotPrices.dbc</c> — what the next bank bag slot costs.
+/// </summary>
+/// <remarks>
+/// Indexed by the slot being bought, 1-based, so buying your first costs row 1. Twelve rows exist
+/// but only seven slots do: rows 8 to 12 carry a sentinel price of 999,999,999 copper, which is
+/// most of the client's own money ceiling. They are placeholders, not slots.
+/// </remarks>
+public sealed record BankBagSlotPriceEntry(uint Slot, uint Price);
+
+/// <summary>
 /// A row of <c>ItemLimitCategory.dbc</c> — how many of a <i>family</i> of items may be held.
 /// </summary>
 /// <remarks>
@@ -556,6 +566,9 @@ public sealed class DbcStores
     /// <summary>An id and one float. <c>DurabilityQualityfmt</c>.</summary>
     private const string DurabilityQualityFormat = "nf";
 
+    /// <summary>A slot number and a price. <c>BankBagSlotPricesEntryfmt</c>.</summary>
+    private const string BankBagSlotPricesFormat = "ni";
+
     /// <summary>Twenty columns, seventeen of them skipped text. <c>ItemLimitCategoryEntryfmt</c>.</summary>
     private const string ItemLimitCategoryFormat = "nxxxxxxxxxxxxxxxxxii";
 
@@ -587,10 +600,12 @@ public sealed class DbcStores
         DbcStore<DurabilityCostsEntry> durabilityCosts,
         DbcStore<DurabilityQualityEntry> durabilityQuality,
         SkillLines skills,
-        DbcStore<ItemLimitCategoryEntry> itemLimitCategories)
+        DbcStore<ItemLimitCategoryEntry> itemLimitCategories,
+        DbcStore<BankBagSlotPriceEntry> bankBagSlotPrices)
     {
         Skills = skills;
         ItemLimitCategories = itemLimitCategories;
+        BankBagSlotPrices = bankBagSlotPrices;
         DurabilityCosts = durabilityCosts;
         DurabilityQuality = durabilityQuality;
         QuestXp = questXp;
@@ -650,6 +665,9 @@ public sealed class DbcStores
     /// <summary>How many of a family of items may be held or worn.</summary>
     public DbcStore<ItemLimitCategoryEntry> ItemLimitCategories { get; }
 
+    /// <summary>What the next bank bag slot costs.</summary>
+    public DbcStore<BankBagSlotPriceEntry> BankBagSlotPrices { get; }
+
     /// <summary>
     /// The zone an area belongs to, which is the area itself when it is already a zone.
     /// </summary>
@@ -668,7 +686,7 @@ public sealed class DbcStores
         Races.Count + Classes.Count + Maps.Count + FactionTemplates.Count + WorldSafeLocs.Count
         + QuestXp.Count + LiquidTypes.Count + Areas.Count
         + DurabilityCosts.Count + DurabilityQuality.Count + Skills.TotalRows
-        + ItemLimitCategories.Count;
+        + ItemLimitCategories.Count + BankBagSlotPrices.Count;
 
     /// <summary>
     /// Loads every store from a directory of extracted <c>.dbc</c> files.
@@ -857,7 +875,15 @@ public sealed class DbcStores
                 (in DbcRecord record) => new ItemLimitCategoryEntry(
                     Id: record.GetUInt32(0),
                     MaxCount: record.GetUInt32(18),
-                    Mode: record.GetUInt32(19))));
+                    Mode: record.GetUInt32(19))),
+
+            DbcStore<BankBagSlotPriceEntry>.Load(
+                Path.Combine(directory, "BankBagSlotPrices.dbc"),
+                BankBagSlotPricesFormat,
+                idField: 0,
+                (in DbcRecord record) => new BankBagSlotPriceEntry(
+                    Slot: record.GetUInt32(0),
+                    Price: record.GetUInt32(1))));
     }
 
     /// <summary>The four skill tables, loaded together because none of them is useful alone.</summary>

@@ -639,7 +639,7 @@ public sealed class Inventory(Player owner)
         out IReadOnlyList<(ItemPosition Position, uint Count)> destinations,
         Item? moving = null,
         ItemPosition? vacating = null) =>
-        Plan(template, count, CarryPositions(), out destinations, moving, vacating);
+        Plan(template, count, CarryPositions(template), out destinations, moving, vacating);
 
     /// <summary>
     /// Where a stack would go in the <i>bank</i>, and whether it fits.
@@ -1493,6 +1493,34 @@ public sealed class Inventory(Player owner)
     /// The backpack before the bags, which is upstream's order for a general bag. Equipment slots
     /// are not here: something is put in one deliberately, never because it was the next free space.
     /// </remarks>
+    /// <summary>
+    /// Where a key goes: the keyring first, then wherever anything else would go.
+    /// </summary>
+    /// <remarks>
+    /// Keys are the one item family with a dedicated set of slots, and the client draws them in
+    /// their own panel. Falling through to the bags afterwards matters — the keyring is 32 slots and
+    /// there are 156 keys in the content, so it can genuinely fill up, and upstream lets the
+    /// overflow go into ordinary bag space rather than refusing.
+    /// </remarks>
+    private IEnumerable<ItemPosition> CarryPositions(ItemTemplate template)
+    {
+        if ((template.BagFamily & KeyBagFamily) != 0)
+        {
+            for (byte slot = InventorySlots.KeyringStart; slot < InventorySlots.KeyringEnd; slot++)
+            {
+                yield return new ItemPosition(InventorySlots.Backpack, slot);
+            }
+        }
+
+        foreach (ItemPosition position in CarryPositions())
+        {
+            yield return position;
+        }
+    }
+
+    /// <summary><c>BAG_FAMILY_MASK_KEYS</c>.</summary>
+    private const int KeyBagFamily = 0x00000100;
+
     private IEnumerable<ItemPosition> CarryPositions()
     {
         for (byte slot = InventorySlots.ItemStart; slot < InventorySlots.ItemEnd; slot++)

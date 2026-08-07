@@ -412,6 +412,10 @@ public sealed class WorldSession(
                 HandleBankMove(payload, toBank: false);
                 return;
 
+            case Opcode.CMSG_BUY_BANK_SLOT:
+                HandleBuyBankSlot(payload);
+                return;
+
             case Opcode.CMSG_BUYBACK_ITEM:
                 HandleBuybackItem(payload);
                 return;
@@ -1795,6 +1799,89 @@ public sealed class WorldSession(
             SendEquipError(result, item.Guid, item.Template.RequiredLevel);
         }
     }
+
+    /// <summary>
+    /// Buys the next bank bag slot. <c>CMSG_BUY_BANK_SLOT</c>.
+    /// </summary>
+    /// <remarks>
+    /// Priced by the slot being bought rather than by how many you have — row 1 is ten silver and
+    /// row 7 is twenty-five gold, so each one costs more than the last.
+    /// <para>
+    /// <b>Refused past seven, which is where we differ from upstream.</b> The DBC carries twelve
+    /// rows, but only seven bag slots exist in the character's slot array; rows 8 to 12 hold a
+    /// sentinel price of 999,999,999 copper. Upstream will happily sell an eighth slot to anyone who
+    /// can pay — the client's money ceiling is higher than that price — and the slot then does not
+    /// exist. Refusing is the honest answer.
+    /// </para>
+    /// </remarks>
+    private void HandleBuyBankSlot(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid))
+        {
+            return;
+        }
+
+        if (FindInteractable(new ObjectGuid(rawGuid)) is not { } banker
+            || (banker.NpcFlags & NpcFlags.Banker) == 0)
+        {
+            SendBuyBankSlotResult(BankSlotResult.NotBanker);
+            return;
+        }
+
+        uint wanted = (uint)_player.BankBagSlots + 1;
+
+        if (wanted > MaxBankBagSlots
+            || !world.Stores.BankBagSlotPrices.TryGet(wanted, out BankBagSlotPriceEntry? price)
+            || price is null)
+        {
+            SendBuyBankSlotResult(BankSlotResult.TooMany);
+            return;
+        }
+
+        if (_player.Money < price.Price)
+        {
+            SendBuyBankSlotResult(BankSlotResult.InsufficientFunds);
+            return;
+        }
+
+        _player.Money -= price.Price;
+        _player.BankBagSlots = (byte)wanted;
+
+        SendBuyBankSlotResult(BankSlotResult.Ok);
+    }
+
+    private void SendBuyBankSlotResult(uint result)
+    {
+        ServerPacket packet = new(Opcode.SMSG_BUY_BANK_SLOT_RESULT, 4);
+        packet.Body.WriteUInt32(result);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>
+    /// What the client is told about a bank slot purchase. <c>BankSlotResult</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>Ok is 3, not 0.</b> The enum reads failure-first, so a zero-means-success habit reports
+    /// every purchase as "you cannot have any more".
+    /// </remarks>
+    private static class BankSlotResult
+    {
+        public const uint TooMany = 0;
+        public const uint InsufficientFunds = 1;
+        public const uint NotBanker = 2;
+        public const uint Ok = 3;
+    }
+
+    /// <summary>How many bank bag slots the slot array actually has. <c>BANK_SLOT_BAG_END</c>.</summary>
+    private const uint MaxBankBagSlots = InventorySlots.BankBagEnd - InventorySlots.BankBagStart;
 
     /// <summary>
     /// Whether the player is still standing at the banker they opened the bank with.

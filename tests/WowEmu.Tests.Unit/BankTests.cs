@@ -1,3 +1,4 @@
+using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Game;
 
@@ -176,6 +177,114 @@ public sealed class BankTests
             InventoryResult.Ok,
             player.Inventory.CanStore(ItemFixture.Build(entry: 1), 1, out _));
     }
+
+    /// <summary>A key goes to the keyring, not into bag space.</summary>
+    /// <remarks>
+    /// The one item family with slots of its own, and the client draws them in their own panel.
+    /// </remarks>
+    [Fact]
+    public void AKey_GoesToTheKeyring()
+    {
+        Player player = InventoryFixture.Player();
+
+        ItemTemplate key = ItemFixture.Build(entry: 60) with { BagFamily = KeyBagFamily };
+
+        Assert.Equal(
+            InventoryResult.Ok,
+            player.Inventory.Store(key, 1, InventoryFixture.NextGuid, out IReadOnlyList<Item> stored));
+
+        ItemPosition? where = player.Inventory.PositionOf(stored[0]);
+
+        Assert.NotNull(where);
+        Assert.InRange(where!.Value.Slot, InventorySlots.KeyringStart, InventorySlots.KeyringEnd - 1);
+    }
+
+    /// <summary>And anything else does not, however much keyring room there is.</summary>
+    [Fact]
+    public void SomethingThatIsNotAKey_StaysOutOfTheKeyring()
+    {
+        Player player = InventoryFixture.Player();
+
+        Assert.Equal(
+            InventoryResult.Ok,
+            player.Inventory.Store(
+                ItemFixture.Build(entry: 61), 1, InventoryFixture.NextGuid, out IReadOnlyList<Item> stored));
+
+        ItemPosition where = Assert.IsType<ItemPosition>(player.Inventory.PositionOf(stored[0]));
+
+        Assert.True(
+            where.Slot < InventorySlots.KeyringStart,
+            $"landed in slot {where.Slot}, which is keyring space");
+    }
+
+    /// <summary>
+    /// A key overflows into bag space once the keyring is full.
+    /// </summary>
+    /// <remarks>
+    /// Thirty-two slots against 156 keys in the content, so it genuinely fills. Upstream lets the
+    /// overflow go into ordinary bag space rather than refusing the pick-up.
+    /// </remarks>
+    [Fact]
+    public void AKey_OverflowsIntoBagSpace()
+    {
+        Player player = InventoryFixture.Player();
+
+        ItemTemplate key = ItemFixture.Build(entry: 62) with { BagFamily = KeyBagFamily };
+
+        for (byte slot = InventorySlots.KeyringStart; slot < InventorySlots.KeyringEnd; slot++)
+        {
+            InventoryFixture.Place(
+                player,
+                ItemFixture.Build(entry: 900) with { BagFamily = KeyBagFamily },
+                new ItemPosition(InventorySlots.Backpack, slot));
+        }
+
+        Assert.Equal(
+            InventoryResult.Ok,
+            player.Inventory.Store(key, 1, InventoryFixture.NextGuid, out IReadOnlyList<Item> stored));
+
+        ItemPosition where = Assert.IsType<ItemPosition>(player.Inventory.PositionOf(stored[0]));
+
+        Assert.InRange(where.Slot, InventorySlots.ItemStart, InventorySlots.ItemEnd - 1);
+    }
+
+    /// <summary>
+    /// The price table has more rows than there are slots, and the extras are sentinels.
+    /// </summary>
+    /// <remarks>
+    /// Twelve rows, seven slots. Rows 8 to 12 carry 999,999,999 copper — placeholders, not slots.
+    /// Upstream sells them anyway (the client's money ceiling is above that price) and the slot then
+    /// does not exist; we refuse past seven, and this pins the data that decision rests on.
+    /// </remarks>
+    [RequiresClientDataFact]
+    public void ThePriceTable_HasMoreRowsThanSlots()
+    {
+        DbcStores stores = DbcStores.Load(ClientData.DbcDirectory);
+
+        Assert.Equal(12, stores.BankBagSlotPrices.Count);
+
+        // The seven real slots get real prices, rising each time.
+        uint previous = 0;
+
+        for (uint slot = 1; slot <= RealBankBagSlots; slot++)
+        {
+            Assert.True(stores.BankBagSlotPrices.TryGet(slot, out BankBagSlotPriceEntry? entry));
+            Assert.True(entry!.Price >= previous, $"slot {slot} costs less than slot {slot - 1}");
+            Assert.True(entry.Price < Sentinel, $"slot {slot} is priced as a placeholder");
+
+            previous = entry.Price;
+        }
+
+        // And the rest are placeholders.
+        Assert.True(stores.BankBagSlotPrices.TryGet(RealBankBagSlots + 1, out BankBagSlotPriceEntry? beyond));
+        Assert.Equal(Sentinel, beyond!.Price);
+    }
+
+    private const uint RealBankBagSlots = InventorySlots.BankBagEnd - InventorySlots.BankBagStart;
+    private const uint Sentinel = 999_999_999;
+
+    /// <summary><c>BAG_FAMILY_MASK_KEYS</c>.</summary>
+    private const int KeyBagFamily = 0x00000100;
 
     private const byte BankSlots = InventorySlots.BankItemEnd - InventorySlots.BankItemStart;
 
