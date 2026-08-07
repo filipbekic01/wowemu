@@ -99,6 +99,38 @@ public class Item : GameObjectBase
         set => Fields.SetUInt32(UpdateFields.ITEM_FIELD_FLAGS, value);
     }
 
+    /// <summary>
+    /// Bound to whoever picked it up, and so no longer tradeable or sellable.
+    /// </summary>
+    /// <remarks>
+    /// <c>ITEM_FIELD_FLAG_SOULBOUND</c>. It lives on the item's own flags rather than beside the
+    /// owner guid, which matters: the client draws "Soulbound" from this field, so an item bound
+    /// only in the server's head still reads as tradeable in the tooltip.
+    /// </remarks>
+    public bool IsSoulBound
+    {
+        get => (ItemFlags & SoulBoundFlag) != 0;
+        set => ItemFlags = value ? ItemFlags | SoulBoundFlag : ItemFlags & ~SoulBoundFlag;
+    }
+
+    /// <summary>
+    /// Whether this item is bound to somebody who is not <paramref name="player"/>.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Item::IsBindedNotWith</c>. Note the shape: an unbound item is never "someone
+    /// else's", and a bound item held by its own owner is not either. Only the third case — bound,
+    /// and owned by another — refuses.
+    /// </remarks>
+    public bool IsBoundToSomeoneElse(Player player)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        return IsSoulBound && Owner != player.Guid;
+    }
+
+    /// <summary><c>ITEM_FIELD_FLAG_SOULBOUND</c>.</summary>
+    private const uint SoulBoundFlag = 0x00000001;
+
     /// <summary>Whether the stack is at its ceiling and cannot take any more.</summary>
     public bool IsFullStack => Count >= Template.MaxStackSize;
 

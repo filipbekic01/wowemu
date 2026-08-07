@@ -128,6 +128,15 @@ public enum InventoryResult : byte
     InventoryFull = 50,
     ItemNotFound2 = 54,
     NotWhileDisarmed = 61,
+
+    /// <summary>Only one of this item may be worn. <c>ITEM_FLAG_UNIQUE_EQUIPPABLE</c>.</summary>
+    ItemUniqueEquippable = 67,
+
+    /// <summary>Too many of this family already held.</summary>
+    ItemMaxLimitCategoryCountExceeded = 84,
+
+    /// <summary>Too many of this family already worn.</summary>
+    ItemMaxLimitCategoryEquippedExceeded = 89,
 }
 
 /// <summary>One place an item can be: a container and a slot inside it.</summary>
@@ -169,6 +178,16 @@ public readonly record struct ItemPosition(byte Bag, byte Slot)
 public sealed class Inventory(Player owner)
 {
     private readonly Item?[] _slots = new Item?[InventorySlots.SlotCount];
+
+    /// <summary>
+    /// How many of a family of items may be held or worn.
+    /// </summary>
+    /// <remarks>
+    /// Settable rather than required, because most of what an inventory does needs no DBC at all
+    /// and a test that had to load a client to move an item between bags would not get written.
+    /// With none set the category limits pass, which is what they did before this existed.
+    /// </remarks>
+    public DbcStore<ItemLimitCategoryEntry>? LimitCategories { get; set; }
 
     /// <summary>Every item this player holds anywhere, including inside bags.</summary>
     public IEnumerable<Item> All
@@ -308,6 +327,180 @@ public sealed class Inventory(Player owner)
         return null;
     }
 
+    /// <summary>
+    /// Whether the player may hold this many more of something.
+    /// </summary>
+    /// <returns>The refusal, or null when there is no objection.</returns>
+    /// <remarks>
+    /// Port of <c>Player::CanTakeMoreSimilarItems</c>. Two independent caps:
+    /// <list type="bullet">
+    /// <item>
+    /// The template's own <c>MaxCount</c> — how many of <i>this</i> item. Zero and negative both
+    /// mean no limit, as does <c>int.MaxValue</c>; reading the column literally would make a
+    /// <c>MaxCount</c> of 0 an item nobody may carry at all, which is most of them.
+    /// </item>
+    /// <item>
+    /// A limit <i>category</i>, which is shared across different items — the mana gem family caps
+    /// you at one however many kinds exist. Capping each item separately lets you carry one of each,
+    /// which is exactly what the category is there to prevent.
+    /// </item>
+    /// </list>
+    /// <para>
+    /// <b>Only a "have" category refuses here.</b> An "equip" category is a limit on what you wear,
+    /// not on what you carry, and refusing the pick-up would stop a player looting a second trinket
+    /// they are entitled to own.
+    /// </para>
+    /// </remarks>
+    public InventoryResult? CanTakeMoreSimilarItems(ItemTemplate template, uint count)
+    {
+        ArgumentNullException.ThrowIfNull(template);
+
+        if (template.MaxCount > 0 && template.MaxCount != int.MaxValue
+            && CountOf(template.Entry) + count > (uint)template.MaxCount)
+        {
+            return InventoryResult.CantCarryMoreOfThis;
+        }
+
+        if (template.ItemLimitCategory == 0 || LimitCategories is null)
+        {
+            return null;
+        }
+
+        if (!LimitCategories.TryGet((uint)template.ItemLimitCategory, out ItemLimitCategoryEntry? limit)
+            || limit is null)
+        {
+            // A category the table does not describe. Upstream refuses rather than passing, and it
+            // is the right direction: passing turns a data gap into an unlimited item.
+            return InventoryResult.ItemCantBeEquipped;
+        }
+
+        if (limit.Mode != ItemLimitCategoryEntry.ModeHave)
+        {
+            return null;
+        }
+
+        return CountOfLimitCategory(template.ItemLimitCategory) + count > limit.MaxCount
+            ? InventoryResult.CantCarryMoreOfThis
+            : null;
+    }
+
+    /// <summary>
+    /// Whether the player may <i>wear</i> another of this, which is a separate limit from holding it.
+    /// </summary>
+    /// <param name="exceptSlot">
+    /// A slot to ignore, so that replacing a unique item with another of its kind is allowed —
+    /// without it, swapping one unique ring for the same ring refuses because the one being taken
+    /// off is still counted.
+    /// </param>
+    /// <remarks>
+    /// Port of <c>Player::CanEquipUniqueItem</c>. The unique-equipped flag and the category limit
+    /// are different mechanisms: the flag caps one specific item at one worn, the category caps a
+    /// family at whatever the DBC says.
+    /// </remarks>
+    public InventoryResult? CanEquipUnique(ItemTemplate template, byte exceptSlot = InventorySlots.None)
+    {
+        ArgumentNullException.ThrowIfNull(template);
+
+        if ((template.Flags & UniqueEquippableFlag) != 0
+            && EquippedCountOfLimitCategoryFree(template, exceptSlot))
+        {
+            return InventoryResult.ItemUniqueEquippable;
+        }
+
+        if (template.ItemLimitCategory == 0 || LimitCategories is null)
+        {
+            return null;
+        }
+
+        if (!LimitCategories.TryGet((uint)template.ItemLimitCategory, out ItemLimitCategoryEntry? limit)
+            || limit is null)
+        {
+            return InventoryResult.ItemCantBeEquipped;
+        }
+
+        // Both modes apply here — upstream's own note is that a "have" limit necessarily bounds what
+        // can be worn too, since you cannot wear what you may not hold.
+        return EquippedCountOfLimitCategory(template.ItemLimitCategory, exceptSlot) >= limit.MaxCount
+            ? InventoryResult.ItemMaxLimitCategoryEquippedExceeded
+            : null;
+    }
+
+    /// <summary>Whether another of this entry is already worn, ignoring one slot.</summary>
+    private bool EquippedCountOfLimitCategoryFree(ItemTemplate template, byte exceptSlot)
+    {
+        for (byte slot = InventorySlots.EquipmentStart; slot < InventorySlots.EquipmentEnd; slot++)
+        {
+            if (slot != exceptSlot && _slots[slot] is { } worn && worn.Entry == template.Entry)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary><c>ITEM_FLAG_UNIQUE_EQUIPPABLE</c> — only one may be worn.</summary>
+    private const uint UniqueEquippableFlag = 0x00080000;
+
+    /// <summary>How many items of a limit category the player holds, worn or carried.</summary>
+    public uint CountOfLimitCategory(short category)
+    {
+        if (category == 0)
+        {
+            return 0;
+        }
+
+        uint total = 0;
+
+        foreach (Item item in All)
+        {
+            if (item.Template.ItemLimitCategory == category)
+            {
+                total += item.Count;
+            }
+        }
+
+        return total;
+    }
+
+    /// <summary>How many of an entry are being <i>worn</i>, which is a different limit.</summary>
+    public uint EquippedCountOf(uint entry)
+    {
+        uint total = 0;
+
+        for (byte slot = InventorySlots.EquipmentStart; slot < InventorySlots.EquipmentEnd; slot++)
+        {
+            if (_slots[slot] is { } worn && worn.Entry == entry)
+            {
+                total++;
+            }
+        }
+
+        return total;
+    }
+
+    /// <summary>How many of a limit category are being worn.</summary>
+    public uint EquippedCountOfLimitCategory(short category, byte exceptSlot = InventorySlots.None)
+    {
+        if (category == 0)
+        {
+            return 0;
+        }
+
+        uint total = 0;
+
+        for (byte slot = InventorySlots.EquipmentStart; slot < InventorySlots.EquipmentEnd; slot++)
+        {
+            if (slot != exceptSlot && _slots[slot] is { } worn
+                && worn.Template.ItemLimitCategory == category)
+            {
+                total++;
+            }
+        }
+
+        return total;
+    }
+
     /// <summary>How many of an entry the player holds, across every stack.</summary>
     public uint CountOf(uint entry)
     {
@@ -370,6 +563,11 @@ public sealed class Inventory(Player owner)
             {
                 item.Owner = owner.Guid;
                 item.Container = owner.Guid;
+
+                // Here rather than in the equip path, because everything that puts an item anywhere
+                // comes through Place — looting, buying, a GM command. Binding only on equip would
+                // leave a bind-on-pickup item tradeable for as long as it stayed in a bag.
+                Bind(item, equipping: InventorySlots.IsEquipment(position.Slot));
             }
 
             if (InventorySlots.IsEquipment(position.Slot))
@@ -445,6 +643,11 @@ public sealed class Inventory(Player owner)
         if (count == 0)
         {
             return InventoryResult.Ok;
+        }
+
+        if (CanTakeMoreSimilarItems(template, count) is { } tooMany)
+        {
+            return tooMany;
         }
 
         uint remaining = count;
@@ -769,6 +972,32 @@ public sealed class Inventory(Player owner)
     /// <item><b>A required spell</b>, which is how the riding skills and a few recipes gate.</item>
     /// </list>
     /// </remarks>
+    /// <summary>
+    /// Binds an item to its holder, if its bonding rule says being here does that.
+    /// </summary>
+    /// <param name="equipping">
+    /// Whether it is going onto the body rather than into a bag. Bind-on-equip turns on exactly
+    /// this — the same item in a bag stays tradeable, which is the whole point of the category.
+    /// </param>
+    /// <remarks>
+    /// Port of the binding in <c>Player::StoreItem</c> and <c>VisualizeItem</c>. Bind-on-pickup and
+    /// quest items bind wherever they land; bind-on-equip binds only when worn.
+    /// </remarks>
+    private static void Bind(Item item, bool equipping)
+    {
+        bool binds = item.Template.Bonding switch
+        {
+            ItemBonding.OnPickup or ItemBonding.QuestItem or ItemBonding.QuestItemUnused => true,
+            ItemBonding.OnEquip => equipping,
+            _ => false,
+        };
+
+        if (binds)
+        {
+            item.IsSoulBound = true;
+        }
+    }
+
     private InventoryResult? CanUse(ItemTemplate template)
     {
         if (!AllowsClass(template, owner.Class) || !AllowsRace(template, owner.Race))
@@ -879,6 +1108,22 @@ public sealed class Inventory(Player owner)
         if (CanUse(template) is { } refusal)
         {
             return refusal;
+        }
+
+        // Bound to someone else. Cannot happen through the normal flow — an item reaches a player's
+        // bags already owned by them — but it is the check that makes trading and mail safe to build
+        // on top of this rather than around it.
+        if (item.IsBoundToSomeoneElse(owner))
+        {
+            return InventoryResult.DontOwnThatItem;
+        }
+
+        // The slot being filled is excluded, so replacing a unique item with another of its kind is
+        // allowed — without that, swapping one unique ring for the same ring refuses because the one
+        // coming off is still counted.
+        if (CanEquipUnique(template, exceptSlot: slot) is { } unique)
+        {
+            return unique;
         }
 
         if (slot == InventorySlots.OffHand)

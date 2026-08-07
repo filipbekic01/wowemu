@@ -130,6 +130,11 @@ public sealed class WorldContent(
 
         player = Player.Create(character, race, characterClass, baseStats);
 
+        // Every player built here gets the limit table, so the "one mana gem" family caps apply.
+        // A player built anywhere else has none and the category limits simply pass, which is what
+        // they did before the table existed.
+        player.Inventory.LimitCategories = Stores.ItemLimitCategories;
+
         // The saved zone is where the character logged out; the terrain is the authority on where
         // it actually is. They differ whenever a character was moved by anything but walking.
         ushort area = Terrain.GetMap(player.MapId).GetAreaId(player.Position.X, player.Position.Y);

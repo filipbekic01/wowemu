@@ -46,6 +46,26 @@ public static class ItemClass
 }
 
 /// <summary>Item qualities, which are also the tooltip's colours. <c>ItemQualities</c>.</summary>
+/// <summary>
+/// When an item becomes the holder's for good. <c>ItemBondingType</c>.
+/// </summary>
+/// <remarks>
+/// The distinction between <see cref="OnPickup"/> and <see cref="OnEquip"/> is the whole of item
+/// trading: a bind-on-equip item is worth something on the market until the moment somebody wears
+/// it, and binding it on pickup instead destroys that entire economy quietly.
+/// </remarks>
+public static class ItemBonding
+{
+    public const byte None = 0;
+    public const byte OnPickup = 1;
+    public const byte OnEquip = 2;
+    public const byte OnUse = 3;
+    public const byte QuestItem = 4;
+
+    /// <summary>Present in the column and never used by the game data.</summary>
+    public const byte QuestItemUnused = 5;
+}
+
 public static class ItemQuality
 {
     public const byte Poor = 0;

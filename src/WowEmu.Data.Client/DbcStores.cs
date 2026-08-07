@@ -248,6 +248,27 @@ public sealed record DurabilityCostsEntry(uint ItemLevel, uint[] Multipliers)
 /// </remarks>
 public sealed record DurabilityQualityEntry(uint Id, float Modifier);
 
+/// <summary>
+/// A row of <c>ItemLimitCategory.dbc</c> — how many of a <i>family</i> of items may be held.
+/// </summary>
+/// <remarks>
+/// Separate from an item's own <c>MaxCount</c> because the limit is shared across different items:
+/// the "Mana Gems" category caps you at one, however many kinds of mana gem exist. Without this
+/// table each gem would be capped separately and you could carry one of each.
+/// </remarks>
+public sealed record ItemLimitCategoryEntry(uint Id, uint MaxCount, uint Mode)
+{
+    /// <summary>The cap is on how many you may HOLD. <c>ITEM_LIMIT_CATEGORY_MODE_HAVE</c>.</summary>
+    public const uint ModeHave = 0;
+
+    /// <summary>The cap is on how many you may WEAR — holding more is fine.</summary>
+    /// <remarks>
+    /// The distinction is the whole point of the column. A "have" category refuses the pick-up; an
+    /// "equip" category lets you carry a bagful and refuses the second one onto your body.
+    /// </remarks>
+    public const uint ModeEquip = 1;
+}
+
 /// <summary>What kind of thing a skill line is. <c>SkillCategory</c>.</summary>
 /// <remarks>
 /// The category is what decides how a skill's bar behaves, which is not something the skill row
@@ -535,6 +556,9 @@ public sealed class DbcStores
     /// <summary>An id and one float. <c>DurabilityQualityfmt</c>.</summary>
     private const string DurabilityQualityFormat = "nf";
 
+    /// <summary>Twenty columns, seventeen of them skipped text. <c>ItemLimitCategoryEntryfmt</c>.</summary>
+    private const string ItemLimitCategoryFormat = "nxxxxxxxxxxxxxxxxxii";
+
     /// <summary>Fifty-six columns, most of them localised text. <c>SkillLinefmt</c>.</summary>
     private const string SkillLineFormat =
         "nixssssssssssssssssxxxxxxxxxxxxxxxxxxixxxxxxxxxxxxxxxxxi";
@@ -562,9 +586,11 @@ public sealed class DbcStores
         DbcStore<AreaTableEntry> areas,
         DbcStore<DurabilityCostsEntry> durabilityCosts,
         DbcStore<DurabilityQualityEntry> durabilityQuality,
-        SkillLines skills)
+        SkillLines skills,
+        DbcStore<ItemLimitCategoryEntry> itemLimitCategories)
     {
         Skills = skills;
+        ItemLimitCategories = itemLimitCategories;
         DurabilityCosts = durabilityCosts;
         DurabilityQuality = durabilityQuality;
         QuestXp = questXp;
@@ -621,6 +647,9 @@ public sealed class DbcStores
     /// <summary>The skill tables, and the cross-table lookups worth having.</summary>
     public SkillLines Skills { get; }
 
+    /// <summary>How many of a family of items may be held or worn.</summary>
+    public DbcStore<ItemLimitCategoryEntry> ItemLimitCategories { get; }
+
     /// <summary>
     /// The zone an area belongs to, which is the area itself when it is already a zone.
     /// </summary>
@@ -638,7 +667,8 @@ public sealed class DbcStores
     public int TotalRows =>
         Races.Count + Classes.Count + Maps.Count + FactionTemplates.Count + WorldSafeLocs.Count
         + QuestXp.Count + LiquidTypes.Count + Areas.Count
-        + DurabilityCosts.Count + DurabilityQuality.Count + Skills.TotalRows;
+        + DurabilityCosts.Count + DurabilityQuality.Count + Skills.TotalRows
+        + ItemLimitCategories.Count;
 
     /// <summary>
     /// Loads every store from a directory of extracted <c>.dbc</c> files.
@@ -818,7 +848,16 @@ public sealed class DbcStores
                 (in DbcRecord record) => new DurabilityQualityEntry(
                     record.GetUInt32(0), record.GetFloat(1))),
 
-            LoadSkills(directory, locale));
+            LoadSkills(directory, locale),
+
+            DbcStore<ItemLimitCategoryEntry>.Load(
+                Path.Combine(directory, "ItemLimitCategory.dbc"),
+                ItemLimitCategoryFormat,
+                idField: 0,
+                (in DbcRecord record) => new ItemLimitCategoryEntry(
+                    Id: record.GetUInt32(0),
+                    MaxCount: record.GetUInt32(18),
+                    Mode: record.GetUInt32(19))));
     }
 
     /// <summary>The four skill tables, loaded together because none of them is useful alone.</summary>
