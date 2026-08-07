@@ -480,7 +480,8 @@ internal static class CreatureFixture
         uint maxGold = 0,
         uint gossipMenuId = 0,
         IReadOnlyList<Waypoint>? path = null,
-        CreatureEquipment? equipment = null)
+        CreatureEquipment? equipment = null,
+        CreatureAddon? addon = null)
     {
         StubModels models = new();
         models.Add(new CreatureModelInfo(4481, 0.372f, 1.5f, 0, 0));
@@ -553,7 +554,8 @@ internal static class CreatureFixture
         Creature? creature = Creature.Create(
             spawn, template, models, stats, level: 5, useOppositeGenderModel: false, displayId: 4481,
             path: path,
-            equipment: equipment);
+            equipment: equipment,
+            addon: addon);
 
         Assert.NotNull(creature);
         return creature;

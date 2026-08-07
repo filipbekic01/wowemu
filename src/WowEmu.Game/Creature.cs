@@ -500,7 +500,8 @@ public sealed class Creature : Unit
         bool useOppositeGenderModel,
         uint displayId,
         IReadOnlyList<Waypoint>? path = null,
-        CreatureEquipment? equipment = null)
+        CreatureEquipment? equipment = null,
+        CreatureAddon? addon = null)
     {
         ArgumentNullException.ThrowIfNull(template);
         ArgumentNullException.ThrowIfNull(models);
@@ -554,6 +555,7 @@ public sealed class Creature : Unit
                 creature.Fields.SetUInt32(UpdateFields.UNIT_VIRTUAL_ITEM_SLOT_ID + slot, outfit[slot]);
             }
         }
+
 
         UpdateFieldStorage fields = creature.Fields;
 
@@ -610,6 +612,11 @@ public sealed class Creature : Unit
         creature.BaseSpeeds.Walk = UnitDefaults.BaseWalkSpeed * template.SpeedWalk;
         creature.BaseSpeeds.Run = UnitDefaults.BaseRunSpeed * template.SpeedRun;
 
+        // Last of all, and that is the point: the addon overrides defaults set above it — the
+        // weapons-drawn sheath state in particular. Applied any earlier and the defaults win, which
+        // looks like the addon table being ignored rather than like an ordering mistake.
+        ApplyAddon(creature, addon);
+
         creature.SyncMovement();
         return creature;
     }
@@ -629,6 +636,55 @@ public sealed class Creature : Unit
         byte high = Math.Max(template.MinLevel, template.MaxLevel);
 
         return low == high ? low : (byte)pick(low, high);
+    }
+
+    /// <summary>
+    /// Applies a spawn's addon row: how it stands, what it rides, what it is doing.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Creature::LoadCreaturesAddon</c>, less the auras. Each packed column is applied
+    /// <b>only when it is non-zero</b>, which is upstream's own guard and not an optimisation: the
+    /// sheath state is already set to weapons-drawn above, and a blanket write of a zero column would
+    /// put every creature in the game back to weapons-sheathed.
+    /// <para>
+    /// Two bytes inside those columns are deliberately dropped rather than written through. The pet
+    /// talent byte of <c>bytes1</c> and the rename and shapeshift bytes of <c>bytes2</c> only mean
+    /// anything on a pet or under a shapeshift spell, and the columns carry leftovers for everything
+    /// else — upstream zeroes them explicitly, with the original lines commented out beside.
+    /// </para>
+    /// </remarks>
+    private static void ApplyAddon(Creature creature, CreatureAddon? addon)
+    {
+        if (addon is not { } info)
+        {
+            return;
+        }
+
+        UpdateFieldStorage fields = creature.Fields;
+
+        if (info.Mount != 0)
+        {
+            fields.SetUInt32(UpdateFields.UNIT_FIELD_MOUNTDISPLAYID, info.Mount);
+        }
+
+        if (info.Bytes1 != 0)
+        {
+            fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_1, 0, info.StandState);
+            fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_1, 1, 0);
+            fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_1, 2, info.VisibilityFlags);
+            fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_1, 3, info.AnimationTier);
+        }
+
+        if (info.Bytes2 != 0)
+        {
+            fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_2, 0, info.SheathState);
+            fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_2, 2, 0);
+            fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_2, 3, 0);
+        }
+
+        // Written unconditionally, unlike the rest: upstream sets it outside every guard, so an
+        // addon row with no emote actively clears one rather than leaving whatever was there.
+        fields.SetUInt32(UpdateFields.UNIT_NPC_EMOTESTATE, info.Emote);
     }
 
     /// <summary>

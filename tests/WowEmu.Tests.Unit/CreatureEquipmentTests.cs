@@ -158,6 +158,75 @@ public sealed class CreatureEquipmentTests
         }
     }
 
+    // ------------------------------------------------------------------ the addon row
+
+    /// <summary>
+    /// A sheath state of "put away" survives, and one of zero does not overwrite the default.
+    /// </summary>
+    /// <remarks>
+    /// The guard on each packed column is upstream's and is load-bearing. Every creature is set to
+    /// weapons-drawn before the addon is applied, so writing a zero <c>bytes2</c> through would put
+    /// the whole world back to sheathed — and with 31,136 spawns carrying a non-zero one, the bug
+    /// would look like a data problem rather than a code one.
+    /// </remarks>
+    [Fact]
+    public void AZeroColumn_LeavesTheDefaultAlone()
+    {
+        Creature drawn = CreatureFixture.Build(addon: new CreatureAddon(0, 0, 0, Bytes2: 0, 0));
+        Creature sheathed = CreatureFixture.Build(addon: new CreatureAddon(0, 0, 0, Bytes2: 0, 0));
+
+        // Both keep the weapons-drawn default rather than being reset by an empty column.
+        Assert.Equal(1, drawn.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_2, 0));
+        Assert.Equal(1, sheathed.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_2, 0));
+    }
+
+    /// <summary>The packed columns unpack into the bytes the client reads.</summary>
+    /// <remarks>
+    /// Stand state in the low byte and animation tier in the high one — a creature sitting on a
+    /// chair and a creature hovering are the same column, sixteen bits apart.
+    /// </remarks>
+    [Fact]
+    public void ThePackedColumns_UnpackIntoTheirBytes()
+    {
+        // Stand state 3 (sitting), visibility flags 0x40, animation tier 2.
+        const uint Bytes1 = 3u | (0x40u << 16) | (2u << 24);
+
+        Creature creature = CreatureFixture.Build(
+            addon: new CreatureAddon(0, Mount: 6080, Bytes1, Bytes2: 2, Emote: 173));
+
+        Assert.Equal(3, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_1, 0));
+        Assert.Equal(0x40, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_1, 2));
+        Assert.Equal(2, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_1, 3));
+
+        Assert.Equal(2, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_2, 0));
+        Assert.Equal(6080u, creature.Fields.GetUInt32(UpdateFields.UNIT_FIELD_MOUNTDISPLAYID));
+        Assert.Equal(173u, creature.Fields.GetUInt32(UpdateFields.UNIT_NPC_EMOTESTATE));
+    }
+
+    /// <summary>
+    /// The pet-only bytes are dropped rather than written through.
+    /// </summary>
+    /// <remarks>
+    /// The pet talent byte of <c>bytes1</c> and the rename and shapeshift bytes of <c>bytes2</c>
+    /// carry leftovers for anything that is not a pet. Upstream zeroes all three explicitly, with
+    /// the write-through lines commented out beside them.
+    /// </remarks>
+    [Fact]
+    public void ThePetOnlyBytes_AreDropped()
+    {
+        // Every byte of both columns set to 0xFF.
+        Creature creature = CreatureFixture.Build(
+            addon: new CreatureAddon(0, 0, Bytes1: 0xFFFFFFFF, Bytes2: 0xFFFFFFFF, 0));
+
+        Assert.Equal(0, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_1, 1));
+        Assert.Equal(0, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_2, 2));
+        Assert.Equal(0, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_2, 3));
+
+        // And the ones that are written through survive intact.
+        Assert.Equal(0xFF, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_1, 0));
+        Assert.Equal(0xFF, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_2, 0));
+    }
+
     /// <summary>A roll that never fires, for the cases that must not draw.</summary>
     private static uint Never(uint min, uint max) =>
         throw new InvalidOperationException("the generator should not have been consulted");

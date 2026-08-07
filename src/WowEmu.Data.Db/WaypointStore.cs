@@ -116,64 +116,159 @@ public sealed class WaypointStore
 }
 
 /// <summary>
-/// The per-spawn extras, from <c>creature_addon</c>.
+/// How a creature stands when it spawns. A row of <c>creature_addon</c> or
+/// <c>creature_template_addon</c>.
+/// </summary>
+/// <param name="PathId">The patrol route, or 0.</param>
+/// <param name="Mount">A mount display id to be drawn riding, or 0.</param>
+/// <param name="Bytes1">
+/// Stand state, pet talents, visibility flags and animation tier, packed one per byte. The pet
+/// talent byte is <b>not</b> written through — upstream zeroes it, because it only means anything on
+/// a pet and the column carries leftovers for everything else.
+/// </param>
+/// <param name="Bytes2">
+/// Sheath state in the low byte and three more that upstream deliberately drops: the second is a
+/// flags byte it leaves alone, and the last two are pet-rename and shapeshift, which a spawn row has
+/// no business setting.
+/// </param>
+/// <param name="Emote">A looping emote — the blacksmith hammering, the guard leaning.</param>
+public readonly record struct CreatureAddon(uint PathId, uint Mount, uint Bytes1, uint Bytes2, uint Emote)
+{
+    /// <summary>The stand state: standing, sitting, kneeling, asleep. Low byte of <see cref="Bytes1"/>.</summary>
+    public byte StandState => (byte)(Bytes1 & 0xFF);
+
+    /// <summary>Visibility flags — what makes a stealthed or invisible creature detectable.</summary>
+    public byte VisibilityFlags => (byte)((Bytes1 >> 16) & 0xFF);
+
+    /// <summary>Ground, hovering, flying or submerged. What the client animates against.</summary>
+    public byte AnimationTier => (byte)((Bytes1 >> 24) & 0xFF);
+
+    /// <summary>Weapons drawn or put away. Low byte of <see cref="Bytes2"/>.</summary>
+    public byte SheathState => (byte)(Bytes2 & 0xFF);
+
+    /// <summary>Whether this row says anything at all.</summary>
+    public bool IsEmpty => Mount == 0 && Bytes1 == 0 && Bytes2 == 0 && Emote == 0;
+}
+
+/// <summary>
+/// The per-spawn and per-entry extras, from <c>creature_addon</c> and <c>creature_template_addon</c>.
 /// </summary>
 /// <remarks>
-/// Only <c>path_id</c> is read. The table also carries mount, emote, stand state and a list of auras
-/// to apply on spawn, none of which have anywhere to go yet — reading them now would mean carrying
-/// 34,311 rows of fields nothing looks at, and the row is added to when a phase needs it, the same
-/// way <c>CreatureSpawn</c> grew.
+/// <b>A spawn's row replaces its entry's outright rather than merging with it.</b> Upstream's
+/// <c>GetCreatureAddon</c> returns the first of the two that exists and never combines them, so a
+/// spawn row that sets only an emote also silently clears whatever sheath state its template
+/// specified. Merging them field by field is the obvious improvement and is a different game.
+/// <para>
+/// The <c>auras</c> column is not read yet. 2,910 spawns and 1,227 entries list spells to apply on
+/// spawn, and applying one needs the spell store and an aura path that reaches outside the map —
+/// recorded as a gap rather than half-done.
+/// </para>
 /// </remarks>
 public sealed class CreatureAddonStore
 {
-    private readonly Dictionary<uint, uint> _pathBySpawn = [];
+    private readonly Dictionary<uint, CreatureAddon> _bySpawn = [];
+    private readonly Dictionary<uint, CreatureAddon> _byEntry = [];
 
-    /// <summary>How many addon rows were loaded.</summary>
+    /// <summary>How many spawn addon rows were loaded.</summary>
     public int Count { get; private set; }
 
-    /// <summary>How many of them name a patrol route.</summary>
-    public int PathCount => _pathBySpawn.Count;
+    /// <summary>How many entry addon rows were loaded.</summary>
+    public int TemplateCount => _byEntry.Count;
+
+    /// <summary>How many rows of either kind name a patrol route.</summary>
+    public int PathCount { get; private set; }
 
     public async Task LoadAsync(string connectionString, CancellationToken cancellationToken = default)
     {
         await using MySqlConnection connection = new(connectionString);
         await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
 
-        _pathBySpawn.Clear();
+        _bySpawn.Clear();
+        _byEntry.Clear();
         Count = 0;
+        PathCount = 0;
 
+        await ReadInto(connection, "creature_addon", "guid", _bySpawn, cancellationToken)
+            .ConfigureAwait(false);
+
+        Count = _bySpawn.Count;
+
+        await ReadInto(connection, "creature_template_addon", "entry", _byEntry, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private async Task ReadInto(
+        MySqlConnection connection,
+        string table,
+        string keyColumn,
+        Dictionary<uint, CreatureAddon> into,
+        CancellationToken cancellationToken)
+    {
         await using MySqlCommand command = connection.CreateCommand();
-        command.CommandText = "SELECT guid, path_id FROM creature_addon";
+        command.CommandText = $"SELECT {keyColumn}, path_id, mount, bytes1, bytes2, emote FROM {table}";
 
         await using MySqlDataReader reader =
             (MySqlDataReader)await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
-            Count++;
+            CreatureAddon addon = new(
+                PathId: reader.GetUInt32(1),
+                Mount: reader.GetUInt32(2),
+                Bytes1: reader.GetUInt32(3),
+                Bytes2: reader.GetUInt32(4),
+                Emote: reader.GetUInt32(5));
 
-            uint pathId = reader.GetUInt32(1);
+            into[reader.GetUInt32(0)] = addon;
 
-            // Most rows exist for the other columns and name no route. Storing the zeros would
-            // treble the dictionary for nothing.
-            if (pathId != 0)
+            if (addon.PathId != 0)
             {
-                _pathBySpawn[reader.GetUInt32(0)] = pathId;
+                PathCount++;
             }
         }
     }
 
-    /// <summary>The route a spawn walks, or 0 if it has none.</summary>
-    public uint PathFor(uint spawnId) => _pathBySpawn.GetValueOrDefault(spawnId);
-
-    /// <summary>Names a spawn's route directly. Tests and fixtures only.</summary>
-    public void Add(uint spawnId, uint pathId)
+    /// <summary>
+    /// The addon that applies to a spawn: its own if it has one, otherwise its entry's.
+    /// </summary>
+    /// <remarks>
+    /// The whole row wins or loses, never a field of it — see the class remarks.
+    /// </remarks>
+    public CreatureAddon? For(uint spawnId, uint entry)
     {
-        _pathBySpawn[spawnId] = pathId;
-        Count++;
+        if (_bySpawn.TryGetValue(spawnId, out CreatureAddon spawn))
+        {
+            return spawn;
+        }
+
+        return _byEntry.TryGetValue(entry, out CreatureAddon template) ? template : null;
     }
+
+    /// <summary>The route a spawn walks, or 0 if it has none.</summary>
+    /// <remarks>
+    /// Reads through the same fallback, which matters for the 19 entries whose route is named by
+    /// their template rather than by each spawn.
+    /// </remarks>
+    public uint PathFor(uint spawnId, uint entry) => For(spawnId, entry)?.PathId ?? 0;
+
+    /// <summary>Adds a spawn's addon directly. Tests and fixtures only.</summary>
+    public void Add(uint spawnId, CreatureAddon addon)
+    {
+        _bySpawn[spawnId] = addon;
+        Count = _bySpawn.Count;
+
+        if (addon.PathId != 0)
+        {
+            PathCount++;
+        }
+    }
+
+    /// <inheritdoc cref="Add(uint, CreatureAddon)"/>
+    public void AddTemplate(uint entry, CreatureAddon addon) => _byEntry[entry] = addon;
 
     /// <summary>A description of the loaded contents, for the startup log.</summary>
     public override string ToString() =>
-        string.Create(CultureInfo.InvariantCulture, $"{Count} creature addons, {PathCount} with a path");
+        string.Create(
+            CultureInfo.InvariantCulture,
+            $"{Count} creature addons and {TemplateCount} template addons, {PathCount} with a path");
 }

@@ -73,7 +73,8 @@ public sealed class CreatureFactory(
 
             // Drawn after the gender roll and before nothing else, so the generator is consumed in
             // upstream's order — and only for the 176 spawns that ask for a random outfit.
-            equipment?.For(spawn.Entry, spawn.EquipmentId, GameRandom.Urand));
+            equipment?.For(spawn.Entry, spawn.EquipmentId, GameRandom.Urand),
+            addons?.For(spawn.SpawnId, spawn.Entry));
 
         if (creature is null)
         {
@@ -105,7 +106,7 @@ public sealed class CreatureFactory(
             return null;
         }
 
-        uint pathId = addons.PathFor(spawn.SpawnId);
+        uint pathId = addons.PathFor(spawn.SpawnId, spawn.Entry);
 
         return pathId == 0 ? null : waypoints.Path(pathId);
     }

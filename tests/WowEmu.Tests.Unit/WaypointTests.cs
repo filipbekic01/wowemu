@@ -221,7 +221,19 @@ public sealed class WaypointTests
         Assert.Equal(MovementGeneratorType.Random, creature.Motion.CurrentType);
 
         // And the wander underneath takes over, which is the thing that would never have happened.
-        Assert.NotNull(creature.Update(RandomMovementGenerator.MaxWaitMs + 1));
+        //
+        // Over several attempts rather than one. A wander draws its radius as `distance * sqrt(u)`,
+        // so roughly one draw in a hundred lands inside the half-yard minimum and produces no move
+        // at all — which is correct behaviour and made this test fail about that often, depending on
+        // what had consumed the shared generator before it.
+        bool moved = false;
+
+        for (int attempt = 0; attempt < 20 && !moved; attempt++)
+        {
+            moved = creature.Update(RandomMovementGenerator.MaxWaitMs + 1) is not null;
+        }
+
+        Assert.True(moved, "the wander never produced a move in twenty attempts");
     }
 
     // ------------------------------------------------------------------ standing on the ground
@@ -343,19 +355,56 @@ public sealed class WaypointTests
         Assert.Equal(1, store.PathCount);
     }
 
-    /// <summary>Addon rows that name no route are not stored at all.</summary>
-    /// <remarks>
-    /// 34,311 rows exist and only about 5,300 name a path. Keeping the zeros would treble the
-    /// dictionary to record "no route", which is what the absence of an entry already says.
-    /// </remarks>
+    /// <summary>A spawn with no addon of any kind walks no route.</summary>
     [Fact]
     public void TheAddonStore_ReportsNoPathAsZero()
     {
         CreatureAddonStore store = new();
-        store.Add(spawnId: 5, pathId: 99);
+        store.Add(spawnId: 5, new CreatureAddon(PathId: 99, 0, 0, 0, 0));
 
-        Assert.Equal(99u, store.PathFor(5));
-        Assert.Equal(0u, store.PathFor(6));
+        Assert.Equal(99u, store.PathFor(spawnId: 5, entry: 1));
+        Assert.Equal(0u, store.PathFor(spawnId: 6, entry: 1));
+    }
+
+    /// <summary>
+    /// A route named by the entry rather than by the spawn is still found.
+    /// </summary>
+    /// <remarks>
+    /// 19 entries carry a path on their template addon instead of on each spawn. Reading only the
+    /// per-spawn table — which is what this did until the template table was vendored — leaves those
+    /// standing still with no indication anything is missing.
+    /// </remarks>
+    [Fact]
+    public void ARouteOnTheTemplate_IsFoundThroughTheFallback()
+    {
+        CreatureAddonStore store = new();
+        store.AddTemplate(entry: 299, new CreatureAddon(PathId: 7, 0, 0, 0, 0));
+
+        Assert.Equal(7u, store.PathFor(spawnId: 5, entry: 299));
+    }
+
+    /// <summary>
+    /// A spawn's own addon replaces its entry's outright rather than merging with it.
+    /// </summary>
+    /// <remarks>
+    /// Upstream returns the first of the two that exists and never combines them, so a spawn row
+    /// that sets only an emote also drops whatever its template said about sheath state. Merging
+    /// field by field is the obvious improvement and is a different game.
+    /// </remarks>
+    [Fact]
+    public void ASpawnsAddon_ReplacesItsTemplatesEntirely()
+    {
+        CreatureAddonStore store = new();
+
+        store.AddTemplate(entry: 299, new CreatureAddon(PathId: 7, Mount: 100, 0, Bytes2: 1, Emote: 0));
+        store.Add(spawnId: 5, new CreatureAddon(PathId: 0, Mount: 0, 0, Bytes2: 0, Emote: 13));
+
+        CreatureAddon addon = store.For(spawnId: 5, entry: 299)!.Value;
+
+        Assert.Equal(13u, addon.Emote);
+        Assert.Equal(0u, addon.Mount);
+        Assert.Equal(0u, addon.Bytes2);
+        Assert.Equal(0u, store.PathFor(spawnId: 5, entry: 299));
     }
 
     // ------------------------------------------------------------------ helpers
