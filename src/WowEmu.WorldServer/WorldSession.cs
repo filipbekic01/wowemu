@@ -1770,6 +1770,15 @@ public sealed class WorldSession(
             return;
         }
 
+        // Commands are intercepted before anything is said, and before the alive check — being dead
+        // is a thing you often want a command to fix, and .revive typed by a corpse must not be
+        // swallowed as speech from someone who cannot speak.
+        if (ChatCommandParser.TryParse(text, out string commandLine))
+        {
+            RunCommand(commandLine);
+            return;
+        }
+
         // The dead do not speak. Checked after the message is validated so that a corpse typing
         // something malformed is still logged as malformed.
         if (!_player.IsAlive)
@@ -1790,6 +1799,34 @@ public sealed class WorldSession(
             default:
                 Log.ChatRefused(logger, _player.Name, type, "channel not implemented");
                 return;
+        }
+    }
+
+    /// <summary>
+    /// Runs a command and sends back whatever it had to say.
+    /// </summary>
+    /// <remarks>
+    /// The reply goes back as a system message to the sender alone. It is not chat: nobody standing
+    /// nearby sees a GM's <c>.additem</c>, which is both what upstream does and the only sane
+    /// behaviour — the alternative announces every administrative action to the zone.
+    /// </remarks>
+    private void RunCommand(string commandLine)
+    {
+        (string name, string arguments) = ChatCommandParser.Split(commandLine);
+
+        CommandContext context = new(
+            _player!,
+            _map!,
+            arguments,
+            _account?.SecurityLevel ?? CommandSecurity.Player,
+            world,
+            itemGuids.Next);
+
+        Log.CommandRun(logger, _player!.Name, name, connection.RemoteAddress);
+
+        foreach (string line in CommandTable.Execute(name, context))
+        {
+            SendChat(ChatMsg.System, ChatLanguage.Universal, ObjectGuid.Empty, ObjectGuid.Empty, line);
         }
     }
 

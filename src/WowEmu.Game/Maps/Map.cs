@@ -2277,10 +2277,25 @@ public sealed class Map(
             return false;
         }
 
-        PlayerDeath.Resurrect(player);
-        player.Connection?.SendResurrected();
+        Resurrect(player);
 
         return true;
+    }
+
+    /// <summary>
+    /// Puts a dead player back on their feet where they stand.
+    /// </summary>
+    /// <remarks>
+    /// Shared with <see cref="ReclaimCorpse"/> rather than repeated, because the packet matters as
+    /// much as the state: a player restored without <c>SendResurrected</c> is alive to the server
+    /// and a ghost to their own client, which is not a state anything else knows how to leave.
+    /// </remarks>
+    public static void Resurrect(Player player)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        PlayerDeath.Resurrect(player);
+        player.Connection?.SendResurrected();
     }
 
     /// <summary>How close a ghost must be to its corpse to reclaim it.</summary>
