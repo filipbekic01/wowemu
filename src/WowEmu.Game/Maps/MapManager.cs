@@ -44,7 +44,8 @@ public sealed class MapManager(
     Func<uint>? nextItemGuid = null,
     QuestStore? quests = null,
     DbcStore<LiquidTypeEntry>? liquidTypes = null,
-    DbcStore<AreaTableEntry>? areas = null) : IDisposable
+    DbcStore<AreaTableEntry>? areas = null,
+    NavMeshManager? navmeshes = null) : IDisposable
 {
     /// <summary>
     /// The four phases. Three update a category of map; the fourth is a pause.
@@ -88,6 +89,7 @@ public sealed class MapManager(
                 Quests = quests,
                 LiquidTypes = liquidTypes,
                 Areas = areas,
+                NavMeshes = navmeshes,
             };
             _maps[mapId] = map;
         }

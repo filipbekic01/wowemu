@@ -354,6 +354,15 @@ public sealed class Map(
     public StaticMapTree? Collision { get; } = collision;
 
     /// <summary>
+    /// The navigation meshes, for routing creatures around the world rather than through it.
+    /// </summary>
+    /// <remarks>
+    /// Optional, and its absence is a straight line rather than a refusal to move — see
+    /// <see cref="SendCreatureMove"/>.
+    /// </remarks>
+    public NavMeshManager? NavMeshes { get; init; }
+
+    /// <summary>
     /// Who fights whom, from <c>FactionTemplate.dbc</c>.
     /// </summary>
     /// <remarks>
@@ -1314,8 +1323,12 @@ public sealed class Map(
     {
         const float RestartThreshold = 2.0f;
 
+        // Mid-route counts as heading there: a path's next corner is rarely the destination, so
+        // comparing against it would re-path on every tick and never finish a leg.
+        Position heading = creature.IsFollowingPath ? creature.ChaseTarget : creature.CurrentMove.Destination;
+
         if (creature.IsMoving
-            && creature.CurrentMove.Destination.GetExactDist2dSq(destination) < RestartThreshold * RestartThreshold)
+            && heading.GetExactDist2dSq(destination) < RestartThreshold * RestartThreshold)
         {
             return;
         }
@@ -1323,10 +1336,22 @@ public sealed class Map(
         SendCreatureMove(creature, destination);
     }
 
-    /// <summary>Starts a creature on a move and broadcasts it.</summary>
+    /// <summary>
+    /// Starts a creature on a move and broadcasts it.
+    /// </summary>
+    /// <remarks>
+    /// Routed around the world where there is a navmesh to route around it with, and straight there
+    /// where there is not. <b>The straight line is the fallback and must stay one</b>: 98 maps of
+    /// the client's several hundred have a navmesh, a tile can be missing from any of them, and a
+    /// creature that refused to move without a route would simply stand still in all those places.
+    /// </remarks>
     private void SendCreatureMove(Creature creature, Position destination)
     {
-        Movement.CreatureMove? move = creature.MoveTo(destination);
+        creature.ChaseTarget = destination;
+
+        Movement.CreatureMove? move = FindRoute(creature, destination) is { HasPath: true } route
+            ? creature.MoveAlong(route.Points)
+            : creature.MoveTo(destination);
 
         if (move is null)
         {
@@ -1337,6 +1362,39 @@ public sealed class Map(
         {
             watcher.Connection?.QueueMonsterMove(creature.Guid, move.Value, creature.SplineId);
         }
+    }
+
+    /// <summary>
+    /// A route from where a creature is to where it is going, or none.
+    /// </summary>
+    /// <remarks>
+    /// None is the ordinary answer in most of the world, and the caller walks a straight line on it.
+    /// A path is only worth asking for over any distance at all — a creature adjusting its footing
+    /// next to its victim would otherwise pay a mesh query per tick to be told to go where it
+    /// already is.
+    /// </remarks>
+    private NavPath? FindRoute(Creature creature, Position destination)
+    {
+        const float ShortestWorthPathing = 5.0f;
+
+        if (NavMeshes is not { } navmeshes
+            || creature.Position.GetExactDist2dSq(destination)
+                < ShortestWorthPathing * ShortestWorthPathing)
+        {
+            return null;
+        }
+
+        navmeshes.EnsureLoaded(MapId, creature.Position.X, creature.Position.Y);
+        navmeshes.EnsureLoaded(MapId, destination.X, destination.Y);
+
+        if (navmeshes.For(MapId) is not { } generator)
+        {
+            return null;
+        }
+
+        NavPath path = generator.Find(creature.Position, destination);
+
+        return path.HasPath ? path : null;
     }
 
     /// <summary>Whether one unit can see another, for aggro purposes.</summary>

@@ -336,6 +336,178 @@ public sealed class WaypointTests
         Assert.True(differed > 0, "every destination came back at the spawn height — is terrain being read?");
     }
 
+    // ------------------------------------------------------------------ walking a route
+
+    /// <summary>
+    /// A route is walked corner by corner, each its own move.
+    /// </summary>
+    /// <remarks>
+    /// The client interpolates one leg at a time, so every corner is its own packet. A route issued
+    /// as a single move to its last point would walk the creature straight through whatever the
+    /// route was bending around, which is the entire thing pathfinding is for.
+    /// </remarks>
+    [Fact]
+    public void ARoute_IsWalkedCornerByCorner()
+    {
+        Creature creature = CreatureFixture.Build(position: new Position(0f, 0f, 0f, 0f));
+
+        // Point zero is where it already stands; the corners are a right-angled detour.
+        CreatureMove? first = creature.MoveAlong(
+        [
+            new Position(0f, 0f, 0f, 0f),
+            new Position(20f, 0f, 0f, 0f),
+            new Position(20f, 20f, 0f, 0f),
+        ]);
+
+        Assert.NotNull(first);
+        Assert.Equal(20f, first!.Value.Destination.X, 0.001f);
+        Assert.Equal(0f, first.Value.Destination.Y, 0.001f);
+        Assert.True(creature.IsFollowingPath);
+
+        CreatureMove? second = RunToNextLeg(creature);
+
+        Assert.NotNull(second);
+        Assert.Equal(20f, second!.Value.Destination.X, 0.001f);
+        Assert.Equal(20f, second.Value.Destination.Y, 0.001f);
+
+        // And the route ends there.
+        Assert.Null(RunToNextLeg(creature));
+        Assert.False(creature.IsFollowingPath);
+    }
+
+    /// <summary>
+    /// The route's own start is not walked to.
+    /// </summary>
+    /// <remarks>
+    /// Detour returns it as point zero and the creature is already standing on it, so issuing it
+    /// produces a zero-length move — which is refused, and the whole route would be dropped before
+    /// it began.
+    /// </remarks>
+    [Fact]
+    public void TheRoutesOwnStart_IsNotWalkedTo()
+    {
+        Creature creature = CreatureFixture.Build(position: new Position(0f, 0f, 0f, 0f));
+
+        CreatureMove? move = creature.MoveAlong(
+            [new Position(0f, 0f, 0f, 0f), new Position(30f, 0f, 0f, 0f)]);
+
+        Assert.NotNull(move);
+        Assert.Equal(30f, move!.Value.Destination.X, 0.001f);
+    }
+
+    /// <summary>Corners too close together to be worth a move are skipped, not dropped.</summary>
+    /// <remarks>
+    /// A route from Detour can legitimately contain them where a corridor pinches. Stopping at the
+    /// first one would abandon the rest of the route.
+    /// </remarks>
+    [Fact]
+    public void CornersTooCloseTogether_AreSkippedRatherThanEndingTheRoute()
+    {
+        Creature creature = CreatureFixture.Build(position: new Position(0f, 0f, 0f, 0f));
+
+        CreatureMove? move = creature.MoveAlong(
+        [
+            new Position(0f, 0f, 0f, 0f),
+
+            // Well inside the half-yard minimum, so no move is worth issuing for it.
+            new Position(0.01f, 0f, 0f, 0f),
+            new Position(25f, 0f, 0f, 0f),
+        ]);
+
+        Assert.NotNull(move);
+        Assert.Equal(25f, move!.Value.Destination.X, 0.001f);
+    }
+
+    /// <summary>A route with nowhere to go produces nothing.</summary>
+    [Fact]
+    public void AnEmptyRoute_ProducesNoMove()
+    {
+        Creature creature = CreatureFixture.Build();
+
+        Assert.Null(creature.MoveAlong([]));
+        Assert.Null(creature.MoveAlong([new Position(0f, 0f, 0f, 0f)]));
+        Assert.False(creature.IsFollowingPath);
+    }
+
+    /// <summary>
+    /// A direct move abandons whatever route was being walked.
+    /// </summary>
+    /// <remarks>
+    /// Chasing a target that has moved re-paths, and evading issues a direct walk home. Leaving the
+    /// old legs queued would have the creature finish the new move and then carry on to where it
+    /// used to be going.
+    /// </remarks>
+    [Fact]
+    public void ADirectMove_AbandonsTheRoute()
+    {
+        Creature creature = CreatureFixture.Build(position: new Position(0f, 0f, 0f, 0f));
+
+        creature.MoveAlong(
+        [
+            new Position(0f, 0f, 0f, 0f),
+            new Position(20f, 0f, 0f, 0f),
+            new Position(20f, 20f, 0f, 0f),
+        ]);
+
+        Assert.True(creature.IsFollowingPath);
+
+        creature.MoveTo(new Position(-40f, 0f, 0f, 0f));
+
+        Assert.False(creature.IsFollowingPath);
+        Assert.Null(RunToNextLeg(creature));
+    }
+
+    /// <summary>
+    /// A creature keeps walking its route while it has a victim.
+    /// </summary>
+    /// <remarks>
+    /// <c>Update</c> withholds the <i>generator's</i> next destination while there is a victim — the
+    /// wander must not pull a creature out of a fight. A route's remaining corners are not the
+    /// generator's, and stopping them there would leave every chase frozen at its first bend.
+    /// </remarks>
+    [Fact]
+    public void ARouteContinues_EvenWithAVictim()
+    {
+        Creature creature = CreatureFixture.Build(position: new Position(0f, 0f, 0f, 0f));
+        Player victim = InventoryFixture.Player(level: 5);
+
+        creature.Threat.AddThreat(victim, 10f);
+        creature.Attack(victim);
+
+        Assert.NotNull(creature.Victim);
+
+        creature.MoveAlong(
+        [
+            new Position(0f, 0f, 0f, 0f),
+            new Position(20f, 0f, 0f, 0f),
+            new Position(20f, 20f, 0f, 0f),
+        ]);
+
+        CreatureMove? second = RunToNextLeg(creature);
+
+        Assert.NotNull(second);
+        Assert.Equal(20f, second!.Value.Destination.Y, 0.001f);
+    }
+
+    /// <summary>Ticks until the current leg finishes and reports whatever started next.</summary>
+    private static CreatureMove? RunToNextLeg(Creature creature)
+    {
+        for (int i = 0; i < 2000; i++)
+        {
+            if (creature.Update(100) is { } started)
+            {
+                return started;
+            }
+
+            if (!creature.IsMoving)
+            {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
     // ------------------------------------------------------------------ the store
 
     /// <summary>A path is looked up by its own id, not by the guid of a creature walking it.</summary>

@@ -231,6 +231,14 @@ public sealed class Creature : Unit
                 return null;
             }
 
+            // A corner of a route is not the end of the journey. Starting the next leg before
+            // anything else is what keeps a path going — telling the motion master it had arrived
+            // here would stand a home generator down half way back to its spawn point.
+            if (TryStartNextLeg() is { } leg)
+            {
+                return leg;
+            }
+
             // It has arrived. A generator pushed for one journey — going home — takes this as its
             // cue to stand down, revealing whatever it interrupted.
             Motion.NotifyArrived(this);
@@ -286,6 +294,11 @@ public sealed class Creature : Unit
     /// <returns>The move that started, or null when it is already close enough to be pointless.</returns>
     public CreatureMove? MoveTo(Position destination)
     {
+        // A direct move replaces whatever route was being walked. Leaving the old legs queued would
+        // have the creature finish this move and then carry on along a path to somewhere it is no
+        // longer going.
+        _pathLegs = null;
+
         CreatureMove? move = CreatureMove.Create(Position, destination, Speeds.Run);
 
         if (move is null)
@@ -298,6 +311,87 @@ public sealed class Creature : Unit
         SplineId++;
 
         return CurrentMove;
+    }
+
+    /// <summary>
+    /// Sends the creature along a route, corner by corner.
+    /// </summary>
+    /// <remarks>
+    /// How a chase follows real geometry rather than walking through it. The client interpolates one
+    /// leg at a time, so each corner is its own move and its own packet — which is also what upstream
+    /// does for a path it cannot express as a single spline.
+    /// <para>
+    /// <b>The first point is skipped.</b> Detour returns the route's own start as point zero, and it
+    /// is where the creature already stands — issuing it produces a zero-length move, which
+    /// <see cref="CreatureMove.Create"/> refuses, and the whole route is dropped before it begins.
+    /// </para>
+    /// </remarks>
+    /// <returns>The first leg, or null when the route has nowhere to go.</returns>
+    public CreatureMove? MoveAlong(IReadOnlyList<Position> path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+
+        _pathLegs = null;
+
+        if (path.Count < 2)
+        {
+            return null;
+        }
+
+        // Index 1: point zero is where the creature is standing.
+        _pathLegs = new PathWalk(path, 1);
+
+        return TryStartNextLeg();
+    }
+
+    /// <summary>Whether a multi-corner route is part way through.</summary>
+    public bool IsFollowingPath => _pathLegs is { HasMore: true };
+
+    /// <summary>
+    /// Where the creature is ultimately heading, as opposed to the corner it is walking to now.
+    /// </summary>
+    /// <remarks>
+    /// Only meaningful while chasing. It exists so that "has the target moved enough to re-path?"
+    /// compares against the destination rather than against the next corner — which for any route
+    /// with a bend would be true every tick.
+    /// </remarks>
+    public Position ChaseTarget { get; set; }
+
+    /// <summary>Starts the next corner of a route, if there is one.</summary>
+    private CreatureMove? TryStartNextLeg()
+    {
+        while (_pathLegs is { HasMore: true } walk)
+        {
+            Position next = walk.Take();
+
+            CreatureMove? move = CreatureMove.Create(Position, next, Speeds.Run);
+
+            if (move is null)
+            {
+                // Two corners close enough together to be one. Skipped rather than issued, and the
+                // loop carries on to the next — a route from Detour can legitimately contain them.
+                continue;
+            }
+
+            CurrentMove = move.Value;
+            MoveElapsedMs = 0;
+            SplineId++;
+
+            return CurrentMove;
+        }
+
+        _pathLegs = null;
+        return null;
+    }
+
+    private PathWalk? _pathLegs;
+
+    /// <summary>How far along a route the creature has got.</summary>
+    private sealed class PathWalk(IReadOnlyList<Position> points, int next)
+    {
+        public bool HasMore => next < points.Count;
+
+        public Position Take() => points[next++];
     }
 
     // ------------------------------------------------------------------ dying and coming back

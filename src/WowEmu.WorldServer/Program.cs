@@ -104,6 +104,11 @@ builder.Services.AddSingleton(_ => new VmapManager(
         ? startupOptions.DataDirectory
         : Path.Combine(AppContext.BaseDirectory, startupOptions.DataDirectory)));
 
+builder.Services.AddSingleton(_ => new NavMeshManager(
+    Path.IsPathRooted(startupOptions.DataDirectory)
+        ? startupOptions.DataDirectory
+        : Path.Combine(AppContext.BaseDirectory, startupOptions.DataDirectory)));
+
 builder.Services.AddSingleton(_ => new TerrainManager(
     Path.IsPathRooted(startupOptions.DataDirectory)
         ? startupOptions.DataDirectory
@@ -140,7 +145,8 @@ builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<ItemGuidGenerator>().Next,
     services.GetRequiredService<QuestStore>(),
     services.GetRequiredService<DbcStores>().LiquidTypes,
-    services.GetRequiredService<DbcStores>().Areas));
+    services.GetRequiredService<DbcStores>().Areas,
+    services.GetRequiredService<NavMeshManager>()));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in
