@@ -3990,7 +3990,12 @@ public sealed class WorldSession(
     {
         ArgumentNullException.ThrowIfNull(other);
 
-        if (other is GameObject gameObject)
+        if (other is Corpse corpse)
+        {
+            _pendingUpdates.AddBlock(UpdateBlockBuilder.BuildCorpseCreateBlock(
+                corpse.Guid, corpse.Fields, corpse.Position, VisibilityOf(corpse)));
+        }
+        else if (other is GameObject gameObject)
         {
             _pendingUpdates.AddBlock(UpdateBlockBuilder.BuildGameObjectCreateBlock(
                 gameObject.Guid,

@@ -322,6 +322,16 @@ public sealed class Map(
     private readonly Dictionary<ObjectGuid, Player> _players = [];
     private readonly HashSet<GridCoord> _loadedGrids = [];
 
+    /// <summary>The body each dead player left behind, by owner guid.</summary>
+    /// <remarks>
+    /// Keyed by owner rather than held on the player, because a corpse outlives the session that
+    /// made it — a player who logs out as a ghost leaves a body standing in the world.
+    /// </remarks>
+    private readonly Dictionary<ObjectGuid, Corpse> _corpses = [];
+
+    /// <summary>Low guids for corpses, which have no spawn row to take one from.</summary>
+    private uint _nextCorpseGuid;
+
     // Creatures that can move, kept separately so a tick does not walk every object on the
     // continent to find the few thousand that are going somewhere.
     private readonly List<Creature> _creatures = [];
@@ -959,6 +969,43 @@ public sealed class Map(
             {
                 MakeVisible(observer, player);
             }
+        }
+    }
+
+    /// <summary>
+    /// Puts a corpse into the world and shows it to everyone nearby.
+    /// </summary>
+    /// <remarks>
+    /// A separate overload rather than one taking <c>WorldObject</c>, because adding a player also
+    /// registers it in the player list and teaches it what it can see — neither of which a corpse
+    /// wants. What they share is the filing and the visibility sweep.
+    /// </remarks>
+    public void Add(Corpse corpse)
+    {
+        ArgumentNullException.ThrowIfNull(corpse);
+
+        File(corpse);
+
+        foreach (WorldObject other in FindInRangeCore(corpse.Position, VisibilityDistance, corpse))
+        {
+            if (other is Player observer)
+            {
+                MakeVisible(observer, corpse);
+            }
+        }
+    }
+
+    /// <summary>Takes a corpse out of the world and tells everyone who could see it.</summary>
+    public void Remove(Corpse corpse)
+    {
+        ArgumentNullException.ThrowIfNull(corpse);
+
+        Unfile(corpse);
+
+        foreach (Player other in PlayersWhoSeeCore(corpse.Guid))
+        {
+            other.VisibleObjects.Remove(corpse.Guid);
+            SendDestroy(other, corpse.Guid);
         }
     }
 
@@ -2229,6 +2276,10 @@ public sealed class Map(
             return false;
         }
 
+        // At release, not at death: until a player releases, the body standing there IS their own
+        // character, still rendered dead. Creating it at death would put two of them in the world.
+        SpawnCorpse(player);
+
         if (_graveyards is null || _worldSafeLocs is null)
         {
             return true;
@@ -2298,11 +2349,16 @@ public sealed class Map(
     /// much as the state: a player restored without <c>SendResurrected</c> is alive to the server
     /// and a ghost to their own client, which is not a state anything else knows how to leave.
     /// </remarks>
-    public static void Resurrect(Player player)
+    public void Resurrect(Player player)
     {
         ArgumentNullException.ThrowIfNull(player);
 
         PlayerDeath.Resurrect(player);
+
+        // The body goes with them. A living player standing next to their own resurrectable corpse
+        // is offered the dialog again, which resurrects them a second time from nothing.
+        LayToRest(player);
+
         player.Connection?.SendResurrected();
     }
 
@@ -2386,6 +2442,44 @@ public sealed class Map(
             RefreshStats(player);
         }
     }
+
+    /// <summary>Puts a player's body into the world where they died.</summary>
+    private void SpawnCorpse(Player player)
+    {
+        // Any earlier body becomes bones first. Without this a player who dies, releases, and dies
+        // again before reclaiming has two resurrectable corpses and can pick either.
+        LayToRest(player);
+
+        Corpse corpse = Corpse.Create(player, ++_nextCorpseGuid);
+
+        _corpses[player.Guid] = corpse;
+
+        Add(corpse);
+    }
+
+    /// <summary>
+    /// Turns a player's body into bones and takes it out of the world.
+    /// </summary>
+    /// <remarks>
+    /// <c>Player::SpawnCorpseBones</c>. Converted rather than simply removed, so that the object the
+    /// clients already know about changes into something that cannot be resurrected at instead of
+    /// vanishing — and then it is removed, because nothing here decays bones yet.
+    /// </remarks>
+    private void LayToRest(Player player)
+    {
+        if (!_corpses.Remove(player.Guid, out Corpse? corpse))
+        {
+            return;
+        }
+
+        corpse.ConvertToBones();
+
+        Remove(corpse);
+    }
+
+    /// <summary>The body a player left behind, if it is still in the world.</summary>
+    public Corpse? CorpseOf(ObjectGuid owner) =>
+        _corpses.TryGetValue(owner, out Corpse? corpse) ? corpse : null;
 
     /// <summary>How close a ghost must be to its corpse to reclaim it.</summary>
     public const float CorpseReclaimRange = 39.0f;

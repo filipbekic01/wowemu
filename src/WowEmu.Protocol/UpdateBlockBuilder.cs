@@ -165,6 +165,49 @@ public static class UpdateBlockBuilder
     }
 
     /// <summary>
+    /// Builds the create block for a corpse.
+    /// </summary>
+    /// <remarks>
+    /// <b>Not <see cref="UpdateFlag.Living"/>.</b> A corpse does not move, so it carries a
+    /// stationary position rather than a movement block — sending the living form would make the
+    /// client read a full movement block, complete with speeds and fall time, out of bytes that are
+    /// not there.
+    /// <para>
+    /// Otherwise the same shape as a gameobject's, minus the rotation: upstream's corpse sets
+    /// <c>LOWGUID | STATIONARY_POSITION | POSITION</c>, which is exactly a gameobject without
+    /// something to face.
+    /// </para>
+    /// </remarks>
+    public static byte[] BuildCorpseCreateBlock(
+        ObjectGuid objectGuid,
+        UpdateFieldStorage fields,
+        Position position,
+        UpdateFieldVisibility? visibleTo = null)
+    {
+        ArgumentNullException.ThrowIfNull(fields);
+
+        const UpdateFlag flags =
+            UpdateFlag.LowGuid | UpdateFlag.StationaryPosition | UpdateFlag.Position;
+
+        PacketWriter writer = new(256);
+
+        // CreateObject2, which upstream uses for corpses — the client treats the two differently
+        // when deciding whether it already has the object.
+        writer.WriteUInt8((byte)UpdateType.CreateObject2);
+        writer.WritePackedGuid(objectGuid);
+        writer.WriteUInt8((byte)TypeId.Corpse);
+
+        writer.WriteUInt16((ushort)flags);
+
+        WritePosition(writer, position);
+        WriteLowGuid(writer, flags, objectGuid, TypeId.Corpse, isSelf: false);
+
+        WriteValues(writer, fields, CreateMask(fields, UpdateObjectKind.Corpse, visibleTo));
+
+        return writer.ToArray();
+    }
+
+    /// <summary>
     /// Builds a values block for an object the observer already has.
     /// </summary>
     /// <param name="objectGuid">The object that changed.</param>

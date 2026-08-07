@@ -271,7 +271,7 @@ public static class CommandTable
             return ["You are not dead."];
         }
 
-        Map.Resurrect(context.Player);
+        context.Map.Resurrect(context.Player);
 
         return ["Revived."];
     }
