@@ -1,16 +1,18 @@
+using WowEmu.Data.Db;
+
 namespace WowEmu.Game;
 
 /// <summary>
 /// Every spell a player knows.
 /// </summary>
 /// <remarks>
-/// Port of the parts of <c>Player</c>'s <c>m_spells</c> that M6 needs: a set, what goes in it at
-/// creation, and what a trainer adds. No talents, no specs, no ranks and no skill lines — a higher
-/// rank does not supersede a lower one here, so a player who learns rank 2 keeps rank 1 in the
-/// book as well.
+/// Port of the parts of <c>Player</c>'s <c>m_spells</c> that M6 needs: what goes in it at creation,
+/// what a trainer adds, and which ranks are current. No talents and no specs.
 /// <para>
-/// It is a set rather than a list because the client is told about each spell once and the only
-/// question ever asked of it is whether a spell is in there.
+/// <b>A superseded rank is deactivated, not removed.</b> Upstream keeps every rank in the book and
+/// flips the lower one inactive, and the client is told to swap it on the action bar. Removing it
+/// instead loses the fact that the character ever had it — which matters the moment a spec change
+/// or an unlearn has to put it back.
 /// </para>
 /// </remarks>
 public sealed class SpellBook(Player owner)
@@ -25,14 +27,43 @@ public sealed class SpellBook(Player owner)
     /// </remarks>
     public const uint DualWieldSpell = 674;
 
-    private readonly HashSet<uint> _known = [];
+    /// <summary>Every spell known, and whether it is the current rank.</summary>
+    private readonly Dictionary<uint, bool> _known = [];
 
-    /// <summary>Every spell known, in no particular order.</summary>
-    public IReadOnlyCollection<uint> Known => _known;
+    /// <summary>
+    /// The chains, so a higher rank can supersede a lower one. Null until content is loaded.
+    /// </summary>
+    /// <remarks>
+    /// Settable rather than required: nothing else about a spellbook needs a database, and a test
+    /// that had to load one to learn a spell would not get written. With none set, every rank stays
+    /// active — which is what happened before this existed.
+    /// </remarks>
+    public SpellRankStore? Ranks { get; set; }
+
+    /// <summary>Every spell known, in no particular order — including superseded ranks.</summary>
+    public IReadOnlyCollection<uint> Known => _known.Keys;
+
+    /// <summary>Only the ranks a player can actually cast.</summary>
+    public IEnumerable<uint> Active
+    {
+        get
+        {
+            foreach ((uint spellId, bool active) in _known)
+            {
+                if (active)
+                {
+                    yield return spellId;
+                }
+            }
+        }
+    }
 
     public int Count => _known.Count;
 
-    public bool Knows(uint spellId) => _known.Contains(spellId);
+    public bool Knows(uint spellId) => _known.ContainsKey(spellId);
+
+    /// <summary>Whether a known spell is the current rank rather than one that has been outgrown.</summary>
+    public bool IsActive(uint spellId) => _known.TryGetValue(spellId, out bool active) && active;
 
     /// <summary>
     /// Adds a spell to the book.
@@ -40,14 +71,59 @@ public sealed class SpellBook(Player owner)
     /// <returns><c>false</c> if it was already known, so the caller can stay quiet about it.</returns>
     public bool Learn(uint spellId)
     {
-        if (!_known.Add(spellId))
+        if (_known.ContainsKey(spellId))
         {
             return false;
         }
 
+        _known[spellId] = true;
+
+        Supersede(spellId);
         ApplyPassiveEffects(spellId);
 
         return true;
+    }
+
+    /// <summary>
+    /// Settles which rank of a chain is the live one after learning <paramref name="learned"/>.
+    /// </summary>
+    /// <returns>The rank this one replaced, or 0 — which is what the client needs to swap a bar.</returns>
+    /// <remarks>
+    /// It runs in both directions, and the second is the one that is easy to miss: learning a
+    /// <i>lower</i> rank than one already known must deactivate the <b>new</b> spell rather than the
+    /// old one. That happens whenever a trainer's list is worked through out of order, and getting
+    /// it backwards silently downgrades the character.
+    /// </remarks>
+    public uint Supersede(uint learned)
+    {
+        if (Ranks is not { } ranks || !ranks.IsRanked(learned))
+        {
+            return 0;
+        }
+
+        uint replaced = 0;
+
+        foreach (uint other in ranks.ChainOf(learned))
+        {
+            if (other == learned || !_known.TryGetValue(other, out bool active) || !active)
+            {
+                continue;
+            }
+
+            if (ranks.Supersedes(learned, other))
+            {
+                _known[other] = false;
+                replaced = other;
+            }
+            else if (ranks.Supersedes(other, learned))
+            {
+                // Already have better. The new one goes in the book inactive, so it is remembered
+                // without being offered.
+                _known[learned] = false;
+            }
+        }
+
+        return replaced;
     }
 
     /// <summary>Takes a spell out of the book.</summary>
@@ -75,7 +151,15 @@ public sealed class SpellBook(Player owner)
 
         foreach (uint spellId in spells)
         {
-            _known.Add(spellId);
+            _known[spellId] = true;
+        }
+
+        // After the whole set is in, not per spell: the ranks arrive in whatever order the database
+        // returns them, and settling each as it lands would deactivate a high rank that happens to
+        // be read before its own lower ones.
+        foreach (uint spellId in _known.Keys.ToArray())
+        {
+            Supersede(spellId);
         }
 
         ApplyPassiveEffects(DualWieldSpell);
@@ -93,7 +177,7 @@ public sealed class SpellBook(Player owner)
     {
         if (spellId == DualWieldSpell)
         {
-            owner.CanDualWield = _known.Contains(DualWieldSpell);
+            owner.CanDualWield = _known.ContainsKey(DualWieldSpell);
         }
     }
 }

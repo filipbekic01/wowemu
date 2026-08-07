@@ -2099,6 +2099,20 @@ public sealed class WorldSession(
             // all, since the trainer teaches the spell and the skill follows from it.
             SkillLearning.LearnSkillsFromSpell(_player, world.Stores.Skills, spellId);
 
+            // A higher rank replaces a lower one on the action bar, and the client only knows to do
+            // that if it is told which spell went where. Without this the old rank stays on the bar
+            // and the player keeps casting it.
+            if (_player.Spells.Ranks?.RankOf(spellId) > 0
+                && ReplacedRankOf(spellId) is { } replaced and not 0)
+            {
+                ServerPacket superceded = new(Opcode.SMSG_SUPERCEDED_SPELL, 8);
+
+                superceded.Body.WriteUInt32(replaced);
+                superceded.Body.WriteUInt32(spellId);
+
+                connection.Send(superceded);
+            }
+
             ServerPacket learned = new(Opcode.SMSG_LEARNED_SPELL, 8);
             InitialSpells.WriteLearned(learned.Body, spellId);
 
@@ -2143,6 +2157,32 @@ public sealed class WorldSession(
             packet.Body, trainer.Guid, trainerType: 2, greeting: string.Empty, lines);
 
         connection.Send(packet);
+    }
+
+    /// <summary>
+    /// Which rank the newly learned one pushed aside, or 0.
+    /// </summary>
+    /// <remarks>
+    /// Read back from the book rather than returned by <c>Learn</c>, so that every path that learns
+    /// a spell settles the ranks and only the one that has a client to tell asks what changed.
+    /// </remarks>
+    private uint ReplacedRankOf(uint spellId)
+    {
+        if (_player?.Spells.Ranks is not { } ranks)
+        {
+            return 0;
+        }
+
+        foreach (uint other in ranks.ChainOf(spellId))
+        {
+            if (other != spellId && _player.Spells.Knows(other) && !_player.Spells.IsActive(other)
+                && ranks.Supersedes(spellId, other))
+            {
+                return other;
+            }
+        }
+
+        return 0;
     }
 
     /// <summary>This session's view of a trainer line.</summary>

@@ -1953,8 +1953,9 @@
               "text": "character_spell, saved whole like the inventory and the quest log"
             },
             {
-              "done": false,
-              "text": "Spell ranks — a higher rank does not supersede a lower one, so both stay in the book"
+              "done": true,
+              "text": "Spell ranks — a higher rank supersedes a lower one",
+              "note": "SUPERSEDED, NOT REMOVED. Upstream keeps every rank in the book and flips the lower one INACTIVE, then sends SMSG_SUPERCEDED_SPELL(old, new) so the client swaps the action bar. Removing the old rank instead loses the fact the character ever had it, which matters the moment an unlearn or spec change has to put it back — and leaving the bar alone means the old rank stays exactly where the player's finger already is, so they keep casting it. THE RULE RUNS IN BOTH DIRECTIONS and the second is easy to miss: learning a LOWER rank than one already known must deactivate the NEW spell, not the old. That happens whenever a trainer's list is worked through out of order, and getting it backwards silently downgrades the character — they keep what they paid for and lose what they had. Superseding needs SAME CHAIN AND higher rank. Comparing ranks alone makes Fireball rank 3 supersede Frostbolt rank 2, since both are simply 'a rank'. Restore settles the ranks AFTER the whole set is in, because the database returns rows in no useful order — settling each as it lands deactivates a high rank that happened to be read before its own lower ones, and the character logs in having quietly lost their best spell. Chains come from spell_ranks (3,502 rows, 598 chains), newly vendored — nothing in the CLIENT's data says rank 3 supersedes rank 2, which is why upstream curates a table."
             },
             {
               "done": true,

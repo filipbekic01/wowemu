@@ -33,7 +33,8 @@ public sealed class WorldContent(
     VendorStore vendors,
     PlayerSpellStore startingSpells,
     PlayerActionStore startingActions,
-    TrainerStore trainers)
+    TrainerStore trainers,
+    SpellRankStore spellRanks)
 {
     public TerrainManager Terrain { get; } = terrain;
 
@@ -75,6 +76,9 @@ public sealed class WorldContent(
 
     /// <summary>What each trainer teaches.</summary>
     public TrainerStore Trainers { get; } = trainers;
+
+    /// <summary>Which spells are ranks of the same spell, so a higher one supersedes a lower.</summary>
+    public SpellRankStore SpellRanks { get; } = spellRanks;
 
     /// <summary>What is on a new character's action bars.</summary>
     public PlayerActionStore StartingActions { get; } = startingActions;
@@ -134,6 +138,7 @@ public sealed class WorldContent(
         // A player built anywhere else has none and the category limits simply pass, which is what
         // they did before the table existed.
         player.Inventory.LimitCategories = Stores.ItemLimitCategories;
+        player.Spells.Ranks = SpellRanks;
 
         // The saved zone is where the character logged out; the terrain is the authority on where
         // it actually is. They differ whenever a character was moved by anything but walking.

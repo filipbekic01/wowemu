@@ -263,6 +263,7 @@ internal static class WorldStartup
 
         PlayerSpellStore startingSpells = services.GetRequiredService<PlayerSpellStore>();
         TrainerStore trainers = services.GetRequiredService<TrainerStore>();
+        SpellRankStore spellRanks = services.GetRequiredService<SpellRankStore>();
 
         await gossip.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await vendors.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
@@ -271,6 +272,7 @@ internal static class WorldStartup
         await startingSpells.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await startingActions.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await trainers.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await spellRanks.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
         // Measured into a local rather than inline: the analyzer objects to work inside a log call,
         // and the elapsed time has to be taken at the same point whether or not anyone is listening.
