@@ -57,6 +57,38 @@ public sealed class DbcStore<TEntry>
     }
 
     /// <summary>
+    /// Loads a store keyed by each record's <i>position</i> rather than by a column.
+    /// </summary>
+    /// <remarks>
+    /// For the <c>gt*</c> tables, which are the odd ones out: they carry a single value per row and
+    /// <b>no id column at all</b>, so the row's ordinal is its id. <c>gtCombatRatings.dbc</c> is
+    /// 3,200 bare floats, addressed as <c>rating × 100 + level - 1</c>.
+    /// <para>
+    /// Upstream's format strings for these begin with <c>d</c>, which its loader treats as an index
+    /// that occupies no space in the destination struct — but its own field-count check implies its
+    /// extractor emits an id column that ours does not. Reading by ordinal is the honest reading of
+    /// the file we actually have, and the values it produces are the published constants: 45.91
+    /// rating per point of crit at level 80, 32.79 for hit, 8.197 for expertise.
+    /// </para>
+    /// </remarks>
+    public static DbcStore<TEntry> LoadByOrdinal(
+        string path,
+        string format,
+        DbcEntryFactory<TEntry> factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+
+        DbcFile file = DbcFile.Load(path, format);
+        Dictionary<uint, TEntry> entries = new(file.RecordCount);
+
+        uint ordinal = 0;
+
+        file.ForEachRecord((in DbcRecord record) => entries[ordinal++] = factory(record));
+
+        return new DbcStore<TEntry>(file.Name, entries);
+    }
+
+    /// <summary>
     /// A store with nothing in it, for callers that must work without a client extracted.
     /// </summary>
     /// <remarks>

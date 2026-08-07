@@ -1,3 +1,4 @@
+using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Protocol;
 
@@ -102,6 +103,7 @@ public static class PlayerCombatStats
 
         ApplyResistances(player);
         ApplyRatings(player);
+        ApplyDefenceChances(player);
     }
 
     /// <summary>
@@ -314,6 +316,64 @@ public static class PlayerCombatStats
                 UpdateFields.PLAYER_FIELD_COMBAT_RATING_1 + rating, (uint)Math.Max(totals[rating], 0));
         }
     }
+
+    /// <summary>
+    /// Turns the stored ratings into the percentages the sheet and the attack table read.
+    /// </summary>
+    /// <remarks>
+    /// These fields were never written at all before this, so a player dodged and crit exactly
+    /// nothing however they were geared.
+    /// <para>
+    /// <b>What is here is the rating contribution only.</b> A character's <i>base</i> dodge and crit
+    /// come from agility through <c>gtChanceToMeleeCrit</c> and its base table, which is the other
+    /// half of the same gap and is not done — so an ungeared character still shows zero. That is
+    /// visible and wrong rather than invisible and wrong, which is the better of the two.
+    /// </para>
+    /// </remarks>
+    private static void ApplyDefenceChances(Player player)
+    {
+        if (player.CombatRatings is not { } table)
+        {
+            return;
+        }
+
+        byte level = player.Level;
+        byte characterClass = player.Class;
+
+        player.Fields.SetFloat(
+            UpdateFields.PLAYER_DODGE_PERCENTAGE,
+            Percent(player, table, CrDodge, level, characterClass));
+
+        player.Fields.SetFloat(
+            UpdateFields.PLAYER_PARRY_PERCENTAGE,
+            Percent(player, table, CrParry, level, characterClass));
+
+        player.Fields.SetFloat(
+            UpdateFields.PLAYER_BLOCK_PERCENTAGE,
+            Percent(player, table, CrBlock, level, characterClass));
+
+        // The three crit fields the client draws separately, each from its own rating.
+        player.Fields.SetFloat(
+            UpdateFields.PLAYER_CRIT_PERCENTAGE,
+            Percent(player, table, CrCritMelee, level, characterClass));
+
+        player.Fields.SetFloat(
+            UpdateFields.PLAYER_RANGED_CRIT_PERCENTAGE,
+            Percent(player, table, CrCritRanged, level, characterClass));
+
+        player.Fields.SetFloat(
+            UpdateFields.PLAYER_OFFHAND_CRIT_PERCENTAGE,
+            Percent(player, table, CrCritMelee, level, characterClass));
+    }
+
+    /// <summary>What a stored rating is worth as a percentage, for this character.</summary>
+    private static float Percent(
+        Player player, CombatRatingTable table, int rating, byte level, byte characterClass) =>
+        table.BonusFor(
+            rating,
+            player.Fields.GetUInt32(UpdateFields.PLAYER_FIELD_COMBAT_RATING_1 + rating),
+            level,
+            characterClass);
 
     /// <summary>
     /// Which combat ratings an <c>ItemModType</c> feeds. Empty for anything that feeds none.

@@ -566,6 +566,12 @@ public sealed class DbcStores
     /// <summary>An id and one float. <c>DurabilityQualityfmt</c>.</summary>
     private const string DurabilityQualityFormat = "nf";
 
+    /// <summary>A single bare float. The <c>gt*</c> tables have no id column at all.</summary>
+    private const string GameTableFloatFormat = "f";
+
+    /// <summary>An id and a float — the one <c>gt*</c> table that does carry an id.</summary>
+    private const string GameTableScalarFormat = "nf";
+
     /// <summary>A slot number and a price. <c>BankBagSlotPricesEntryfmt</c>.</summary>
     private const string BankBagSlotPricesFormat = "ni";
 
@@ -601,8 +607,10 @@ public sealed class DbcStores
         DbcStore<DurabilityQualityEntry> durabilityQuality,
         SkillLines skills,
         DbcStore<ItemLimitCategoryEntry> itemLimitCategories,
-        DbcStore<BankBagSlotPriceEntry> bankBagSlotPrices)
+        DbcStore<BankBagSlotPriceEntry> bankBagSlotPrices,
+        CombatRatingTable combatRatings)
     {
+        CombatRatings = combatRatings;
         Skills = skills;
         ItemLimitCategories = itemLimitCategories;
         BankBagSlotPrices = bankBagSlotPrices;
@@ -667,6 +675,9 @@ public sealed class DbcStores
 
     /// <summary>What the next bank bag slot costs.</summary>
     public DbcStore<BankBagSlotPriceEntry> BankBagSlotPrices { get; }
+
+    /// <summary>What a point of a combat rating is worth, by level and class.</summary>
+    public CombatRatingTable CombatRatings { get; }
 
     /// <summary>
     /// The zone an area belongs to, which is the area itself when it is already a zone.
@@ -883,7 +894,20 @@ public sealed class DbcStores
                 idField: 0,
                 (in DbcRecord record) => new BankBagSlotPriceEntry(
                     Slot: record.GetUInt32(0),
-                    Price: record.GetUInt32(1))));
+                    Price: record.GetUInt32(1))),
+
+            new CombatRatingTable(
+                DbcStore<GameTableFloat>.LoadByOrdinal(
+                    Path.Combine(directory, "gtCombatRatings.dbc"),
+                    GameTableFloatFormat,
+                    (in DbcRecord record) => new GameTableFloat(record.GetFloat(0))),
+
+                DbcStore<GameTableScalar>.Load(
+                    Path.Combine(directory, "gtOCTClassCombatRatingScalar.dbc"),
+                    GameTableScalarFormat,
+                    idField: 0,
+                    (in DbcRecord record) => new GameTableScalar(
+                        record.GetUInt32(0), record.GetFloat(1)))));
     }
 
     /// <summary>The four skill tables, loaded together because none of them is useful alone.</summary>

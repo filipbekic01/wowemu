@@ -205,6 +205,15 @@ public sealed class Player : Unit
         set => Fields.SetByte(UpdateFields.PLAYER_BYTES_2, 2, value);
     }
 
+    /// <summary>
+    /// What a point of a combat rating is worth to this character.
+    /// </summary>
+    /// <remarks>
+    /// Settable rather than required, like the other content tables a player carries — with none
+    /// set the ratings stay stored and unconverted, which is what happened before this existed.
+    /// </remarks>
+    public CombatRatingTable? CombatRatings { get; set; }
+
     /// <summary>Experience accumulated towards the next level.</summary>
     /// <remarks>
     /// Reset to the <i>remainder</i> on levelling, not to zero — overshooting a level carries the

@@ -1,3 +1,4 @@
+using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Game;
 using WowEmu.Game.Combat;
@@ -183,6 +184,55 @@ public sealed class ItemRatingTests
 
         Assert.Equal(500u, player.Armor);
         Assert.Equal(10u, Resistance(player, SchoolHoly));
+    }
+
+    /// <summary>
+    /// A crit rating becomes a crit percentage once the tables are loaded.
+    /// </summary>
+    /// <remarks>
+    /// The percentage fields were never written at all before this — a player dodged and crit
+    /// exactly nothing however they were geared, and the character sheet agreed with them.
+    /// </remarks>
+    [RequiresClientDataFact]
+    public void ACritRating_BecomesACritPercentage()
+    {
+        Player player = InventoryFixture.Player(level: 80);
+        player.CombatRatings = DbcStores.Load(ClientData.DbcDirectory).CombatRatings;
+
+        Wear(player, InventorySlots.Chest, Stat(ItemModCritRating, 92));
+        PlayerCombatStats.Apply(player);
+
+        // 45.91 rating is one percent at level 80.
+        Assert.Equal(2f, player.Fields.GetFloat(UpdateFields.PLAYER_CRIT_PERCENTAGE), 0.02f);
+        Assert.Equal(2f, player.CritChanceFor(WeaponAttackType.BaseAttack), 0.02f);
+    }
+
+    /// <summary>And a dodge rating becomes dodge, which the attack table rolls against.</summary>
+    [RequiresClientDataFact]
+    public void ADodgeRating_BecomesDodge()
+    {
+        Player player = InventoryFixture.Player(level: 80);
+        player.CombatRatings = DbcStores.Load(ClientData.DbcDirectory).CombatRatings;
+
+        Wear(player, InventorySlots.Chest, Stat(ItemModDodgeRating, 90));
+        PlayerCombatStats.Apply(player);
+
+        // 45.25 rating is one percent at level 80, so ninety is very nearly two.
+        Assert.Equal(2f, player.DodgeChance, 0.05f);
+    }
+
+    /// <summary>With no tables loaded the rating is stored and simply does nothing.</summary>
+    /// <remarks>
+    /// Rather than being treated as a percentage outright, which is what a missing multiplier of
+    /// 1.0 would do — 92 crit rating would become 92% crit.
+    /// </remarks>
+    [Fact]
+    public void WithNoTables_ARatingChangesNoChance()
+    {
+        Player player = Wearing(Stat(ItemModCritRating, 92));
+
+        Assert.Equal(92u, Rating(player, CrCritMelee));
+        Assert.Equal(0f, player.CritChanceFor(WeaponAttackType.BaseAttack));
     }
 
     // ------------------------------------------------------------------ fixtures
