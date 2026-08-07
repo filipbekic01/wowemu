@@ -191,6 +191,20 @@ public sealed class Player : Unit
         ? BaseMana
         : GetMaxPower(powerType);
 
+    /// <summary>
+    /// How many of the seven bank bag slots the character has bought.
+    /// </summary>
+    /// <remarks>
+    /// <c>PLAYER_BYTES_2</c> byte 2. The client draws exactly this many slots, so it is also the
+    /// only thing stopping a player putting a bag in one they never paid for — the packet naming
+    /// the slot comes from the client.
+    /// </remarks>
+    public byte BankBagSlots
+    {
+        get => Fields.GetByte(UpdateFields.PLAYER_BYTES_2, 2);
+        set => Fields.SetByte(UpdateFields.PLAYER_BYTES_2, 2, value);
+    }
+
     /// <summary>Experience accumulated towards the next level.</summary>
     /// <remarks>
     /// Reset to the <i>remainder</i> on levelling, not to zero — overshooting a level carries the

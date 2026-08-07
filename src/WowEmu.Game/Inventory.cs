@@ -351,12 +351,13 @@ public sealed class Inventory(Player owner)
     /// they are entitled to own.
     /// </para>
     /// </remarks>
-    public InventoryResult? CanTakeMoreSimilarItems(ItemTemplate template, uint count)
+    public InventoryResult? CanTakeMoreSimilarItems(
+        ItemTemplate template, uint count, Item? excluding = null)
     {
         ArgumentNullException.ThrowIfNull(template);
 
         if (template.MaxCount > 0 && template.MaxCount != int.MaxValue
-            && CountOf(template.Entry) + count > (uint)template.MaxCount)
+            && CountOf(template.Entry, excluding) + count > (uint)template.MaxCount)
         {
             return InventoryResult.CantCarryMoreOfThis;
         }
@@ -379,7 +380,7 @@ public sealed class Inventory(Player owner)
             return null;
         }
 
-        return CountOfLimitCategory(template.ItemLimitCategory) + count > limit.MaxCount
+        return CountOfLimitCategory(template.ItemLimitCategory, excluding) + count > limit.MaxCount
             ? InventoryResult.CantCarryMoreOfThis
             : null;
     }
@@ -443,7 +444,7 @@ public sealed class Inventory(Player owner)
     private const uint UniqueEquippableFlag = 0x00080000;
 
     /// <summary>How many items of a limit category the player holds, worn or carried.</summary>
-    public uint CountOfLimitCategory(short category)
+    public uint CountOfLimitCategory(short category, Item? excluding = null)
     {
         if (category == 0)
         {
@@ -454,7 +455,7 @@ public sealed class Inventory(Player owner)
 
         foreach (Item item in All)
         {
-            if (item.Template.ItemLimitCategory == category)
+            if (item.Template.ItemLimitCategory == category && !ReferenceEquals(item, excluding))
             {
                 total += item.Count;
             }
@@ -502,13 +503,13 @@ public sealed class Inventory(Player owner)
     }
 
     /// <summary>How many of an entry the player holds, across every stack.</summary>
-    public uint CountOf(uint entry)
+    public uint CountOf(uint entry, Item? excluding = null)
     {
         uint total = 0;
 
         foreach (Item item in All)
         {
-            if (item.Entry == entry)
+            if (item.Entry == entry && !ReferenceEquals(item, excluding))
             {
                 total += item.Count;
             }
@@ -633,7 +634,54 @@ public sealed class Inventory(Player owner)
     /// </remarks>
     /// <param name="destinations">Where the count would go, split across stacks. Empty on failure.</param>
     public InventoryResult CanStore(
-        ItemTemplate template, uint count, out IReadOnlyList<(ItemPosition Position, uint Count)> destinations)
+        ItemTemplate template,
+        uint count,
+        out IReadOnlyList<(ItemPosition Position, uint Count)> destinations,
+        Item? moving = null,
+        ItemPosition? vacating = null) =>
+        Plan(template, count, CarryPositions(), out destinations, moving, vacating);
+
+    /// <summary>
+    /// Where a stack would go in the <i>bank</i>, and whether it fits.
+    /// </summary>
+    /// <remarks>
+    /// The same planner over a different set of slots. Written as a second copy of the stacking
+    /// logic it would drift the first time one of them learned something the other did not — and
+    /// the bank is exactly where a player would notice a stack that failed to merge.
+    /// </remarks>
+    public InventoryResult CanBank(
+        ItemTemplate template,
+        uint count,
+        out IReadOnlyList<(ItemPosition Position, uint Count)> destinations,
+        Item? moving = null,
+        ItemPosition? vacating = null) =>
+        Plan(template, count, BankPositions(), out destinations, moving, vacating);
+
+    /// <summary>
+    /// Works out which slots a stack would land in, given somewhere to look.
+    /// </summary>
+    /// <remarks>
+    /// <b>Partial stacks before empty slots.</b> Filling an empty slot first leaves two half stacks
+    /// of the same thing and burns a slot for nothing, which is how a bag ends up full of
+    /// twelve-of-twenty stacks.
+    /// </remarks>
+    /// <param name="moving">
+    /// An item already held that is being moved rather than acquired, so it is not counted against
+    /// its own limit — otherwise putting your one unique trinket into the bank is refused on the
+    /// grounds that you already have one.
+    /// </param>
+    /// <param name="vacating">
+    /// A slot that is about to be emptied, and so counts as free. Without it a move within the same
+    /// region cannot pick the slot the item is already in, and something banked twice walks along
+    /// the bank one slot at a time instead of staying where it is.
+    /// </param>
+    private InventoryResult Plan(
+        ItemTemplate template,
+        uint count,
+        IEnumerable<ItemPosition> positions,
+        out IReadOnlyList<(ItemPosition Position, uint Count)> destinations,
+        Item? moving = null,
+        ItemPosition? vacating = null)
     {
         ArgumentNullException.ThrowIfNull(template);
 
@@ -645,19 +693,24 @@ public sealed class Inventory(Player owner)
             return InventoryResult.Ok;
         }
 
-        if (CanTakeMoreSimilarItems(template, count) is { } tooMany)
+        if (CanTakeMoreSimilarItems(template, count, moving) is { } tooMany)
         {
             return tooMany;
         }
 
         uint remaining = count;
 
-        // Partial stacks first, and only of the same entry.
+        // Materialised because it is walked twice, and the bank sequence reads the slot array as it
+        // goes — enumerating it a second time after the first pass is fine, but only because
+        // nothing has moved in between.
+        List<ItemPosition> candidates = [.. positions];
+
         if (template.MaxStackSize > 1)
         {
-            foreach (ItemPosition position in CarryPositions())
+            foreach (ItemPosition position in candidates)
             {
-                if (Get(position) is not { } held || held.Entry != template.Entry)
+                if (position == vacating || Get(position) is not { } held
+                    || held.Entry != template.Entry)
                 {
                     continue;
                 }
@@ -681,9 +734,9 @@ public sealed class Inventory(Player owner)
             }
         }
 
-        foreach (ItemPosition position in CarryPositions())
+        foreach (ItemPosition position in candidates)
         {
-            if (Get(position) is not null)
+            if (position != vacating && Get(position) is not null)
             {
                 continue;
             }
@@ -705,9 +758,98 @@ public sealed class Inventory(Player owner)
     }
 
     /// <summary>
+    /// Every slot the bank can hold something in.
+    /// </summary>
+    /// <remarks>
+    /// The twenty-eight built-in slots, then whatever the bought bank bags add. <b>Only bags in
+    /// slots the character has actually paid for</b> — the field is the client's own count, and
+    /// walking all seven regardless would let a player use bank bags they never bought.
+    /// </remarks>
+    private IEnumerable<ItemPosition> BankPositions()
+    {
+        for (byte slot = InventorySlots.BankItemStart; slot < InventorySlots.BankItemEnd; slot++)
+        {
+            yield return new ItemPosition(InventorySlots.Backpack, slot);
+        }
+
+        byte bought = owner.BankBagSlots;
+
+        for (byte index = 0; index < bought; index++)
+        {
+            byte bagSlot = (byte)(InventorySlots.BankBagStart + index);
+
+            if (bagSlot >= InventorySlots.BankBagEnd || _slots[bagSlot] is not Bag bag)
+            {
+                continue;
+            }
+
+            for (byte inner = 0; inner < bag.SlotCount; inner++)
+            {
+                yield return new ItemPosition(bagSlot, inner);
+            }
+        }
+    }
+
+    /// <summary>
     /// Puts a new stack in, merging into partial stacks where it can.
     /// </summary>
     /// <returns>Every item the count ended up in — an existing stack that grew, or a new one.</returns>
+    /// <summary>
+    /// Moves something between the bags and the bank.
+    /// </summary>
+    /// <param name="toBank">Which way. The same routine serves both, so they cannot disagree.</param>
+    /// <remarks>
+    /// The item is taken out of its slot only after somewhere has been found for it. Removing first
+    /// and then discovering the destination is full loses the item entirely — and it is the obvious
+    /// order to write, because it reads as "pick it up, then put it down".
+    /// <para>
+    /// It merges into partial stacks on the way, which is what makes moving twenty of something into
+    /// a bank that already holds five behave like the client's own drag-and-drop.
+    /// </para>
+    /// </remarks>
+    public InventoryResult Move(ItemPosition from, bool toBank)
+    {
+        if (Get(from) is not { } item)
+        {
+            return InventoryResult.SlotIsEmpty;
+        }
+
+        InventoryResult planned = toBank
+            ? CanBank(
+                item.Template, item.Count,
+                out IReadOnlyList<(ItemPosition Position, uint Count)> plan, item, from)
+            : CanStore(item.Template, item.Count, out plan, item, from);
+
+        if (planned != InventoryResult.Ok)
+        {
+            return planned;
+        }
+
+        // Already where it is going, and the plan says to put it back in its own slot. Upstream
+        // answers this with a no-op rather than an error, since the client sends it on a double
+        // click of something already banked.
+        if (plan.Count == 1 && plan[0].Position == from)
+        {
+            return InventoryResult.Ok;
+        }
+
+        Place(from, null);
+
+        foreach ((ItemPosition position, uint amount) in plan)
+        {
+            if (Get(position) is { } existing)
+            {
+                existing.Count += amount;
+                continue;
+            }
+
+            item.Count = amount;
+            Place(position, item);
+        }
+
+        return InventoryResult.Ok;
+    }
+
     public InventoryResult Store(
         ItemTemplate template, uint count, Func<uint> nextGuidCounter, out IReadOnlyList<Item> affected)
     {

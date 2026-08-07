@@ -400,6 +400,18 @@ public sealed class WorldSession(
                 HandleSpiritHealerActivate(payload);
                 return;
 
+            case Opcode.CMSG_BANKER_ACTIVATE:
+                HandleBankerActivate(payload);
+                return;
+
+            case Opcode.CMSG_AUTOBANK_ITEM:
+                HandleBankMove(payload, toBank: true);
+                return;
+
+            case Opcode.CMSG_AUTOSTORE_BANK_ITEM:
+                HandleBankMove(payload, toBank: false);
+                return;
+
             case Opcode.CMSG_BUYBACK_ITEM:
                 HandleBuybackItem(payload);
                 return;
@@ -1709,6 +1721,96 @@ public sealed class WorldSession(
             _player.Buyback.Add(removed, paid, GameTime.Now);
         }
     }
+
+    /// <summary>
+    /// Opens the bank. <c>CMSG_BANKER_ACTIVATE</c>.
+    /// </summary>
+    /// <remarks>
+    /// The banker is remembered, because every later bank packet arrives without one and has to be
+    /// checked against something. Taking each packet at its word instead lets a client bank from
+    /// anywhere in the world.
+    /// </remarks>
+    private void HandleBankerActivate(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid))
+        {
+            return;
+        }
+
+        ObjectGuid bankerGuid = new(rawGuid);
+
+        if (FindInteractable(bankerGuid) is not { } banker
+            || (banker.NpcFlags & NpcFlags.Banker) == 0)
+        {
+            return;
+        }
+
+        _banker = bankerGuid;
+
+        ServerPacket packet = new(Opcode.SMSG_SHOW_BANK, 8);
+        packet.Body.WriteUInt64(bankerGuid.Value);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>
+    /// Moves one item between the bags and the bank. <c>CMSG_AUTOBANK_ITEM</c> and its opposite.
+    /// </summary>
+    /// <remarks>
+    /// Both directions through one handler, because they differ only in which way the item goes —
+    /// two handlers is two places for the banker check to be forgotten.
+    /// </remarks>
+    private void HandleBankMove(ReadOnlyMemory<byte> payload, bool toBank)
+    {
+        if (_player is null || !IsAtABanker())
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt8(out byte bag) || !reader.TryReadUInt8(out byte slot))
+        {
+            return;
+        }
+
+        ItemPosition from = new(bag, slot);
+
+        if (_player.Inventory.Get(from) is not { } item)
+        {
+            return;
+        }
+
+        InventoryResult result = _player.Inventory.Move(from, toBank);
+
+        if (result != InventoryResult.Ok)
+        {
+            SendEquipError(result, item.Guid, item.Template.RequiredLevel);
+        }
+    }
+
+    /// <summary>
+    /// Whether the player is still standing at the banker they opened the bank with.
+    /// </summary>
+    /// <remarks>
+    /// Re-checked on every bank packet rather than trusted from the open, because nothing tells the
+    /// server when a player walks away — and the alternative is a bank that stays usable from the
+    /// other side of the continent for the rest of the session.
+    /// </remarks>
+    private bool IsAtABanker() =>
+        _banker != ObjectGuid.Empty
+        && FindInteractable(_banker) is { } banker
+        && (banker.NpcFlags & NpcFlags.Banker) != 0;
+
+    /// <summary>The banker this session last opened the bank with.</summary>
+    private ObjectGuid _banker;
 
     /// <summary>
     /// Takes the spirit healer's offer. <c>CMSG_SPIRIT_HEALER_ACTIVATE</c>.

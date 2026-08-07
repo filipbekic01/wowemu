@@ -1,5 +1,15 @@
-# Build, test and vector verification on every push — PLAN.md §11.1, the last unticked item of
-# Phase 0.
+# Build, test and vector verification — PLAN.md §11.1, the last unticked item of Phase 0.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# CURRENTLY DISABLED. Nothing runs automatically; the runner minutes were not
+# earning their cost while the work is all local.
+#
+# To re-enable, uncomment the `push:` and `pull_request:` triggers below. The
+# jobs themselves are untouched and still correct.
+#
+# Until then it can still be run by hand from the Actions tab (workflow_dispatch),
+# which costs nothing unless you ask for it.
+# ─────────────────────────────────────────────────────────────────────────────
 #
 # Two jobs, split by what they need:
 #
@@ -13,9 +23,10 @@
 name: CI
 
 on:
-  push:
-    branches: ["**"]
-  pull_request:
+  # Re-enable by uncommenting these two.
+  # push:
+  #   branches: ["**"]
+  # pull_request:
   workflow_dispatch:
 
 env:
