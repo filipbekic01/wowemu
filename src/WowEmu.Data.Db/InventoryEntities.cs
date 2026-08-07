@@ -153,6 +153,30 @@ public sealed class CharacterSkillEntity
     public ushort Step { get; set; }
 }
 
+/// <summary>
+/// Where a character comes back to — the innkeeper they last spoke to, or their starting zone.
+/// </summary>
+/// <remarks>
+/// A separate table rather than columns on <c>characters</c>, matching upstream, because a
+/// character that has never bound anywhere has <i>no row</i> — which is a different thing from a
+/// row of zeroes, and zero is a real map id.
+/// </remarks>
+public sealed class CharacterHomebindEntity
+{
+    public uint CharacterId { get; set; }
+
+    public uint MapId { get; set; }
+
+    /// <summary>The area, not the zone, despite upstream's column being called <c>zoneId</c>.</summary>
+    public uint AreaId { get; set; }
+
+    public float PositionX { get; set; }
+
+    public float PositionY { get; set; }
+
+    public float PositionZ { get; set; }
+}
+
 /// <summary>One button on a character's action bars.</summary>
 /// <remarks>
 /// The action and its type are stored apart even though the client wants them packed into one

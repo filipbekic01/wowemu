@@ -1,3 +1,4 @@
+using WowEmu.Core;
 using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using WowEmu.Data.Client;
@@ -140,6 +141,17 @@ public sealed class WorldContent(
         player.Inventory.LimitCategories = Stores.ItemLimitCategories;
         player.Spells.Ranks = SpellRanks;
         player.CombatRatings = Stores.CombatRatings;
+
+        // The starting point, which stands until an innkeeper says otherwise. A character with no
+        // homebind row has never bound anywhere — which is not the same as a row of zeroes, and
+        // zero is a real map id.
+        if (createInfo.TryGet(player.Race, player.Class, out PlayerCreateInfo start))
+        {
+            player.Homebind = new Homebind(
+                start.Map,
+                start.Zone,
+                new Position(start.PositionX, start.PositionY, start.PositionZ, start.Orientation));
+        }
         player.AttributeChances = Stores.AttributeChances;
 
         // The saved zone is where the character logged out; the terrain is the authority on where

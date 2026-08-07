@@ -77,6 +77,20 @@ public interface IInventoryRepository
         IReadOnlyCollection<(ushort Skill, ushort Value, ushort Max, ushort Step)> skills,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Where a character comes back to, or null when they have never bound anywhere.</summary>
+    Task<(uint MapId, uint AreaId, float X, float Y, float Z)?> LoadHomebindAsync(
+        uint characterId, CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="SaveAsync"/>
+    Task SaveHomebindAsync(
+        uint characterId,
+        uint mapId,
+        uint areaId,
+        float x,
+        float y,
+        float z,
+        CancellationToken cancellationToken = default);
+
     /// <summary>What is on a character's action bars, as (button, packed action) pairs.</summary>
     Task<IReadOnlyList<(byte Button, uint Packed)>> LoadActionsAsync(
         uint characterId, CancellationToken cancellationToken = default);
@@ -317,6 +331,51 @@ public sealed class InventoryRepository(IDbContextFactory<CharactersDbContext> c
         {
             context.Spells.Add(new CharacterSpellEntity { CharacterId = characterId, SpellId = spellId });
         }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<(uint MapId, uint AreaId, float X, float Y, float Z)?> LoadHomebindAsync(
+        uint characterId, CancellationToken cancellationToken = default)
+    {
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        CharacterHomebindEntity? row = await context.Homebinds
+            .AsNoTracking()
+            .SingleOrDefaultAsync(entity => entity.CharacterId == characterId, cancellationToken)
+            .ConfigureAwait(false);
+
+        return row is null ? null : (row.MapId, row.AreaId, row.PositionX, row.PositionY, row.PositionZ);
+    }
+
+    public async Task SaveHomebindAsync(
+        uint characterId,
+        uint mapId,
+        uint areaId,
+        float x,
+        float y,
+        float z,
+        CancellationToken cancellationToken = default)
+    {
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        CharacterHomebindEntity? row = await context.Homebinds
+            .SingleOrDefaultAsync(entity => entity.CharacterId == characterId, cancellationToken)
+            .ConfigureAwait(false);
+
+        if (row is null)
+        {
+            row = new CharacterHomebindEntity { CharacterId = characterId };
+            context.Homebinds.Add(row);
+        }
+
+        row.MapId = mapId;
+        row.AreaId = areaId;
+        row.PositionX = x;
+        row.PositionY = y;
+        row.PositionZ = z;
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }

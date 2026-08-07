@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using WowEmu.Data.Db;
 
@@ -10,9 +11,11 @@ using WowEmu.Data.Db;
 namespace WowEmu.Data.Db.Migrations.Characters
 {
     [DbContext(typeof(CharactersDbContext))]
-    partial class CharactersDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260807162117_CharacterHomebind")]
+    partial class CharacterHomebind
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder

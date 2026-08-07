@@ -611,9 +611,9 @@
               "text": "Periodic save"
             },
             {
-              "done": false,
-              "text": "character_homebind",
-              "note": "character_spell and character_action landed with the spellbook and action bars; homebind is still the only one of the three that is not written."
+              "done": true,
+              "text": "character_homebind, and the innkeeper that sets it",
+              "note": "A SEPARATE TABLE, not columns on characters — and that is the point: a character who has never bound anywhere has NO ROW, which is a different thing from a row of zeroes. Zero is a real map id (Eastern Kingdoms), so zeroes read as a valid binding to the middle of the ocean rather than as an absent one. A missing row leaves the starting point from playercreateinfo, which is what it should be. IT IS THE AREA, NOT THE ZONE. Upstream's column is called zoneId and holds an AREA — exactly the kind of name that gets believed. The client labels the hearthstone from it, so a zone binds you to 'Elwynn Forest' where the innkeeper is standing in Goldshire. Upstream reaches the binding through spell 3286 and its SPELL_EFFECT_BIND; we have no bind effect, so CMSG_BINDER_ACTIVATE does the work directly. The client needs the same two packets either way (SMSG_BINDPOINTUPDATE with the position and SMSG_PLAYERBOUND with the npc and area), and routing it through a spell we do not implement would be a longer way to do nothing. The client is told on every login, since it has no memory of the binding between sessions. Homebind is DISTINCT from the graveyard a ghost releases to: the graveyard is wherever you died, this is somewhere you chose. Nothing uses it yet — the hearthstone item and a summons home are the consumers, and neither exists."
             },
             {
               "done": true,

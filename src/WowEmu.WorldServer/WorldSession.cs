@@ -416,6 +416,10 @@ public sealed class WorldSession(
                 HandleBuyBankSlot(payload);
                 return;
 
+            case Opcode.CMSG_BINDER_ACTIVATE:
+                HandleBinderActivate(payload);
+                return;
+
             case Opcode.CMSG_BUYBACK_ITEM:
                 HandleBuybackItem(payload);
                 return;
@@ -1798,6 +1802,68 @@ public sealed class WorldSession(
         {
             SendEquipError(result, item.Guid, item.Template.RequiredLevel);
         }
+    }
+
+    /// <summary>
+    /// Binds a player's hearthstone to an innkeeper. <c>CMSG_BINDER_ACTIVATE</c>.
+    /// </summary>
+    /// <remarks>
+    /// Upstream reaches this through spell 3286, whose <c>SPELL_EFFECT_BIND</c> does the work. We
+    /// have no bind effect, so the handler does it directly — the packets the client actually needs
+    /// are the same either way, and routing it through a spell we do not implement would be a
+    /// longer way to do nothing.
+    /// <para>
+    /// <b>The area, not the zone.</b> The client labels the hearthstone with the area's name, so a
+    /// zone here binds you to "Elwynn Forest" where the innkeeper stands in Goldshire.
+    /// </para>
+    /// </remarks>
+    private void HandleBinderActivate(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null || !_player.IsAlive)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid))
+        {
+            return;
+        }
+
+        ObjectGuid innkeeperGuid = new(rawGuid);
+
+        if (FindInteractable(innkeeperGuid) is not { } innkeeper
+            || (innkeeper.NpcFlags & NpcFlags.Innkeeper) == 0)
+        {
+            return;
+        }
+
+        _player.Homebind = new Homebind(_player.MapId, _player.AreaId, _player.Position);
+
+        SendBindPointUpdate(_player.Homebind);
+
+        ServerPacket bound = new(Opcode.SMSG_PLAYERBOUND, 12);
+        bound.Body.WriteUInt64(innkeeperGuid.Value);
+        bound.Body.WriteUInt32(_player.AreaId);
+
+        connection.Send(bound);
+
+        Log.Homebound(logger, _player.Name, _player.AreaId, connection.RemoteAddress);
+    }
+
+    /// <summary>Tells the client where its hearthstone points. <c>SMSG_BINDPOINTUPDATE</c>.</summary>
+    private void SendBindPointUpdate(Homebind homebind)
+    {
+        ServerPacket packet = new(Opcode.SMSG_BINDPOINTUPDATE, 20);
+
+        packet.Body.WriteSingle(homebind.Position.X);
+        packet.Body.WriteSingle(homebind.Position.Y);
+        packet.Body.WriteSingle(homebind.Position.Z);
+        packet.Body.WriteUInt32(homebind.MapId);
+        packet.Body.WriteUInt32(homebind.AreaId);
+
+        connection.Send(packet);
     }
 
     /// <summary>
@@ -5030,6 +5096,17 @@ public sealed class WorldSession(
             .ConfigureAwait(true);
 
         await inventory
+            .SaveHomebindAsync(
+                player.Guid.Counter,
+                player.Homebind.MapId,
+                player.Homebind.AreaId,
+                player.Homebind.Position.X,
+                player.Homebind.Position.Y,
+                player.Homebind.Position.Z,
+                cancellationToken)
+            .ConfigureAwait(true);
+
+        await inventory
             .SaveActionsAsync(player.Guid.Counter, player.Actions.Buttons, cancellationToken)
             .ConfigureAwait(true);
 
@@ -5098,6 +5175,7 @@ public sealed class WorldSession(
         // block carries the equipment.
         await LoadSpellsAsync(player, cancellationToken).ConfigureAwait(true);
         await LoadSkillsAsync(player, cancellationToken).ConfigureAwait(true);
+        await LoadHomebindAsync(player, cancellationToken).ConfigureAwait(true);
         await LoadActionsAsync(player, cancellationToken).ConfigureAwait(true);
 
         _player = player;
@@ -5388,6 +5466,26 @@ public sealed class WorldSession(
         player.Skills.Restore(stored);
 
         GrantSkillsFromSpells(player);
+    }
+
+    /// <summary>
+    /// Puts back where a character comes home to, and tells the client.
+    /// </summary>
+    /// <remarks>
+    /// The starting point is already in place from <c>TryBuildPlayer</c>, so a missing row simply
+    /// leaves it — which is what "has never spoken to an innkeeper" should look like. The client is
+    /// told either way, because it has no memory of the binding between sessions.
+    /// </remarks>
+    private async Task LoadHomebindAsync(Player player, CancellationToken cancellationToken)
+    {
+        if (await inventory.LoadHomebindAsync(player.Guid.Counter, cancellationToken)
+            .ConfigureAwait(true) is { } saved)
+        {
+            player.Homebind = new Homebind(
+                saved.MapId, saved.AreaId, new Position(saved.X, saved.Y, saved.Z, 0f));
+        }
+
+        SendBindPointUpdate(player.Homebind);
     }
 
     /// <summary>Walks the spellbook, granting whatever skills the spells carry with them.</summary>

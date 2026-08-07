@@ -217,6 +217,15 @@ public sealed class Player : Unit
     /// <summary>What agility and intellect are worth to this character, before gear.</summary>
     public AttributeChanceTable? AttributeChances { get; set; }
 
+    /// <summary>
+    /// Where this character comes back to — an innkeeper, or their starting zone.
+    /// </summary>
+    /// <remarks>
+    /// Distinct from the graveyard a ghost releases to: the graveyard is wherever you died, and
+    /// this is where a hearthstone or a summons home takes you.
+    /// </remarks>
+    public Homebind Homebind { get; set; }
+
     /// <summary>Experience accumulated towards the next level.</summary>
     /// <remarks>
     /// Reset to the <i>remainder</i> on levelling, not to zero — overshooting a level carries the

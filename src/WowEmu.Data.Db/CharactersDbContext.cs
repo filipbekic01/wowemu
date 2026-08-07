@@ -143,6 +143,8 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
 
     public DbSet<CharacterSkillEntity> Skills => Set<CharacterSkillEntity>();
 
+    public DbSet<CharacterHomebindEntity> Homebinds => Set<CharacterHomebindEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -258,6 +260,21 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
 
             entity.Property(row => row.CharacterId).HasColumnName("guid");
             entity.Property(row => row.SpellId).HasColumnName("spell");
+        });
+
+        modelBuilder.Entity<CharacterHomebindEntity>(entity =>
+        {
+            entity.ToTable("character_homebind");
+
+            // One per character, so the character's own guid is the key.
+            entity.HasKey(row => row.CharacterId);
+
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.MapId).HasColumnName("mapId");
+            entity.Property(row => row.AreaId).HasColumnName("zoneId");
+            entity.Property(row => row.PositionX).HasColumnName("posX");
+            entity.Property(row => row.PositionY).HasColumnName("posY");
+            entity.Property(row => row.PositionZ).HasColumnName("posZ");
         });
 
         modelBuilder.Entity<CharacterSkillEntity>(entity =>
