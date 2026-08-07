@@ -1457,8 +1457,9 @@
               "text": "Random properties, enchantments and gems"
             },
             {
-              "done": false,
-              "text": "Item duration ticking down, and the item disappearing when it runs out"
+              "done": true,
+              "text": "Item duration ticking down, and the item disappearing when it runs out",
+              "note": "Durations were loaded, sent to the client and NEVER DECREMENTED — so a mage could conjure a bag of bread and keep it forever, with the client politely counting down a number the server ignored. SECONDS, NOT MILLISECONDS. The field is in seconds and the tick is in milliseconds. Feeding the raw diff expires everything a thousand times too fast (looks like items vanishing on pickup, not like a unit mistake); dividing each tick and DISCARDING the remainder means a 100 ms tick contributes nothing at all and durations never move (looks like the feature was never wired up). The map carries the sub-second remainder, and there are tests for both directions. ZERO MEANS PERMANENT, not 'expires immediately' — and almost every item in the game is zero, so reading it as a countdown destroys a player's whole inventory on the first tick. Expiry destroys the item rather than leaving it at zero, since zero is also what no-duration means and a stranded item would read as permanent forever after. The subtraction is UNSIGNED: taking 60 from 30 without the check leaves ~4 billion seconds, so an item one tick from expiry becomes permanent. NO PACKET IS SENT. Destroying the item clears its slot guid and that field change is what the client acts on — upstream sends nothing else either. Banked items tick too: putting something away is not a way to stop the clock. NOT DONE: offline decay for ITEM_FLAGS_CU_DURATION_REAL_TIME items. That flag is an AzerothCore custom column our vendored item_template does not carry, and it is the exception rather than the rule — everything else is meant to tick only while online, which is what this does."
             },
             {
               "done": false,

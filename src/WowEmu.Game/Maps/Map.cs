@@ -49,6 +49,7 @@ public interface IPlayerConnection
     /// <summary>Delivers one chat line. Immediate — a spoken line batched is a line delivered late.</summary>
     void SendChat(byte type, uint language, ObjectGuid sender, ObjectGuid receiver, string text);
 
+
     /// <summary>
     /// Notes that a creature has started walking somewhere, to go out at the next flush.
     /// </summary>
@@ -546,6 +547,7 @@ public sealed class Map(
         UpdateCreatures(gameplayDiff);
         UpdateCombat(gameplayDiff);
         UpdateEnvironment(gameplayDiff);
+        UpdateItemDurations(gameplayDiff);
 
         // After everything that could change a field, before anything is flushed.
         BroadcastFieldChanges();
@@ -794,6 +796,43 @@ public sealed class Map(
             }
         }
     }
+
+    /// <summary>
+    /// Ticks down every timed item every player is carrying.
+    /// </summary>
+    /// <remarks>
+    /// <b>Whole seconds only, with the remainder carried.</b> The duration field is in seconds and
+    /// the tick is in milliseconds; dividing each tick and discarding the remainder means a 100 ms
+    /// tick contributes nothing at all, and durations never move.
+    /// </remarks>
+    private void UpdateItemDurations(uint gameplayDiff)
+    {
+        if (gameplayDiff == 0)
+        {
+            return;
+        }
+
+        _durationRemainderMs += gameplayDiff;
+
+        uint seconds = _durationRemainderMs / 1000;
+
+        if (seconds == 0)
+        {
+            return;
+        }
+
+        _durationRemainderMs -= seconds * 1000;
+
+        // No packet for this. Destroying the item clears its slot guid, and that field change is
+        // what the client acts on — upstream sends nothing else either.
+        foreach (Player player in Players)
+        {
+            ItemDuration.Tick(player, seconds);
+        }
+    }
+
+    /// <summary>Milliseconds not yet worth a whole second of item duration.</summary>
+    private uint _durationRemainderMs;
 
     /// <summary>
     /// Applies one helping of world damage and tells everyone who can see it.
