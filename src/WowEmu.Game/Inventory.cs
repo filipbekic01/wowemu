@@ -199,6 +199,45 @@ public sealed class Inventory(Player owner)
         }
     }
 
+    /// <summary>
+    /// Everything the player is carrying but not wearing — the backpack and the worn bags.
+    /// </summary>
+    /// <remarks>
+    /// Narrower than <see cref="All"/> in both directions, which is the point. It excludes the
+    /// equipment slots, so a caller that walks the worn items and then this one does not visit them
+    /// twice; and it excludes the bank, the keyring and the currency tokens, which are not on the
+    /// player. <c>DurabilityLossAll</c>'s <c>inventory</c> pass is exactly this set.
+    /// </remarks>
+    public IEnumerable<Item> Carried
+    {
+        get
+        {
+            for (byte slot = InventorySlots.ItemStart; slot < InventorySlots.ItemEnd; slot++)
+            {
+                if (_slots[slot] is { } item)
+                {
+                    yield return item;
+                }
+            }
+
+            for (byte bagSlot = InventorySlots.BagStart; bagSlot < InventorySlots.BagEnd; bagSlot++)
+            {
+                if (_slots[bagSlot] is not Bag bag)
+                {
+                    continue;
+                }
+
+                for (byte inner = 0; inner < bag.SlotCount; inner++)
+                {
+                    if (Contents(bag, inner) is { } inside)
+                    {
+                        yield return inside;
+                    }
+                }
+            }
+        }
+    }
+
     /// <summary>Every item and where it is, which is what persistence writes out.</summary>
     public IEnumerable<(ItemPosition Position, Item Item)> AllWithPositions
     {

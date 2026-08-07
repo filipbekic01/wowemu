@@ -2355,6 +2355,11 @@ public sealed class Map(
 
         PlayerDeath.Kill(player);
 
+        // Ten percent off what is worn, and nothing off what is carried — upstream passes
+        // inventory: false here. The spirit healer's own twenty-five percent is a separate charge
+        // and hits the bags as well, which is the difference between the two ways back.
+        Durability.LoseAll(player, Durability.DeathLoss, inventory: false);
+
         foreach (Creature creature in _creatures)
         {
             if (creature.Threat.Contains(player))

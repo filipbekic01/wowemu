@@ -396,6 +396,10 @@ public sealed class WorldSession(
                 HandleBuybackItem(payload);
                 return;
 
+            case Opcode.CMSG_REPAIR_ITEM:
+                HandleRepairItem(payload);
+                return;
+
             case Opcode.CMSG_QUESTGIVER_QUERY_QUEST:
                 HandleQuestGiverQueryQuest(payload);
                 return;
@@ -1763,6 +1767,56 @@ public sealed class WorldSession(
     }
 
 
+
+    /// <summary>
+    /// Mends gear at a vendor. <c>CMSG_REPAIR_ITEM</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>An empty item guid means "repair everything"</b> — the client sends the same opcode for
+    /// the one-item button and the repair-all one, and only the guid tells them apart. Treating an
+    /// empty guid as a missing item makes the repair-all button do nothing at all.
+    /// <para>
+    /// No reply is sent. The money leaving and the durability coming back are both field updates,
+    /// and the client works the rest out from them.
+    /// </para>
+    /// </remarks>
+    private void HandleRepairItem(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawVendor) || !reader.TryReadUInt64(out ulong rawItem))
+        {
+            return;
+        }
+
+        if (FindInteractable(new ObjectGuid(rawVendor)) is null)
+        {
+            return;
+        }
+
+        DbcStore<DurabilityCostsEntry> costs = world.Stores.DurabilityCosts;
+        DbcStore<DurabilityQualityEntry> quality = world.Stores.DurabilityQuality;
+
+        ObjectGuid itemGuid = new(rawItem);
+
+        if (itemGuid.IsEmpty)
+        {
+            Durability.RepairAll(_player, costs, quality);
+            return;
+        }
+
+        if (FindOwnedItem(itemGuid) is not (_, Item item))
+        {
+            return;
+        }
+
+        Durability.Repair(_player, item, costs, quality);
+    }
 
     /// <summary>Opens a trainer's list. <c>CMSG_TRAINER_LIST</c>.</summary>
     private void HandleTrainerList(ReadOnlyMemory<byte> payload)

@@ -198,6 +198,56 @@ public sealed record AreaTableEntry(
         soundBank < (uint)LiquidTypeOverride.Length ? LiquidTypeOverride[soundBank] : 0;
 }
 
+/// <summary>
+/// A row of <c>DurabilityCosts.dbc</c>: what a point of durability costs at one item level.
+/// </summary>
+/// <remarks>
+/// Twenty-nine multipliers per row, indexed by item class and subclass — weapons take the subclass
+/// directly, armour takes it plus 21, and everything else uses slot zero. The row id is the
+/// <i>item level</i>, not an item id.
+/// </remarks>
+public sealed record DurabilityCostsEntry(uint ItemLevel, uint[] Multipliers)
+{
+    /// <summary>How many multipliers a row carries.</summary>
+    public const int MultiplierCount = 29;
+
+    /// <summary>Item classes, from <c>ItemClass</c>.</summary>
+    public const byte ClassWeapon = 2;
+    public const byte ClassArmor = 4;
+
+    /// <summary>
+    /// Which multiplier an item's class and subclass select.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>ItemSubClassToDurabilityMultiplierId</c>. Armour's <c>+ 21</c> is the whole of the
+    /// mapping and is easy to miss — without it a plate chestpiece is priced as a dagger.
+    /// </remarks>
+    public static int MultiplierFor(byte itemClass, byte subClass) => itemClass switch
+    {
+        ClassWeapon => subClass,
+        ClassArmor => subClass + 21,
+        _ => 0,
+    };
+
+    /// <summary>The multiplier for an item, or 0 when the index is out of range.</summary>
+    public uint For(byte itemClass, byte subClass)
+    {
+        int index = MultiplierFor(itemClass, subClass);
+
+        return index >= 0 && index < Multipliers.Length ? Multipliers[index] : 0;
+    }
+}
+
+/// <summary>
+/// A row of <c>DurabilityQuality.dbc</c>: how much an item's quality scales its repair bill.
+/// </summary>
+/// <remarks>
+/// <b>The row id is not the quality.</b> Upstream looks it up as <c>(quality + 1) * 2</c>, so a
+/// common item reads row 4 and an epic row 10. Indexing by the quality itself finds a row that
+/// exists and is wrong, which is the worst kind of off-by-one.
+/// </remarks>
+public sealed record DurabilityQualityEntry(uint Id, float Modifier);
+
 /// <summary>A row of <c>LiquidType.dbc</c>.</summary>
 /// <remarks>
 /// Two columns of forty-five. <see cref="SoundBank"/> is what upstream calls <c>Type</c>, and it is
@@ -292,6 +342,12 @@ public sealed class DbcStores
     /// </summary>
     private const string AreaTableFormat = "niiiixxxxxissssssssssssssssxiiiiixxx";
 
+    /// <summary>An item level and twenty-nine multipliers. <c>DurabilityCostsfmt</c>.</summary>
+    private const string DurabilityCostsFormat = "niiiiiiiiiiiiiiiiiiiiiiiiiiiii";
+
+    /// <summary>An id and one float. <c>DurabilityQualityfmt</c>.</summary>
+    private const string DurabilityQualityFormat = "nf";
+
     private DbcStores(
         DbcStore<ChrRacesEntry> races,
         DbcStore<ChrClassesEntry> classes,
@@ -300,8 +356,12 @@ public sealed class DbcStores
         DbcStore<WorldSafeLocsEntry> worldSafeLocs,
         DbcStore<QuestXpEntry> questXp,
         DbcStore<LiquidTypeEntry> liquidTypes,
-        DbcStore<AreaTableEntry> areas)
+        DbcStore<AreaTableEntry> areas,
+        DbcStore<DurabilityCostsEntry> durabilityCosts,
+        DbcStore<DurabilityQualityEntry> durabilityQuality)
     {
+        DurabilityCosts = durabilityCosts;
+        DurabilityQuality = durabilityQuality;
         QuestXp = questXp;
         LiquidTypes = liquidTypes;
         Areas = areas;
@@ -347,6 +407,12 @@ public sealed class DbcStores
     /// </remarks>
     public DbcStore<AreaTableEntry> Areas { get; }
 
+    /// <summary>What a point of durability costs, by item level and kind.</summary>
+    public DbcStore<DurabilityCostsEntry> DurabilityCosts { get; }
+
+    /// <summary>How an item's quality scales that cost.</summary>
+    public DbcStore<DurabilityQualityEntry> DurabilityQuality { get; }
+
     /// <summary>
     /// The zone an area belongs to, which is the area itself when it is already a zone.
     /// </summary>
@@ -363,7 +429,8 @@ public sealed class DbcStores
     /// <summary>Total rows loaded, for the startup log.</summary>
     public int TotalRows =>
         Races.Count + Classes.Count + Maps.Count + FactionTemplates.Count + WorldSafeLocs.Count
-        + QuestXp.Count + LiquidTypes.Count + Areas.Count;
+        + QuestXp.Count + LiquidTypes.Count + Areas.Count
+        + DurabilityCosts.Count + DurabilityQuality.Count;
 
     /// <summary>
     /// Loads every store from a directory of extracted <c>.dbc</c> files.
@@ -518,6 +585,29 @@ public sealed class DbcStores
                         Name: record.GetLocalizedString(11, locale),
                         Team: record.GetUInt32(28),
                         LiquidTypeOverride: overrides);
-                }));
+                }),
+
+            DbcStore<DurabilityCostsEntry>.Load(
+                Path.Combine(directory, "DurabilityCosts.dbc"),
+                DurabilityCostsFormat,
+                idField: 0,
+                (in DbcRecord record) =>
+                {
+                    uint[] multipliers = new uint[DurabilityCostsEntry.MultiplierCount];
+
+                    for (int i = 0; i < multipliers.Length; i++)
+                    {
+                        multipliers[i] = record.GetUInt32(1 + i);
+                    }
+
+                    return new DurabilityCostsEntry(record.GetUInt32(0), multipliers);
+                }),
+
+            DbcStore<DurabilityQualityEntry>.Load(
+                Path.Combine(directory, "DurabilityQuality.dbc"),
+                DurabilityQualityFormat,
+                idField: 0,
+                (in DbcRecord record) => new DurabilityQualityEntry(
+                    record.GetUInt32(0), record.GetFloat(1))));
     }
 }
