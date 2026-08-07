@@ -547,6 +547,56 @@ public sealed class MapVisibilityTests
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0f, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, effects);
     }
 
+    /// <summary>
+    /// Walking up to something already buffed shows the buff.
+    /// </summary>
+    /// <remarks>
+    /// 3.3.5a removed the aura update fields, so a create block carries no auras at all — a client
+    /// learns them from packets alone. Without a snapshot at first sight, a creature that spawned
+    /// buffed shows nothing and one already burning looks untouched, which reads as the aura system
+    /// being broken rather than as a missing packet.
+    /// </remarks>
+    [Fact]
+    public void SeeingAUnitForTheFirstTime_ShowsWhatIsAlreadyOnIt()
+    {
+        Map map = NewMap();
+
+        (Player buffed, _) = NewPlayer(1, 0f, 0f);
+        (Player watcher, RecordingConnection watcherLink) = NewPlayer(2, 500f, 0f);
+
+        map.Add(buffed);
+        map.Add(watcher);
+
+        buffed.Auras.Apply(
+            SlowSpell(halved: true), buffed.Guid, casterLevel: 20, durationMs: -1, e => e.BasePoints);
+
+        // Out of range at first, so nothing has been sent about it yet.
+        Assert.Empty(watcherLink.AuraSnapshots);
+
+        map.Relocate(watcher, new Position(10f, 0f, 0f, 0f));
+
+        Assert.Equal([buffed.Guid], watcherLink.AuraSnapshots);
+    }
+
+    /// <summary>Something with no auras costs no packet at all.</summary>
+    /// <remarks>
+    /// Most of the world has none, and a create pass over 131 creatures should not send 131 empty
+    /// snapshots to say so.
+    /// </remarks>
+    [Fact]
+    public void SeeingAnUnbuffedUnit_SendsNothing()
+    {
+        Map map = NewMap();
+
+        (Player plain, _) = NewPlayer(1, 0f, 0f);
+        (Player watcher, RecordingConnection watcherLink) = NewPlayer(2, 10f, 0f);
+
+        map.Add(plain);
+        map.Add(watcher);
+
+        Assert.Empty(watcherLink.AuraSnapshots);
+    }
+
     /// <summary>Hands one creature to whichever grid the player arrives in.</summary>
     private sealed class OneCreature(Creature creature) : IGridObjectLoader
     {
@@ -611,6 +661,17 @@ public sealed class MapVisibilityTests
         }
 
         public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
+
+        /// <summary>Units this client was sent a full aura list for.</summary>
+        public List<ObjectGuid> AuraSnapshots { get; } = [];
+
+        public void SendAllAuras(WowEmu.Game.Unit unit)
+        {
+            ArgumentNullException.ThrowIfNull(unit);
+
+            AuraSnapshots.Add(unit.Guid);
+        }
+
 
         /// <summary>Speed changes this client was told about.</summary>
         public List<(ObjectGuid Unit, UnitMoveType Type, float Speed, bool Forced)> SpeedChanges { get; } = [];

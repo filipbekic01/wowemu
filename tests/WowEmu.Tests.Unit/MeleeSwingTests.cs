@@ -722,6 +722,17 @@ internal static class MapCombatFixture
 
         public void QueueDestroy(ObjectGuid objectGuid) => Destroyed.Add(objectGuid);
 
+        /// <summary>Units this client was sent a full aura list for.</summary>
+        public List<ObjectGuid> AuraSnapshots { get; } = [];
+
+        public void SendAllAuras(WowEmu.Game.Unit unit)
+        {
+            ArgumentNullException.ThrowIfNull(unit);
+
+            AuraSnapshots.Add(unit.Guid);
+        }
+
+
         /// <summary>Speed changes this client was told about.</summary>
         public List<(ObjectGuid Unit, UnitMoveType Type, float Speed, bool Forced)> SpeedChanges { get; } = [];
 

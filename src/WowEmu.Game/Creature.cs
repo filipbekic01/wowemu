@@ -1,4 +1,5 @@
 using WowEmu.Core;
+using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Game.Combat;
 using WowEmu.Game.Movement;
@@ -501,7 +502,8 @@ public sealed class Creature : Unit
         uint displayId,
         IReadOnlyList<Waypoint>? path = null,
         CreatureEquipment? equipment = null,
-        CreatureAddon? addon = null)
+        CreatureAddon? addon = null,
+        SpellStores? spells = null)
     {
         ArgumentNullException.ThrowIfNull(template);
         ArgumentNullException.ThrowIfNull(models);
@@ -616,6 +618,7 @@ public sealed class Creature : Unit
         // weapons-drawn sheath state in particular. Applied any earlier and the defaults win, which
         // looks like the addon table being ignored rather than like an ordering mistake.
         ApplyAddon(creature, addon);
+        ApplySpawnAuras(creature, addon, spells);
 
         creature.SyncMovement();
         return creature;
@@ -685,6 +688,53 @@ public sealed class Creature : Unit
         // Written unconditionally, unlike the rest: upstream sets it outside every guard, so an
         // addon row with no emote actively clears one rather than leaving whatever was there.
         fields.SetUInt32(UpdateFields.UNIT_NPC_EMOTESTATE, info.Emote);
+    }
+
+    /// <summary>
+    /// Puts the addon's spells on the creature the moment it exists.
+    /// </summary>
+    /// <remarks>
+    /// Port of the <c>auras</c> half of <c>Creature::LoadCreaturesAddon</c>. Self-cast and permanent
+    /// — these are the passive auras that make a creature glow, smoulder or stand shrouded, and they
+    /// last until something removes them rather than expiring.
+    /// <para>
+    /// A spell the store does not know is skipped rather than throwing. Upstream logs it as a data
+    /// error and carries on, and the alternative here is one bad row taking a whole grid's spawns
+    /// down with it.
+    /// </para>
+    /// <para>
+    /// Speeds are recomputed afterwards because a spawn aura can be a speed modifier — a creature
+    /// that spawns permanently slowed is a real thing, and the speeds are stored rather than derived
+    /// so nothing else would notice.
+    /// </para>
+    /// </remarks>
+    private static void ApplySpawnAuras(Creature creature, CreatureAddon? addon, SpellStores? spells)
+    {
+        if (spells is null || addon is not { } info || info.Auras.Length == 0)
+        {
+            return;
+        }
+
+        foreach (uint spellId in info.Auras)
+        {
+            if (!spells.Spells.TryGet(spellId, out SpellEntry? spell) || spell is null)
+            {
+                continue;
+            }
+
+            creature.Auras.Apply(
+                spell,
+                creature.Guid,
+                creature.Level,
+
+                // Permanent. These are not timed buffs — a duration would have them tick away and
+                // leave the creature looking wrong for the rest of its life.
+                durationMs: -1,
+                effect => SpellEffects.CalculateValue(
+                    spell, effect, creature.Level, (min, max) => (int)GameRandom.Urand((uint)min, (uint)max)));
+        }
+
+        creature.RefreshSpeeds();
     }
 
     /// <summary>

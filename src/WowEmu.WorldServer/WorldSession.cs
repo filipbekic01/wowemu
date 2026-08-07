@@ -4147,6 +4147,44 @@ public sealed class WorldSession(
         _ => null,
     };
 
+    /// <summary>
+    /// Sends every aura on a unit at once, for a client that has just been shown it.
+    /// </summary>
+    /// <remarks>
+    /// One packed guid followed by one body per aura — not a run of single-aura packets, which is
+    /// what the separate opcode is for. Skipped entirely when there is nothing to say, because the
+    /// guid alone is a valid empty packet the client would still parse and act on.
+    /// </remarks>
+    public void SendAllAuras(Unit unit)
+    {
+        ArgumentNullException.ThrowIfNull(unit);
+
+        List<AuraSlotUpdate> updates = [];
+
+        foreach (Aura aura in unit.Auras.Auras)
+        {
+            updates.Add(new AuraSlotUpdate(
+                aura.Slot,
+                aura.Spell.Id,
+                (byte)aura.FlagsFor(unit.Guid),
+                aura.CasterLevel,
+                aura.StackAmount,
+                aura.CasterGuid,
+                aura.MaxDurationMs,
+                aura.RemainingMs));
+        }
+
+        if (updates.Count == 0)
+        {
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_AURA_UPDATE_ALL, 16 + (updates.Count * 24));
+        AuraUpdate.WriteAll(packet.Body, unit.Guid, updates);
+
+        connection.Send(packet);
+    }
+
     public void SendSwingError(SwingError reason)
     {
         if (reason == _lastSwingError)

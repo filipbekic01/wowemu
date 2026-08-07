@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using WowEmu.Core;
+using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 
 namespace WowEmu.Game;
@@ -22,7 +23,8 @@ public sealed class CreatureFactory(
     CreatureStatsStore stats,
     WaypointStore? waypoints = null,
     CreatureAddonStore? addons = null,
-    CreatureEquipStore? equipment = null)
+    CreatureEquipStore? equipment = null,
+    SpellStores? spells = null)
 {
     /// <summary>
     /// Builds one creature, or explains why it cannot be built.
@@ -74,7 +76,8 @@ public sealed class CreatureFactory(
             // Drawn after the gender roll and before nothing else, so the generator is consumed in
             // upstream's order — and only for the 176 spawns that ask for a random outfit.
             equipment?.For(spawn.Entry, spawn.EquipmentId, GameRandom.Urand),
-            addons?.For(spawn.SpawnId, spawn.Entry));
+            addons?.For(spawn.SpawnId, spawn.Entry),
+            spells);
 
         if (creature is null)
         {

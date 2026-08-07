@@ -182,6 +182,16 @@ public interface IPlayerConnection
     void SendAuraRemoved(ObjectGuid target, byte slot);
 
     /// <summary>
+    /// Tells this client everything currently on a unit it has just been shown.
+    /// </summary>
+    /// <remarks>
+    /// 3.3.5a removed the aura update fields, so a create block carries no auras at all — a client
+    /// learns them from packets alone. Without this a creature that spawned buffed shows nothing,
+    /// and one already burning when you walk up to it looks untouched.
+    /// </remarks>
+    void SendAllAuras(Unit unit);
+
+    /// <summary>
     /// Tells this client a unit now moves at a different speed.
     /// </summary>
     /// <param name="forced">
@@ -2332,6 +2342,14 @@ public sealed class Map(
         }
 
         viewer.Connection?.QueueCreate(target);
+
+        // Auras are not in the create block — the fields that used to carry them are gone in
+        // 3.3.5a — so anything already on the unit has to be sent separately or it is invisible to
+        // whoever just arrived.
+        if (target is Unit { Auras.Count: > 0 } afflicted)
+        {
+            viewer.Connection?.SendAllAuras(afflicted);
+        }
 
         // A creature that is already walking when someone arrives needs the rest of its move, or it
         // stands frozen at the point the create block put it until it next decides to go somewhere.

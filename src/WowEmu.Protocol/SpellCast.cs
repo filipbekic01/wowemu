@@ -740,6 +740,39 @@ public static class AuraUpdate
         ArgumentNullException.ThrowIfNull(writer);
 
         writer.WritePackedGuid(target);
+        WriteBody(writer, update);
+    }
+
+    /// <summary>
+    /// Writes every aura on a unit, for <c>SMSG_AURA_UPDATE_ALL</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>The guid is written once and the bodies follow it.</b> Upstream's
+    /// <c>BuildUpdatePacket</c> starts at the slot for exactly this reason — the single-aura packet
+    /// prefixes it with a guid and the all-auras packet prefixes the whole run with one. Repeating
+    /// the guid per aura gives the client a slot number where it expects a packed guid, and it reads
+    /// the rest of the packet as garbage.
+    /// <para>
+    /// This is what a player needs on first seeing a unit. Auras are not in the create block —
+    /// 3.3.5a removed the aura fields — so without it a creature that spawned buffed, or one already
+    /// burning when you walked up, shows nothing at all.
+    /// </para>
+    /// </remarks>
+    public static void WriteAll(PacketWriter writer, ObjectGuid target, IReadOnlyList<AuraSlotUpdate> auras)
+    {
+        ArgumentNullException.ThrowIfNull(writer);
+        ArgumentNullException.ThrowIfNull(auras);
+
+        writer.WritePackedGuid(target);
+
+        foreach (AuraSlotUpdate aura in auras)
+        {
+            WriteBody(writer, aura);
+        }
+    }
+
+    private static void WriteBody(PacketWriter writer, in AuraSlotUpdate update)
+    {
         writer.WriteUInt8(update.Slot);
         writer.WriteUInt32(update.SpellId);
         writer.WriteUInt8(update.Flags);

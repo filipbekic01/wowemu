@@ -132,7 +132,14 @@ public sealed class WaypointStore
 /// no business setting.
 /// </param>
 /// <param name="Emote">A looping emote — the blacksmith hammering, the guard leaning.</param>
-public readonly record struct CreatureAddon(uint PathId, uint Mount, uint Bytes1, uint Bytes2, uint Emote)
+/// <param name="Auras">Spells applied the moment it spawns, and permanent until something removes them.</param>
+public readonly record struct CreatureAddon(
+    uint PathId,
+    uint Mount,
+    uint Bytes1,
+    uint Bytes2,
+    uint Emote,
+    uint[] Auras)
 {
     /// <summary>The stand state: standing, sitting, kneeling, asleep. Low byte of <see cref="Bytes1"/>.</summary>
     public byte StandState => (byte)(Bytes1 & 0xFF);
@@ -147,7 +154,36 @@ public readonly record struct CreatureAddon(uint PathId, uint Mount, uint Bytes1
     public byte SheathState => (byte)(Bytes2 & 0xFF);
 
     /// <summary>Whether this row says anything at all.</summary>
-    public bool IsEmpty => Mount == 0 && Bytes1 == 0 && Bytes2 == 0 && Emote == 0;
+    public bool IsEmpty => Mount == 0 && Bytes1 == 0 && Bytes2 == 0 && Emote == 0 && Auras.Length == 0;
+
+    /// <summary>
+    /// Parses the space-separated spell list the <c>auras</c> column stores.
+    /// </summary>
+    /// <remarks>
+    /// Free text in a database column, so it is read defensively: a blank, a null and a stray
+    /// separator all mean "no auras", and an entry that is not a number is skipped rather than
+    /// failing the row. A malformed list costs one creature its buff; refusing the row costs it its
+    /// stand state, its mount and its patrol route as well.
+    /// </remarks>
+    public static uint[] ParseAuras(string? column)
+    {
+        if (string.IsNullOrWhiteSpace(column))
+        {
+            return [];
+        }
+
+        List<uint> spells = [];
+
+        foreach (string part in column.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (uint.TryParse(part, CultureInfo.InvariantCulture, out uint spellId) && spellId != 0)
+            {
+                spells.Add(spellId);
+            }
+        }
+
+        return [.. spells];
+    }
 }
 
 /// <summary>
@@ -159,9 +195,8 @@ public readonly record struct CreatureAddon(uint PathId, uint Mount, uint Bytes1
 /// spawn row that sets only an emote also silently clears whatever sheath state its template
 /// specified. Merging them field by field is the obvious improvement and is a different game.
 /// <para>
-/// The <c>auras</c> column is not read yet. 2,910 spawns and 1,227 entries list spells to apply on
-/// spawn, and applying one needs the spell store and an aura path that reaches outside the map —
-/// recorded as a gap rather than half-done.
+/// The <c>auras</c> column is a space-separated spell list — free text in a database column, parsed
+/// defensively. 2,910 spawns and 1,227 entries carry one.
 /// </para>
 /// </remarks>
 public sealed class CreatureAddonStore
@@ -205,7 +240,8 @@ public sealed class CreatureAddonStore
         CancellationToken cancellationToken)
     {
         await using MySqlCommand command = connection.CreateCommand();
-        command.CommandText = $"SELECT {keyColumn}, path_id, mount, bytes1, bytes2, emote FROM {table}";
+        command.CommandText =
+            $"SELECT {keyColumn}, path_id, mount, bytes1, bytes2, emote, auras FROM {table}";
 
         await using MySqlDataReader reader =
             (MySqlDataReader)await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -217,7 +253,8 @@ public sealed class CreatureAddonStore
                 Mount: reader.GetUInt32(2),
                 Bytes1: reader.GetUInt32(3),
                 Bytes2: reader.GetUInt32(4),
-                Emote: reader.GetUInt32(5));
+                Emote: reader.GetUInt32(5),
+                Auras: CreatureAddon.ParseAuras(reader.IsDBNull(6) ? null : reader.GetString(6)));
 
             into[reader.GetUInt32(0)] = addon;
 

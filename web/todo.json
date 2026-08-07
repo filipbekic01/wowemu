@@ -452,7 +452,7 @@
             {
               "done": true,
               "text": "creature_addon + creature_equip_template — how a creature spawns",
-              "note": "Vendored (10,731 outfits across 10,711 entries) and written to UNIT_VIRTUAL_ITEM_SLOT_ID. 49,183 spawns name an outfit and were drawn empty-handed. equipment_id is SIGNED: 0 means unarmed (96,587 spawns), a positive value names a variant, and -1 means pick one at random (176) — reading the column as unsigned turns those 176 into requests for outfit 255. The random pick advances a position through the ordered variants rather than indexing by the rolled number, because variant ids are not contiguous. The generator is only consulted for the -1 case, matching upstream, so seeded draw counts stay in step. creature_addon is vendored separately; its auras and emotes are still unread. creature_template_addon is vendored too (8,709 rows), and the addon fields are applied: mount, stand state, visibility flags, animation tier, sheath state and emote. A spawn row REPLACES its entry row outright rather than merging — upstream returns the first that exists — and each packed column is only written when non-zero, because the sheath default is set before the addon and a blanket zero would sheathe the whole world. Applied last in Create for the same reason. Auras on spawn (2,910 spawns, 1,227 entries) are still unread."
+              "note": "Vendored (10,731 outfits across 10,711 entries) and written to UNIT_VIRTUAL_ITEM_SLOT_ID. 49,183 spawns name an outfit and were drawn empty-handed. equipment_id is SIGNED: 0 means unarmed (96,587 spawns), a positive value names a variant, and -1 means pick one at random (176) — reading the column as unsigned turns those 176 into requests for outfit 255. The random pick advances a position through the ordered variants rather than indexing by the rolled number, because variant ids are not contiguous. The generator is only consulted for the -1 case, matching upstream, so seeded draw counts stay in step. creature_addon is vendored separately; its auras and emotes are still unread. creature_template_addon is vendored too (8,709 rows), and the addon fields are applied: mount, stand state, visibility flags, animation tier, sheath state and emote. A spawn row REPLACES its entry row outright rather than merging — upstream returns the first that exists — and each packed column is only written when non-zero, because the sheath default is set before the addon and a blanket zero would sheathe the whole world. Applied last in Create for the same reason. Auras on spawn are applied too (2,910 spawns, 1,227 entries): self-cast and permanent, parsed defensively from a space-separated column, unknown spells skipped rather than throwing. Speeds are recomputed afterwards because a spawn aura can be a speed modifier."
             },
             {
               "done": false,
@@ -2286,7 +2286,8 @@
       "items": [
         "Per-observer field filtering is applied to both create and values blocks, and values blocks are broadcast to everyone who can see the object. Party-member visibility is granted to the object itself (upstream IsInSameRaidWith opens with p == this, and a quest log slot id carries no other flag) and to nobody else until groups exist; special-info is omitted rather than guessed. Both err towards showing observers less than upstream would, never more.",
         "Create-block branches for Transport, HasTarget and Vehicle are unwritten. Living, StationaryPosition, Self, Position, LowGuid and Rotation are all produced.",
-        "Our deflate output is not byte-identical to upstream's, by design (PLAN §9 excludes compressed bodies from byte-exact comparison)"
+        "Our deflate output is not byte-identical to upstream's, by design (PLAN §9 excludes compressed bodies from byte-exact comparison)",
+        "SMSG_AURA_UPDATE_ALL is sent when a unit first becomes visible, which is what makes a creature that spawned buffed — or one already burning when you walk up — show anything at all. 3.3.5a removed the aura update fields, so a create block carries no auras."
       ]
     },
     {
@@ -2305,8 +2306,7 @@
         "UNIT_DYNFLAG_LOOTABLE is set on a corpse that has loot and cleared when it is emptied, and — since values blocks are broadcast — it now actually reaches the client, which is what makes a corpse sparkle and accept a right click. It is not yet rewritten per observer, so everyone in sight sees the sparkle rather than only whoever may loot it.",
         "A creature's facing is server-side only. CreatureAi.FaceTowards decides whether a swing lands, but the client is not told — that needs the facing-target form of SMSG_MONSTER_MOVE.",
         "Glancing blows exclude a pet victim upstream; pets do not exist here, so only the player half of that condition is modelled.",
-        "Threat has no taunt, no redirection and no aura modifiers, and MeleeChances has no aura or expertise terms.",
-        "The addon `auras` column is still unread — 2,910 spawns and 1,227 entries list spells to apply on spawn. Applying one needs the spell store in the creature factory and an aura path that reaches outside the map, which is why it is not half-done."
+        "Threat has no taunt, no redirection and no aura modifiers, and MeleeChances has no aura or expertise terms."
       ]
     },
     {

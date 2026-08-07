@@ -360,7 +360,7 @@ public sealed class WaypointTests
     public void TheAddonStore_ReportsNoPathAsZero()
     {
         CreatureAddonStore store = new();
-        store.Add(spawnId: 5, new CreatureAddon(PathId: 99, 0, 0, 0, 0));
+        store.Add(spawnId: 5, new CreatureAddon(PathId: 99, 0, 0, 0, 0, []));
 
         Assert.Equal(99u, store.PathFor(spawnId: 5, entry: 1));
         Assert.Equal(0u, store.PathFor(spawnId: 6, entry: 1));
@@ -378,7 +378,7 @@ public sealed class WaypointTests
     public void ARouteOnTheTemplate_IsFoundThroughTheFallback()
     {
         CreatureAddonStore store = new();
-        store.AddTemplate(entry: 299, new CreatureAddon(PathId: 7, 0, 0, 0, 0));
+        store.AddTemplate(entry: 299, new CreatureAddon(PathId: 7, 0, 0, 0, 0, []));
 
         Assert.Equal(7u, store.PathFor(spawnId: 5, entry: 299));
     }
@@ -396,8 +396,8 @@ public sealed class WaypointTests
     {
         CreatureAddonStore store = new();
 
-        store.AddTemplate(entry: 299, new CreatureAddon(PathId: 7, Mount: 100, 0, Bytes2: 1, Emote: 0));
-        store.Add(spawnId: 5, new CreatureAddon(PathId: 0, Mount: 0, 0, Bytes2: 0, Emote: 13));
+        store.AddTemplate(entry: 299, new CreatureAddon(PathId: 7, Mount: 100, 0, Bytes2: 1, Emote: 0, []));
+        store.Add(spawnId: 5, new CreatureAddon(PathId: 0, Mount: 0, 0, Bytes2: 0, Emote: 13, []));
 
         CreatureAddon addon = store.For(spawnId: 5, entry: 299)!.Value;
 

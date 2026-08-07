@@ -172,8 +172,8 @@ public sealed class CreatureEquipmentTests
     [Fact]
     public void AZeroColumn_LeavesTheDefaultAlone()
     {
-        Creature drawn = CreatureFixture.Build(addon: new CreatureAddon(0, 0, 0, Bytes2: 0, 0));
-        Creature sheathed = CreatureFixture.Build(addon: new CreatureAddon(0, 0, 0, Bytes2: 0, 0));
+        Creature drawn = CreatureFixture.Build(addon: new CreatureAddon(0, 0, 0, Bytes2: 0, 0, []));
+        Creature sheathed = CreatureFixture.Build(addon: new CreatureAddon(0, 0, 0, Bytes2: 0, 0, []));
 
         // Both keep the weapons-drawn default rather than being reset by an empty column.
         Assert.Equal(1, drawn.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_2, 0));
@@ -192,7 +192,7 @@ public sealed class CreatureEquipmentTests
         const uint Bytes1 = 3u | (0x40u << 16) | (2u << 24);
 
         Creature creature = CreatureFixture.Build(
-            addon: new CreatureAddon(0, Mount: 6080, Bytes1, Bytes2: 2, Emote: 173));
+            addon: new CreatureAddon(0, Mount: 6080, Bytes1, Bytes2: 2, Emote: 173, []));
 
         Assert.Equal(3, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_1, 0));
         Assert.Equal(0x40, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_1, 2));
@@ -216,7 +216,7 @@ public sealed class CreatureEquipmentTests
     {
         // Every byte of both columns set to 0xFF.
         Creature creature = CreatureFixture.Build(
-            addon: new CreatureAddon(0, 0, Bytes1: 0xFFFFFFFF, Bytes2: 0xFFFFFFFF, 0));
+            addon: new CreatureAddon(0, 0, Bytes1: 0xFFFFFFFF, Bytes2: 0xFFFFFFFF, 0, []));
 
         Assert.Equal(0, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_1, 1));
         Assert.Equal(0, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_2, 2));
@@ -226,6 +226,38 @@ public sealed class CreatureEquipmentTests
         Assert.Equal(0xFF, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_1, 0));
         Assert.Equal(0xFF, creature.Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_2, 0));
     }
+
+    // ------------------------------------------------------------------ the auras column
+
+    /// <summary>The column is a space-separated spell list.</summary>
+    [Theory]
+    [InlineData("1234", new uint[] { 1234 })]
+    [InlineData("1234 5678", new uint[] { 1234, 5678 })]
+    [InlineData("  1234   5678  ", new uint[] { 1234, 5678 })]
+    public void TheAurasColumn_ParsesASpaceSeparatedList(string column, uint[] expected) =>
+        Assert.Equal(expected, CreatureAddon.ParseAuras(column));
+
+    /// <summary>
+    /// Anything that is not a spell list reads as no auras rather than failing the row.
+    /// </summary>
+    /// <remarks>
+    /// Free text in a database column, so it is read defensively. A malformed list costs one
+    /// creature its buff; refusing the row would cost it its stand state, its mount and its patrol
+    /// route as well.
+    /// </remarks>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("0")]
+    [InlineData("not a spell")]
+    public void AMalformedAurasColumn_ReadsAsNone(string? column) =>
+        Assert.Empty(CreatureAddon.ParseAuras(column));
+
+    /// <summary>A bad entry is skipped and the good ones around it survive.</summary>
+    [Fact]
+    public void AMalformedEntry_DoesNotTakeTheRestWithIt() =>
+        Assert.Equal([1234u, 5678u], CreatureAddon.ParseAuras("1234 rubbish 0 5678"));
 
     /// <summary>A roll that never fires, for the cases that must not draw.</summary>
     private static uint Never(uint min, uint max) =>
