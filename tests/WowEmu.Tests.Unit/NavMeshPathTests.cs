@@ -1,5 +1,6 @@
 using DotRecast.Core.Numerics;
 using DotRecast.Detour;
+using WowEmu.Core;
 using WowEmu.Data.Client;
 
 namespace WowEmu.Tests.Unit;
@@ -137,6 +138,125 @@ public sealed class NavMeshPathTests
 
         Assert.NotNull(tile);
         Assert.NotNull(poly);
+    }
+
+    // ------------------------------------------------------------------ the generator
+
+    /// <summary>The generator finds a route between two real points.</summary>
+    [RequiresMapsFact]
+    public void TheGenerator_FindsARouteOnRealTerrain()
+    {
+        NavMeshManager navmeshes = new(ClientData.DataDirectory);
+        navmeshes.EnsureLoaded(EasternKingdoms, HumanStartX, HumanStartY);
+
+        PathGenerator generator = navmeshes.For(EasternKingdoms)!;
+
+        NavPath path = generator.Find(
+            new Position(HumanStartX, HumanStartY, HumanStartZ, 0f),
+            new Position(HumanStartX + 30f, HumanStartY + 30f, HumanStartZ, 0f));
+
+        Assert.Equal(PathResult.Complete, path.Result);
+        Assert.True(path.Points.Count >= 2, "a route needs at least a start and an end");
+    }
+
+    /// <summary>
+    /// A route around an obstacle is longer than the line through it.
+    /// </summary>
+    /// <remarks>
+    /// The whole point of pathing. A creature that walked the straight line would go through
+    /// whatever is in the way — so the test is not that a path exists but that it is <i>longer</i>
+    /// than the direct distance somewhere in the world, which only happens if it turned.
+    /// </remarks>
+    [RequiresMapsFact]
+    public void SomeRoutes_AreLongerThanTheStraightLine()
+    {
+        NavMeshManager navmeshes = new(ClientData.DataDirectory);
+        PathGenerator generator = navmeshes.For(EasternKingdoms)!;
+
+        int turned = 0;
+        int found = 0;
+
+        // A sweep around the starting area: most pairs are open ground and go straight, and the
+        // ones that are not are the ones worth having.
+        for (int i = 0; i < 12 && turned == 0; i++)
+        {
+            for (int j = 0; j < 12 && turned == 0; j++)
+            {
+                float sx = HumanStartX + (i * 12f);
+                float sy = HumanStartY + (j * 12f);
+                float ex = sx + 60f;
+                float ey = sy + 60f;
+
+                navmeshes.EnsureLoaded(EasternKingdoms, sx, sy);
+                navmeshes.EnsureLoaded(EasternKingdoms, ex, ey);
+
+                NavPath path = generator.Find(
+                    new Position(sx, sy, HumanStartZ, 0f), new Position(ex, ey, HumanStartZ, 0f));
+
+                if (path.Result != PathResult.Complete)
+                {
+                    continue;
+                }
+
+                found++;
+
+                if (path.Points.Count > 2)
+                {
+                    turned++;
+                }
+            }
+        }
+
+        Assert.True(found > 0, "no complete route anywhere in the sweep");
+        Assert.True(turned > 0, $"every one of {found} routes was a straight line — is the mesh loaded?");
+    }
+
+    /// <summary>A point nowhere near the mesh has no route, rather than a made-up one.</summary>
+    /// <remarks>
+    /// The caller falls back to a straight line on this answer, which is what it did before there
+    /// was a mesh at all. Inventing a route would send a creature somewhere it cannot walk.
+    /// </remarks>
+    [RequiresMapsFact]
+    public void APointOffTheMesh_HasNoRoute()
+    {
+        NavMeshManager navmeshes = new(ClientData.DataDirectory);
+        PathGenerator generator = navmeshes.For(EasternKingdoms)!;
+
+        NavPath path = generator.Find(
+            new Position(HumanStartX, HumanStartY, HumanStartZ + 5000f, 0f),
+            new Position(HumanStartX + 10f, HumanStartY, HumanStartZ + 5000f, 0f));
+
+        Assert.Equal(PathResult.NoPolygon, path.Result);
+        Assert.False(path.HasPath);
+    }
+
+    /// <summary>A map with no navmesh has no generator at all.</summary>
+    /// <remarks>
+    /// 98 maps of the client's several hundred have one. A caller must treat its absence as "walk
+    /// straight there" rather than as "do not move".
+    /// </remarks>
+    [RequiresMapsFact]
+    public void AMapWithNoNavMesh_HasNoGenerator()
+    {
+        NavMeshManager navmeshes = new(ClientData.DataDirectory);
+
+        Assert.Null(navmeshes.For(9999));
+    }
+
+    /// <summary>The swizzle round-trips.</summary>
+    /// <remarks>
+    /// Cheap to assert and the single easiest thing to get backwards — the two horizontal axes swap
+    /// rather than negate, and a transposition survives a round trip while a negation does not.
+    /// </remarks>
+    [Fact]
+    public void TheSwizzle_RoundTrips()
+    {
+        Position original = new(-8949.95f, -132.493f, 83.5312f, 0f);
+        Position back = PathGenerator.FromDetour(PathGenerator.ToDetour(original));
+
+        Assert.Equal(original.X, back.X, 0.001f);
+        Assert.Equal(original.Y, back.Y, 0.001f);
+        Assert.Equal(original.Z, back.Z, 0.001f);
     }
 
     // ------------------------------------------------------------------ helpers

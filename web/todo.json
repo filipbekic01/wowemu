@@ -867,12 +867,14 @@
               "note": "Done: 515 tiles of Eastern Kingdoms load into a stock DtNavMesh, and FindPath runs between two points near the human start. The swizzle is (y, z, x) straight from PathGenerator — NOT negated. Negating it (which the terrain tiles' origin-centred inversion tempts you into) puts the point outside the mesh and comes back as \"no polygon here\" rather than as an error, which is what happened on the first attempt. Still to do: comparing our path against the C++ server's for the same endpoints, which needs a running C++ server."
             },
             {
-              "done": false,
-              "text": "PathGenerator, the (y, z, x) Detour coordinate swizzle, findSmoothPath"
+              "done": true,
+              "text": "PathGenerator and the (y, z, x) swizzle",
+              "note": "PathGenerator returns the CORNERS of a route (findStraightPath, the funnel algorithm) rather than upstream's four-yard resampled line (findSmoothPath) — same corridor, and a creature walking corner to corner covers it exactly. The resampling matters for following terrain height along a leg, which is left as a gap rather than approximated. NavMeshManager loads tiles lazily around a point, plus neighbours, mirroring TerrainManager. A partial path ends at the closest point on its last polygon, not at the unreachable destination — string-pulling to a point outside the corridor walks a creature into a wall. THREE tile formats, TWO naming conventions: .map and .mmtile are {map}{gridX}{gridY}, .vmtile swaps them. Assuming they all agree finds a tile from elsewhere on the continent."
             },
             {
-              "done": false,
-              "text": "Custom cost function: dist × (1 + slopeDegrees/100) × areaCost, and DT_SLOPE_TOO_STEEP"
+              "done": true,
+              "text": "Custom cost function: dist × (1 + slopeDegrees/100) × areaCost, and DT_SLOPE_TOO_STEEP",
+              "note": "Ported from dtQueryFilterExt::getCost: distance x (1 + slopeDegrees/100), so a route up a hillside costs more than the same distance across a field and a creature prefers to go round. Area costs are left at Detour's default of 1 — upstream never calls setAreaCost either, so the term is present in the formula and inert in both."
             }
           ]
         },
