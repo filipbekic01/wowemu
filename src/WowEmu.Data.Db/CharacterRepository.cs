@@ -33,7 +33,11 @@ public sealed record CharacterSummary(
 
     /// <summary>The worn title's bit index, and every earned one as space-separated bit indices.</summary>
     uint ChosenTitle = 0,
-    string? KnownTitles = null);
+    string? KnownTitles = null,
+
+    /// <summary>The reset-cost ladder's state, which decays with time and so must be carried.</summary>
+    uint ResetTalentsCost = 0,
+    long ResetTalentsTime = 0);
 
 /// <summary>
 /// Everything about a character that changes while it is being played.
@@ -64,7 +68,13 @@ public sealed record CharacterProgress(
 
     /// <summary>The worn title's bit index, and every earned one as space-separated bit indices.</summary>
     uint ChosenTitle = 0,
-    string KnownTitles = "")
+    string KnownTitles = "",
+
+    /// <summary>Which spec is being played, how many are owned, and the reset-cost ladder's state.</summary>
+    byte ActiveSpec = 0,
+    byte SpecCount = 1,
+    uint ResetTalentsCost = 0,
+    long ResetTalentsTime = 0)
 {
     /// <summary>How many power types the client has.</summary>
     public const int PowerCount = 7;
@@ -150,7 +160,9 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
                 },
                 character.DeathExpireTime,
                 character.ChosenTitle,
-                character.KnownTitles))
+                character.KnownTitles,
+                character.ResetTalentsCost,
+                character.ResetTalentsTime))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
@@ -229,6 +241,10 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
         character.DeathExpireTime = progress.DeathExpireTime;
         character.ChosenTitle = progress.ChosenTitle;
         character.KnownTitles = progress.KnownTitles;
+        character.ActiveSpec = progress.ActiveSpec;
+        character.SpecCount = progress.SpecCount;
+        character.ResetTalentsCost = progress.ResetTalentsCost;
+        character.ResetTalentsTime = progress.ResetTalentsTime;
         character.LastLoginAt = DateTime.UtcNow;
 
         uint[] powers = progress.Powers;

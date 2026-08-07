@@ -4,6 +4,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using WowEmu.Data.Db;
+using WowEmu.Game;
 using WowEmu.Game.Maps;
 using WowEmu.Network;
 
@@ -26,6 +27,7 @@ public sealed class WorldServerHost(
     ItemGuidGenerator itemGuids,
     WorldContent world,
     MapManager maps,
+    GroupRegistry groups,
     SessionRegistry sessions,
     WorldLoop worldLoop,
     ILogger<WorldServerHost> logger,
@@ -71,7 +73,7 @@ public sealed class WorldServerHost(
 
             WorldSession session = new(
                 connection, accounts, characters, createInfo, inventory, itemGuids, world, maps,
-                _options, sessionLogger);
+                groups, sessions, _options, sessionLogger);
 
             // Bound to the world tick before it is registered, so the first packet it queues already
             // has somewhere to resume.

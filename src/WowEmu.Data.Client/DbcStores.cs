@@ -285,6 +285,79 @@ public sealed record FactionEntry(uint Id, int ReputationListId, uint ParentFact
 /// </remarks>
 public sealed record CharTitleEntry(uint Id, uint BitIndex, string Name);
 
+/// <summary>
+/// A row of <c>Talent.dbc</c> — one talent, wherever it sits in its tree.
+/// </summary>
+/// <remarks>
+/// <b>A talent is not a spell.</b> Each of its five ranks is a separate spell id, and the client
+/// speaks in talent ids while the spellbook speaks in spell ids — which is why learning a talent
+/// means translating in both directions.
+/// <para>
+/// <see cref="Row"/> is what gates a tier: a talent on row 3 needs 15 points already spent in its
+/// own tree, because a row is worth five points.
+/// </para>
+/// </remarks>
+public sealed record TalentEntry(
+    uint Id,
+    uint TabId,
+    uint Row,
+    uint Column,
+    uint[] RankSpells,
+    uint DependsOnTalent,
+    uint DependsOnRank,
+    uint AddToSpellBook)
+{
+    /// <summary>How many ranks a talent can have. <c>MAX_TALENT_RANK</c>.</summary>
+    public const int MaxRank = 5;
+
+    /// <summary>How many points a full row of a tree is worth.</summary>
+    public const uint PointsPerRow = MaxRank;
+
+    /// <summary>The spell for a rank, or zero when the talent has no such rank.</summary>
+    public uint SpellFor(int rank) =>
+        rank >= 0 && rank < RankSpells.Length ? RankSpells[rank] : 0;
+
+    /// <summary>How many ranks this talent actually has.</summary>
+    public int RankCount
+    {
+        get
+        {
+            int count = 0;
+
+            foreach (uint spell in RankSpells)
+            {
+                if (spell != 0)
+                {
+                    count++;
+                }
+            }
+
+            return count;
+        }
+    }
+}
+
+/// <summary>
+/// A row of <c>TalentTab.dbc</c> — one of the three trees a class has.
+/// </summary>
+/// <remarks>
+/// <b><see cref="ClassMask"/> is what stops a warrior learning a mage talent.</b> The client greys
+/// them out, so nothing legitimate ever asks — which is exactly why it has to be checked.
+/// </remarks>
+public sealed record TalentTabEntry(uint Id, uint ClassMask, uint PetTalentMask, uint TabPage);
+
+/// <summary>A row of <c>GlyphProperties.dbc</c> — one glyph and the spell it grants.</summary>
+public sealed record GlyphPropertiesEntry(uint Id, uint SpellId, uint TypeFlags);
+
+/// <summary>
+/// A row of <c>GlyphSlot.dbc</c> — one socket on the glyph pane.
+/// </summary>
+/// <remarks>
+/// <see cref="TypeFlags"/> is major or minor, and a glyph only fits a slot of its own kind.
+/// <see cref="Order"/> is 1-based and is the slot's position on the pane.
+/// </remarks>
+public sealed record GlyphSlotEntry(uint Id, uint TypeFlags, uint Order);
+
 /// <summary>What one enchantment does. <c>ItemEnchantmentType</c>.</summary>
 public static class EnchantmentEffect
 {
@@ -752,6 +825,21 @@ public sealed class DbcStores
     private const string GameTableScalarFormat = "nf";
 
     /// <summary>
+    /// Twenty-three columns. The skipped runs are the unused per-rank spell ranks, the second and
+    /// third prerequisites (always zero in 3.3.5) and the pet category mask. <c>TalentEntryfmt</c>.
+    /// </summary>
+    private const string TalentFormat = "niiiiiiiixxxxixxixxixxx";
+
+    /// <summary>Twenty-four columns, nineteen of them skipped name and icon. <c>TalentTabEntryfmt</c>.</summary>
+    private const string TalentTabFormat = "nxxxxxxxxxxxxxxxxxxxiiix";
+
+    /// <summary>An id, a spell, a type mask and a skipped icon. <c>GlyphPropertiesfmt</c>.</summary>
+    private const string GlyphPropertiesFormat = "niix";
+
+    /// <summary>An id, a type mask and the slot's 1-based order. <c>GlyphSlotfmt</c>.</summary>
+    private const string GlyphSlotFormat = "nii";
+
+    /// <summary>
     /// Thirty-eight columns. The three <c>x</c> runs skip the maximum amounts (which 3.3.5 does not
     /// use) and the name flags. <c>SpellItemEnchantmentfmt</c>.
     /// </summary>
@@ -834,7 +922,11 @@ public sealed class DbcStores
         DbcStore<SpellItemEnchantmentEntry> itemEnchantments,
         DbcStore<ItemRandomPropertiesEntry> itemRandomProperties,
         DbcStore<ItemRandomSuffixEntry> itemRandomSuffixes,
-        DbcStore<RandomPropertyPointsEntry> randomPropertyPoints)
+        DbcStore<RandomPropertyPointsEntry> randomPropertyPoints,
+        DbcStore<TalentEntry> talents,
+        DbcStore<TalentTabEntry> talentTabs,
+        DbcStore<GlyphPropertiesEntry> glyphProperties,
+        DbcStore<GlyphSlotEntry> glyphSlots)
     {
         Locks = locks;
         Factions = factions;
@@ -844,6 +936,10 @@ public sealed class DbcStores
         ItemRandomProperties = itemRandomProperties;
         ItemRandomSuffixes = itemRandomSuffixes;
         RandomPropertyPoints = randomPropertyPoints;
+        Talents = talents;
+        TalentTabs = talentTabs;
+        GlyphProperties = glyphProperties;
+        GlyphSlots = glyphSlots;
         CombatRatings = combatRatings;
         AttributeChances = attributeChances;
         Skills = skills;
@@ -940,6 +1036,18 @@ public sealed class DbcStores
 
     /// <summary>How many stat points a random suffix is worth, by item level.</summary>
     public DbcStore<RandomPropertyPointsEntry> RandomPropertyPoints { get; }
+
+    /// <summary>Every talent in the game. <c>Talent.dbc</c>.</summary>
+    public DbcStore<TalentEntry> Talents { get; }
+
+    /// <summary>The talent trees, three per class. <c>TalentTab.dbc</c>.</summary>
+    public DbcStore<TalentTabEntry> TalentTabs { get; }
+
+    /// <summary>Every glyph and the spell it grants. <c>GlyphProperties.dbc</c>.</summary>
+    public DbcStore<GlyphPropertiesEntry> GlyphProperties { get; }
+
+    /// <summary>The six glyph sockets. <c>GlyphSlot.dbc</c>.</summary>
+    public DbcStore<GlyphSlotEntry> GlyphSlots { get; }
 
     /// <summary>
     /// The zone an area belongs to, which is the area itself when it is already a zone.
@@ -1323,7 +1431,57 @@ public sealed class DbcStores
                     }
 
                     return new RandomPropertyPointsEntry(record.GetUInt32(0), epic, rare, uncommon);
-                }));
+                }),
+
+            DbcStore<TalentEntry>.Load(
+                Path.Combine(directory, "Talent.dbc"),
+                TalentFormat,
+                idField: 0,
+                (in DbcRecord record) =>
+                {
+                    uint[] ranks = new uint[TalentEntry.MaxRank];
+
+                    for (int i = 0; i < ranks.Length; i++)
+                    {
+                        ranks[i] = record.GetUInt32(4 + i);
+                    }
+
+                    return new TalentEntry(
+                        Id: record.GetUInt32(0),
+                        TabId: record.GetUInt32(1),
+                        Row: record.GetUInt32(2),
+                        Column: record.GetUInt32(3),
+                        RankSpells: ranks,
+                        // 13 and 16, not 9 and 10: columns 9 to 12 are per-rank spell ranks that
+                        // are always zero, and the format string skips them.
+                        DependsOnTalent: record.GetUInt32(13),
+                        DependsOnRank: record.GetUInt32(16),
+                        AddToSpellBook: record.GetUInt32(19));
+                }),
+
+            DbcStore<TalentTabEntry>.Load(
+                Path.Combine(directory, "TalentTab.dbc"),
+                TalentTabFormat,
+                idField: 0,
+                (in DbcRecord record) => new TalentTabEntry(
+                    Id: record.GetUInt32(0),
+                    ClassMask: record.GetUInt32(20),
+                    PetTalentMask: record.GetUInt32(21),
+                    TabPage: record.GetUInt32(22))),
+
+            DbcStore<GlyphPropertiesEntry>.Load(
+                Path.Combine(directory, "GlyphProperties.dbc"),
+                GlyphPropertiesFormat,
+                idField: 0,
+                (in DbcRecord record) => new GlyphPropertiesEntry(
+                    record.GetUInt32(0), record.GetUInt32(1), record.GetUInt32(2))),
+
+            DbcStore<GlyphSlotEntry>.Load(
+                Path.Combine(directory, "GlyphSlot.dbc"),
+                GlyphSlotFormat,
+                idField: 0,
+                (in DbcRecord record) => new GlyphSlotEntry(
+                    record.GetUInt32(0), record.GetUInt32(1), record.GetUInt32(2))));
     }
 
     /// <summary>One of the bare-float <c>gt*</c> tables, keyed by row position.</summary>

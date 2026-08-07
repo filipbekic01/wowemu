@@ -69,6 +69,16 @@ public sealed class Player : Unit
 
     private PlayerQuestResets? _questResets;
 
+    /// <summary>This character's talents, across both specs.</summary>
+    public PlayerTalents Talents => _talents ??= new PlayerTalents(this);
+
+    private PlayerTalents? _talents;
+
+    /// <summary>This character's glyphs, across both specs.</summary>
+    public PlayerGlyphs Glyphs => _glyphs ??= new PlayerGlyphs(this);
+
+    private PlayerGlyphs? _glyphs;
+
     /// <summary>Drowning, fatigue and standing in lava.</summary>
     public PlayerEnvironment Environment { get; } = new();
 
@@ -159,6 +169,11 @@ public sealed class Player : Unit
         // Also outside the guard, and for the same reason: an earned title is not part of the
         // living/dead state and a character with nothing else saved can still have one.
         RestoreTitles(player, character);
+
+        // Outside the guard too: the reset ladder is a window in absolute time that decays on its
+        // own, and losing it would make every character's next respec cost one gold again.
+        player.TalentResetCost = character.ResetTalentsCost;
+        player.TalentResetTime = character.ResetTalentsTime;
 
         if (character.Health == 0)
         {
@@ -352,6 +367,20 @@ public sealed class Player : Unit
     /// to remember to reset it.
     /// </remarks>
     public long DeathExpireTime { get; set; }
+
+    /// <summary>
+    /// What the last talent reset cost, in copper, and when it happened.
+    /// </summary>
+    /// <remarks>
+    /// Both are needed and neither is enough alone: the cost climbs with each reset and <i>decays</i>
+    /// by five gold per whole month since the last one. Keeping only the cost makes respeccing
+    /// permanently expensive after a few uses; keeping only the time cannot say where on the ladder
+    /// the character is.
+    /// </remarks>
+    public uint TalentResetCost { get; set; }
+
+    /// <inheritdoc cref="TalentResetCost"/>
+    public long TalentResetTime { get; set; }
 
     /// <summary>
     /// Which side the character is on, from its race.

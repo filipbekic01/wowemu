@@ -40,6 +40,10 @@ public static class LootType
 }
 
 /// <summary>Why a loot window could not be opened. <c>LootError</c>.</summary>
+[System.Diagnostics.CodeAnalysis.SuppressMessage(
+    "Design",
+    "CA1069:Enums values should not be duplicated",
+    Justification = "NoLoot and MasterInventoryFull genuinely share code 12; see the remarks there.")]
 public enum LootError : byte
 {
     DidNotKill = 0,
@@ -51,6 +55,24 @@ public enum LootError : byte
     PlayerNotFound = 10,
     PlayerTimeout = 11,
     NoLoot = 12,
+
+    /// <summary>
+    /// Master loot: that player's bags are full. <b>Shares its value with <see cref="NoLoot"/>.</b>
+    /// </summary>
+    /// <remarks>
+    /// <b>Upstream has no "there is nothing here" code at all</b> — it sends a loot release for an
+    /// empty corpse. Our <see cref="NoLoot"/> is an invention that landed on 12, which the client
+    /// draws as "That player's inventory is full". Both names are kept so the master-loot path can
+    /// say what it means; the wrong string on the empty-corpse path is a known defect recorded on
+    /// the board rather than papered over, and fixing it means sending a release instead.
+    /// </remarks>
+    MasterInventoryFull = 12,
+
+    /// <summary>Master loot: that player already has as many as they may hold.</summary>
+    MasterUniqueItem = 13,
+
+    /// <summary>Master loot: the item cannot be given to that player at all.</summary>
+    MasterOther = 14,
 
     /// <summary>"Your target has already had its pockets picked."</summary>
     AlreadyPickpocketed = 15,
@@ -105,6 +127,25 @@ public sealed class Loot
 
     /// <summary>Who is allowed to open it. Empty means nobody has claimed the kill.</summary>
     public ObjectGuid Owner { get; set; }
+
+    /// <summary>
+    /// The group that earned it, if the owner was in one.
+    /// </summary>
+    /// <remarks>
+    /// Captured at the kill rather than looked up on open: a player who leaves the party in between
+    /// should still not take a corpse the group earned, and a late lookup says they can.
+    /// </remarks>
+    public Group? Group { get; set; }
+
+    /// <summary>
+    /// Whether a character may open this loot at all.
+    /// </summary>
+    /// <remarks>
+    /// <b>The group, not the owner.</b> A corpse a party earned belongs to the party; checking only
+    /// the threat-list winner locks the other four members out of every kill they helped with.
+    /// </remarks>
+    public bool CanBeLootedBy(ObjectGuid looter) =>
+        Owner.IsEmpty || Owner == looter || Group?.Contains(looter) == true;
 
     /// <summary>Whether anything is left.</summary>
     public bool IsEmpty

@@ -55,6 +55,21 @@ public interface IPlayerConnection
     /// <summary>Tells this client its standing with one faction changed.</summary>
     void SendFactionStanding(uint reputationListId, int standing);
 
+    /// <summary>Resends the whole talent pane. <c>SMSG_TALENTS_INFO</c>.</summary>
+    void SendTalentsInfo();
+
+    /// <summary>Opens a loot roll window. <c>SMSG_LOOT_START_ROLL</c>.</summary>
+    void SendLootStartRoll(GroupLootRoll roll, uint mapId, byte voteMask);
+
+    /// <summary>Reports one player's choice, or their roll. <c>SMSG_LOOT_ROLL</c>.</summary>
+    void SendLootRoll(GroupLootRoll roll, ObjectGuid player, byte rolled, LootVote vote);
+
+    /// <summary>Announces the winner. <c>SMSG_LOOT_ROLL_WON</c>.</summary>
+    void SendLootRollWon(GroupLootRoll roll, ObjectGuid winner, byte rolled, LootVote vote);
+
+    /// <summary>Announces that nobody wanted it. <c>SMSG_LOOT_ALL_PASSED</c>.</summary>
+    void SendLootAllPassed(GroupLootRoll roll);
+
 
     /// <summary>
     /// Notes that a creature has started walking somewhere, to go out at the next flush.
@@ -407,6 +422,28 @@ public sealed class Map(
     /// <summary>What chests hold.</summary>
     public LootStore? GameObjectLoot { get; init; }
 
+    /// <summary>
+    /// Every group on the realm, for shared loot and shared kills.
+    /// </summary>
+    /// <remarks>
+    /// Realm-wide rather than per map: a party can span continents, and a per-map registry would
+    /// dissolve one the moment two members walked through different portals.
+    /// </remarks>
+    public GroupRegistry? Groups { get => _groups; init => _groups = value; }
+
+    private GroupRegistry? _groups;
+
+    /// <summary>Every loot roll running on this map.</summary>
+    private readonly List<GroupLootRoll> _rolls = [];
+
+    /// <summary>The rolls in progress, for the session to answer votes against.</summary>
+    public IReadOnlyList<GroupLootRoll> Rolls => _rolls;
+
+    /// <summary>Every talent in the game, for spec switching. <c>Talent.dbc</c>.</summary>
+    public DbcStore<TalentEntry>? TalentTable { get => _talents; init => _talents = value; }
+
+    private DbcStore<TalentEntry>? _talents;
+
     /// <summary>What corpses yield to a skinner. <c>skinning_loot_template</c>.</summary>
     public LootStore? SkinningLoot { get; init; }
 
@@ -572,6 +609,7 @@ public sealed class Map(
         UpdateCombat(gameplayDiff);
         UpdateEnvironment(gameplayDiff);
         UpdateItemDurations(gameplayDiff);
+        UpdateLootRolls(gameplayDiff);
 
         // After everything that could change a field, before anything is flushed.
         BroadcastFieldChanges();
@@ -1670,6 +1708,38 @@ public sealed class Map(
     }
 
     /// <summary>
+    /// Switches a character to their other spec.
+    /// </summary>
+    /// <remarks>
+    /// <b>The old spec's talent spells come off and the new spec's go on.</b> Leaving the old ones
+    /// makes dual spec a way to have both builds active at once, which is the one thing it must
+    /// not be.
+    /// </remarks>
+    private void SwitchSpec(Player player, byte spec)
+    {
+        if (_talents is null || player.Talents.Activate(spec, _talents) is not { } removed)
+        {
+            return;
+        }
+
+        foreach (uint spellId in removed)
+        {
+            player.Spells.Forget(spellId);
+        }
+
+        foreach (uint spellId in player.Talents.ActiveSpells(_talents))
+        {
+            player.Spells.Learn(spellId);
+        }
+
+        // The glyph fields hold one spec's worth, so switching without this leaves the other
+        // spec's glyphs on the pane and in effect.
+        player.Glyphs.RefreshFields();
+
+        player.Connection?.SendTalentsInfo();
+    }
+
+    /// <summary>
     /// Handles the gathering effects, which want a creature rather than a victim.
     /// </summary>
     /// <returns>
@@ -1682,6 +1752,33 @@ public sealed class Map(
     /// </remarks>
     private bool ApplyGatheringEffects(Player caster, Unit? target, SpellEntry spell)
     {
+        // The spec effects target the caster, so they are checked before the creature narrowing
+        // below — a self-cast has no creature target and would fall straight through it.
+        foreach (SpellEffectEntry specEffect in spell.Effects)
+        {
+            switch (specEffect.Effect)
+            {
+                case SpellEffectId.TalentSpecCount:
+                    // The base points are the spec count, 1 or 2. Dual Talent Specialization buys
+                    // the second; the refund spell sells it back.
+                    caster.Talents.SpecCount =
+                        (byte)Math.Clamp(specEffect.BasePoints + 1, 1, PlayerTalents.MaxSpecs);
+
+                    caster.Connection?.SendTalentsInfo();
+
+                    return true;
+
+                case SpellEffectId.TalentSpecSelect:
+                    // One-based on the wire, zero-based here — "damage - 1" upstream.
+                    SwitchSpec(caster, (byte)Math.Max(specEffect.BasePoints, 0));
+
+                    return true;
+
+                default:
+                    break;
+            }
+        }
+
         if (target is not Creature creature)
         {
             return false;
@@ -2098,7 +2195,9 @@ public sealed class Map(
             return;
         }
 
-        if (!creature.Loot.Owner.IsEmpty && creature.Loot.Owner != player.Guid)
+        // The group first: a corpse a party earned belongs to the party, not to whoever happened
+        // to top the threat list. Checking only the owner locks four members out of every kill.
+        if (!creature.Loot.CanBeLootedBy(player.Guid))
         {
             player.Connection?.SendLootError(target, LootError.DidNotKill);
             return;
@@ -2224,6 +2323,15 @@ public sealed class Map(
             return;
         }
 
+        // Round-robin, master loot and an item still under a roll all refuse the take. Checked here
+        // rather than only when the window is drawn: the slot comes from the client, and a window
+        // that hides a slot is not a rule.
+        if (!CanTakeLootSlot(player, loot, entry, slot))
+        {
+            player.Connection?.SendLootError(player.LootTarget, LootError.DidNotKill);
+            return;
+        }
+
         if (!_items.TryGet(entry.ItemId, out ItemTemplate? template) || template is null)
         {
             return;
@@ -2271,6 +2379,366 @@ public sealed class Map(
         }
 
         ClearIfEmpty(holder, loot);
+    }
+
+    /// <summary>
+    /// Opens a roll on every contested item a corpse dropped.
+    /// </summary>
+    /// <remarks>
+    /// <b>At the kill, not when somebody opens the corpse.</b> The client shows the roll window to
+    /// the whole party the moment the item drops; waiting for a loot open means the first person to
+    /// right-click decides when everyone else gets to roll.
+    /// </remarks>
+    private void StartLootRolls(Creature victim, Loot loot)
+    {
+        if (loot.Group is not { } group || _items is null)
+        {
+            return;
+        }
+
+        for (byte slot = 0; slot < loot.Items.Count; slot++)
+        {
+            LootItem entry = loot.Items[slot];
+
+            if (!_items.TryGet(entry.ItemId, out ItemTemplate? template) || template is null)
+            {
+                continue;
+            }
+
+            if (!GroupLoot.NeedsRoll(group.LootMethod, template.Quality, group.LootThreshold))
+            {
+                continue;
+            }
+
+            GroupLootRoll roll = new()
+            {
+                Holder = victim.Guid,
+                Slot = slot,
+                ItemId = entry.ItemId,
+                Count = entry.Count,
+            };
+
+            foreach (GroupMember slotMember in group.Members)
+            {
+                // Only members who were there. Somebody across the continent should not be holding
+                // up a roll they cannot see.
+                if (Find(slotMember.Guid) is Player member
+                    && GroupReward.IsInRewardRange(member, victim))
+                {
+                    roll.Ask(member.Guid);
+                }
+            }
+
+            if (roll.Votes.Count == 0)
+            {
+                continue;
+            }
+
+            _rolls.Add(roll);
+
+            foreach (ObjectGuid candidate in roll.Votes.Keys)
+            {
+                if (Find(candidate) is not Player member)
+                {
+                    continue;
+                }
+
+                member.Connection?.SendLootStartRoll(
+                    roll,
+                    MapId,
+                    GroupLoot.VoteMaskFor(
+                        group.LootMethod, GroupLoot.CanUse(template, member.Class, member.Race)));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Records a vote, and decides the roll once everyone has answered.
+    /// </summary>
+    /// <returns>False when there is no such roll, or they were not asked.</returns>
+    public bool VoteOnLoot(Player player, ObjectGuid holder, byte slot, LootVote vote)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+
+        GroupLootRoll? roll = null;
+
+        foreach (GroupLootRoll candidate in _rolls)
+        {
+            if (candidate.Holder == holder && candidate.Slot == slot)
+            {
+                roll = candidate;
+                break;
+            }
+        }
+
+        if (roll is null || !roll.Vote(player.Guid, vote))
+        {
+            return false;
+        }
+
+        // Everyone is told what everyone chose, as they choose it — that is what fills in the roll
+        // window's rows rather than leaving it blank until the end.
+        foreach (ObjectGuid candidate in roll.Votes.Keys)
+        {
+            if (Find(candidate) is Player member)
+            {
+                member.Connection?.SendLootRoll(roll, player.Guid, 0, vote);
+            }
+        }
+
+        if (roll.IsSettled)
+        {
+            ResolveRoll(roll);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Advances every open roll, deciding any that ran out.
+    /// </summary>
+    /// <remarks>
+    /// <b>Anyone still undecided when the timer expires counts as a pass.</b> Without it one player
+    /// walking away from their keyboard freezes an item on the corpse forever.
+    /// </remarks>
+    private void UpdateLootRolls(uint diff)
+    {
+        if (_rolls.Count == 0)
+        {
+            return;
+        }
+
+        // Materialised: resolving a roll removes it from the list this is walking.
+        foreach (GroupLootRoll roll in _rolls.ToArray())
+        {
+            if (roll.Tick(diff))
+            {
+                ResolveRoll(roll);
+            }
+        }
+    }
+
+    /// <summary>Decides a roll and hands the item over.</summary>
+    private void ResolveRoll(GroupLootRoll roll)
+    {
+        _rolls.Remove(roll);
+
+        LootRollOutcome outcome = roll.Decide(
+            () => (byte)GameRandom.Urand(1, 100), out IReadOnlyList<LootRollVote> rolled);
+
+        foreach (ObjectGuid candidate in roll.Votes.Keys)
+        {
+            if (Find(candidate) is not Player member)
+            {
+                continue;
+            }
+
+            foreach (LootRollVote entry in rolled)
+            {
+                member.Connection?.SendLootRoll(roll, entry.Player, entry.Roll, entry.Vote);
+            }
+
+            if (outcome.EveryonePassed)
+            {
+                member.Connection?.SendLootAllPassed(roll);
+            }
+            else
+            {
+                member.Connection?.SendLootRollWon(
+                    roll, outcome.Winner, outcome.WinningRoll, outcome.WinningVote);
+            }
+        }
+
+        if (outcome.EveryonePassed || Find(outcome.Winner) is not Player winner)
+        {
+            // Nobody wanted it, so it stays on the corpse and anyone may now take it — the roll is
+            // gone, and CanTakeLootSlot no longer refuses the slot.
+            return;
+        }
+
+        GiveRolledItem(winner, roll);
+    }
+
+    /// <summary>Puts a won item in the winner's bags and takes it off the corpse.</summary>
+    private void GiveRolledItem(Player winner, GroupLootRoll roll)
+    {
+        if (_items is null || _itemGuids is null
+            || Find(roll.Holder) is not Creature holder
+            || holder.Loot is not { } loot
+            || !_items.TryGet(roll.ItemId, out ItemTemplate? template)
+            || template is null)
+        {
+            return;
+        }
+
+        if (winner.Inventory.Store(template, roll.Count, _itemGuids, out IReadOnlyList<Item> affected)
+            != InventoryResult.Ok)
+        {
+            // Bags full. The item stays on the corpse rather than vanishing, which is the one
+            // outcome a player cannot recover from.
+            return;
+        }
+
+        loot.Take(roll.Slot);
+
+        foreach (Item item in affected)
+        {
+            ItemPosition? where = winner.Inventory.PositionOf(item);
+
+            winner.Connection?.SendItemPushed(new ItemPushResult(
+                Player: winner.Guid,
+                FromNpc: false,
+                Created: false,
+                ShowInChat: true,
+                Bag: where?.Bag ?? InventorySlots.Backpack,
+                Slot: item.Count == roll.Count
+                    ? where?.Slot ?? 0
+                    : ItemPushResultPacket.MergedIntoStack,
+                Entry: roll.ItemId,
+                Count: roll.Count,
+                TotalOfEntry: winner.Inventory.CountOf(roll.ItemId)));
+        }
+
+        // Everyone's window loses the slot, not just the winner's.
+        if (loot.Group is { } group)
+        {
+            foreach (GroupMember member in group.Members)
+            {
+                if (Find(member.Guid) is Player viewer && viewer.LootTarget == roll.Holder)
+                {
+                    viewer.Connection?.SendLootRemoved(roll.Slot);
+                }
+            }
+        }
+
+        ClearIfEmpty(holder, loot);
+    }
+
+    /// <summary>
+    /// Hands a master-looted item to a group member.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>WorldSession::HandleLootMasterGiveOpcode</c>. <b>The recipient has to be in the
+    /// same group</b> — the guid comes from the client, and without the check a master looter can
+    /// post items to anyone on the realm.
+    /// </remarks>
+    /// <returns>False when the give was refused; the caller has already been told why.</returns>
+    public bool GiveMasterLoot(Player master, byte slot, ObjectGuid recipient)
+    {
+        ArgumentNullException.ThrowIfNull(master);
+
+        if (_items is null || _itemGuids is null
+            || FindOpenLoot(master) is not (WorldObject holder, Loot loot))
+        {
+            return false;
+        }
+
+        if (loot.Group is not { } group
+            || group.LootMethod != Game.LootMethod.MasterLoot
+            || group.MasterLooter != master.Guid)
+        {
+            master.Connection?.SendLootError(master.LootTarget, LootError.DidNotKill);
+
+            return false;
+        }
+
+        if (!group.Contains(recipient) || Find(recipient) is not Player target)
+        {
+            master.Connection?.SendLootError(master.LootTarget, LootError.MasterOther);
+
+            return false;
+        }
+
+        if (loot.At(slot) is not { IsLooted: false } entry
+            || !_items.TryGet(entry.ItemId, out ItemTemplate? template)
+            || template is null)
+        {
+            master.Connection?.SendLootError(master.LootTarget, LootError.NoLoot);
+
+            return false;
+        }
+
+        if (target.Inventory.Store(template, entry.Count, _itemGuids, out IReadOnlyList<Item> affected)
+            != InventoryResult.Ok)
+        {
+            // Told to the master, not the recipient: it is the master's action that failed, and the
+            // recipient may not even have the window open.
+            master.Connection?.SendLootError(master.LootTarget, LootError.MasterInventoryFull);
+
+            return false;
+        }
+
+        loot.Take(slot);
+
+        foreach (Item item in affected)
+        {
+            ItemPosition? where = target.Inventory.PositionOf(item);
+
+            target.Connection?.SendItemPushed(new ItemPushResult(
+                Player: target.Guid,
+                FromNpc: false,
+                Created: false,
+                ShowInChat: true,
+                Bag: where?.Bag ?? InventorySlots.Backpack,
+                Slot: item.Count == entry.Count
+                    ? where?.Slot ?? 0
+                    : ItemPushResultPacket.MergedIntoStack,
+                Entry: entry.ItemId,
+                Count: entry.Count,
+                TotalOfEntry: target.Inventory.CountOf(entry.ItemId)));
+        }
+
+        // Everyone with the corpse open loses the slot, not only the master.
+        foreach (GroupMember member in group.Members)
+        {
+            if (Find(member.Guid) is Player viewer && viewer.LootTarget == master.LootTarget)
+            {
+                viewer.Connection?.SendLootRemoved(slot);
+            }
+        }
+
+        ClearIfEmpty(holder, loot);
+
+        return true;
+    }
+
+    /// <summary>
+    /// Whether a player may take one slot of a corpse, under the group's loot rules.
+    /// </summary>
+    /// <remarks>
+    /// Four separate refusals, and only the first applies without a group:
+    /// <list type="bullet">
+    /// <item>An item under an open roll belongs to nobody yet.</item>
+    /// <item><b>Round-robin restricts every drop</b> to whoever's turn it is — it is the only
+    /// method that does, and applying the turn under the others leaves four members watching one
+    /// person loot everything.</item>
+    /// <item>Master loot restricts only items <i>at or above</i> the threshold; the greys are free
+    /// for anyone.</item>
+    /// <item>Free-for-all restricts nothing at all.</item>
+    /// </list>
+    /// </remarks>
+    private bool CanTakeLootSlot(Player player, Loot loot, LootItem entry, byte slot)
+    {
+        if (_rolls.Any(roll => roll.Slot == slot && roll.Holder == player.LootTarget))
+        {
+            return false;
+        }
+
+        if (loot.Group is not { } group)
+        {
+            return true;
+        }
+
+        if (group.LootMethod == Game.LootMethod.MasterLoot
+            && _items is not null
+            && _items.TryGet(entry.ItemId, out ItemTemplate? template)
+            && template is not null
+            && template.Quality >= group.LootThreshold)
+        {
+            return player.Guid == group.MasterLooter;
+        }
+
+        return GroupLoot.CanTakeUncontested(group, player.Guid, group.Looter);
     }
 
     /// <summary>Takes the money out of the open loot window.</summary>
@@ -2371,6 +2839,11 @@ public sealed class Map(
         switch (holder)
         {
             case Creature creature:
+                // Per corpse, not per item: round-robin gives one player a whole body and then
+                // moves on. Advancing per item interleaves the members across a single corpse,
+                // which is group loot's behaviour and not round-robin's.
+                loot.Group?.AdvanceLooter();
+
                 creature.Loot = null;
                 creature.DynamicFlags &= ~UnitDynamicFlags.Lootable;
 
@@ -2569,9 +3042,12 @@ public sealed class Map(
     /// Credits a kill against everyone's quests.
     /// </summary>
     /// <remarks>
-    /// Everyone on the threat list, not just the killer: upstream credits every group member in
-    /// range, and the threat list is the closest thing to a group this server has. It is also why
-    /// this runs before <c>Kill()</c>, which clears the list.
+    /// <b>The whole group, in range — not only whoever was on the threat list.</b> A healer who
+    /// never touched the creature is on nobody's threat list and still gets the credit, which is
+    /// most of what grouping for a kill quest is for.
+    /// <para>
+    /// This runs before <c>Kill()</c>, which clears the threat list the ungrouped path reads.
+    /// </para>
     /// <para>
     /// Every matching objective is credited, not the first — two quests can ask for the same
     /// creature, and crediting one of them is a bug a player notices and cannot explain.
@@ -2584,22 +3060,51 @@ public sealed class Map(
             return;
         }
 
+        HashSet<ObjectGuid> credited = [];
+
         foreach (ThreatEntry entry in victim.Threat.Sorted)
         {
-            if (entry.Target is not Player player || !player.IsAlive)
+            if (entry.Target is not Player player)
             {
                 continue;
             }
 
-            foreach (QuestKillCredit credit in player.Quests.CreditKill(victim.Entry, _quests))
+            if (_groups?.GroupOf(player.Guid) is { } group)
             {
-                player.Connection?.SendQuestKillCredit(
-                    credit.Quest.Id, credit.WireEntry, credit.Current, credit.Required, victim.Guid);
-
-                if (player.Quests.StatusOf(credit.Quest.Id) == QuestStatus.Complete)
+                foreach (GroupMember slot in group.Members)
                 {
-                    player.Connection?.SendQuestComplete(credit.Quest.Id);
+                    if (Find(slot.Guid) is Player member
+                        && GroupReward.IsInRewardRange(member, victim))
+                    {
+                        CreditOneKill(member, victim, credited);
+                    }
                 }
+
+                continue;
+            }
+
+            CreditOneKill(player, victim, credited);
+        }
+    }
+
+    /// <summary>Credits one player for one kill, at most once.</summary>
+    private void CreditOneKill(Player player, Creature victim, HashSet<ObjectGuid> credited)
+    {
+        // A player on the threat list who is also in a rewarded group would otherwise be credited
+        // twice, which double-counts a kill objective.
+        if (!player.IsAlive || !credited.Add(player.Guid))
+        {
+            return;
+        }
+
+        foreach (QuestKillCredit credit in player.Quests.CreditKill(victim.Entry, _quests!))
+        {
+            player.Connection?.SendQuestKillCredit(
+                credit.Quest.Id, credit.WireEntry, credit.Current, credit.Required, victim.Guid);
+
+            if (player.Quests.StatusOf(credit.Quest.Id) == QuestStatus.Complete)
+            {
+                player.Connection?.SendQuestComplete(credit.Quest.Id);
             }
         }
     }
@@ -2630,6 +3135,7 @@ public sealed class Map(
         Loot loot = new()
         {
             Owner = TopOfThreatList(creature),
+            Group = GroupForOwner(creature),
             Gold = LootRoll.RollMoney(creature.MinGold, creature.MaxGold, GameRandom.Urand),
         };
 
@@ -2652,7 +3158,22 @@ public sealed class Map(
 
         creature.Loot = loot;
         creature.DynamicFlags |= UnitDynamicFlags.Lootable;
+
+        // After the loot is on the corpse: the rolls index into it by slot, and starting them
+        // first would number them against a list that does not exist yet.
+        StartLootRolls(creature, loot);
     }
+
+    /// <summary>
+    /// The group the corpse's owner belongs to, if any.
+    /// </summary>
+    /// <remarks>
+    /// Captured at the kill rather than looked up when the corpse is opened. A player who leaves
+    /// the party between the kill and the loot should still not be able to take a corpse the group
+    /// earned, and looking it up late says they can.
+    /// </remarks>
+    private Group? GroupForOwner(Creature creature) =>
+        _groups?.GroupOf(TopOfThreatList(creature));
 
     /// <summary>Whoever hated the creature most, which is who its corpse belongs to.</summary>
     private static ObjectGuid TopOfThreatList(Creature creature)
@@ -2672,9 +3193,8 @@ public sealed class Map(
     /// Pays out experience for a kill.
     /// </summary>
     /// <remarks>
-    /// Everyone on the creature's threat list is paid in full, not a share. Group splitting needs
-    /// groups; until then paying each participant the whole amount is the honest simplification —
-    /// it errs towards over-rewarding, which is visible, rather than silently paying nobody.
+    /// A grouped killer's party splits the kill through <see cref="GroupReward"/>; an ungrouped one
+    /// is paid in full, as is every other participant on the threat list who is not in that group.
     /// <para>
     /// The content level is taken from the creature's template expansion rather than from the zone.
     /// Upstream uses the zone, so a classic creature standing in Outland pays classic rates here and
@@ -2688,9 +3208,26 @@ public sealed class Map(
             return;
         }
 
+        // Members already paid through their group, so a player who is both on the threat list and
+        // in a rewarded party is not paid twice.
+        HashSet<ObjectGuid> settled = [];
+
         foreach (ThreatEntry entry in victim.Threat.Sorted)
         {
-            if (entry.Target is not Player killer || !killer.IsAlive)
+            if (entry.Target is not Player killer || settled.Contains(killer.Guid))
+            {
+                continue;
+            }
+
+            if (_groups?.GroupOf(killer.Guid) is { } group)
+            {
+                AwardGroupExperience(group, victim, settled);
+                continue;
+            }
+
+            settled.Add(killer.Guid);
+
+            if (!killer.IsAlive)
             {
                 continue;
             }
@@ -2705,6 +3242,48 @@ public sealed class Map(
             IReadOnlyList<LevelUp> levels = Experience.Give(killer, gain, _xpTable, _playerStats, Skills);
 
             killer.Connection?.SendExperienceGain(victim.Guid, gain, levels);
+        }
+    }
+
+    /// <summary>
+    /// Pays a whole group for one kill.
+    /// </summary>
+    /// <remarks>
+    /// <b>The split is not even.</b> Each member takes a share weighted by their level, and the
+    /// base is computed from the highest member the victim is not grey to rather than from whoever
+    /// struck last — see <see cref="GroupReward"/>.
+    /// </remarks>
+    private void AwardGroupExperience(Group group, Creature victim, HashSet<ObjectGuid> settled)
+    {
+        List<Player> members = [];
+
+        foreach (GroupMember slot in group.Members)
+        {
+            settled.Add(slot.Guid);
+
+            if (Find(slot.Guid) is Player member)
+            {
+                members.Add(member);
+            }
+        }
+
+        if (members.Count == 0)
+        {
+            return;
+        }
+
+        foreach (GroupShare share in
+            GroupReward.Split(members, victim, group.IsRaid, victim.Expansion))
+        {
+            if (share.Experience == 0 || !share.Member.IsAlive)
+            {
+                continue;
+            }
+
+            IReadOnlyList<LevelUp> levels = Experience.Give(
+                share.Member, share.Experience, _xpTable!, _playerStats!, Skills);
+
+            share.Member.Connection?.SendExperienceGain(victim.Guid, share.Experience, levels);
         }
     }
 

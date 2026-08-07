@@ -93,6 +93,25 @@ public sealed class CharacterEntity
     /// </remarks>
     public uint ChosenTitle { get; set; }
 
+    /// <summary>Which spec is being played, and how many the character has bought.</summary>
+    public byte ActiveSpec { get; set; }
+
+    /// <inheritdoc cref="ActiveSpec"/>
+    public byte SpecCount { get; set; } = 1;
+
+    /// <summary>
+    /// What the last talent reset cost and when it happened, for the escalating price.
+    /// </summary>
+    /// <remarks>
+    /// Both, because the cost decays by five gold per whole month since the last reset — the cost
+    /// alone cannot say how long ago that was, and the time alone cannot say where on the ladder
+    /// the character is.
+    /// </remarks>
+    public uint ResetTalentsCost { get; set; }
+
+    /// <inheritdoc cref="ResetTalentsCost"/>
+    public long ResetTalentsTime { get; set; }
+
     /// <summary>
     /// Every title earned, as space-separated bit indices.
     /// </summary>
@@ -166,6 +185,12 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
     /// <summary>What every faction thinks of every character. <c>character_reputation</c>.</summary>
     public DbSet<CharacterReputationEntity> Reputation => Set<CharacterReputationEntity>();
 
+    /// <summary>Which talents each character has taken. <c>character_talent</c>.</summary>
+    public DbSet<CharacterTalentEntity> Talents => Set<CharacterTalentEntity>();
+
+    /// <summary>What is in each glyph socket. <c>character_glyphs</c>.</summary>
+    public DbSet<CharacterGlyphEntity> Glyphs => Set<CharacterGlyphEntity>();
+
     /// <summary>Dailies done since the last reset. <c>character_queststatus_daily</c>.</summary>
     public DbSet<CharacterQuestDailyEntity> DailyQuests => Set<CharacterQuestDailyEntity>();
 
@@ -210,6 +235,10 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
             entity.Property(character => character.Orientation).HasColumnName("orientation");
 
             entity.Property(character => character.ChosenTitle).HasColumnName("chosenTitle");
+            entity.Property(character => character.ActiveSpec).HasColumnName("activeTalentGroup");
+            entity.Property(character => character.SpecCount).HasColumnName("specCount");
+            entity.Property(character => character.ResetTalentsCost).HasColumnName("resettalents_cost");
+            entity.Property(character => character.ResetTalentsTime).HasColumnName("resettalents_time");
             entity.Property(character => character.KnownTitles).HasColumnName("knownTitles");
 
             entity.Property(character => character.Health).HasColumnName("health");
@@ -336,6 +365,30 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
             entity.Property(row => row.CharacterId).HasColumnName("guid");
             entity.Property(row => row.FactionId).HasColumnName("faction");
             entity.Property(row => row.Standing).HasColumnName("standing");
+        });
+
+        modelBuilder.Entity<CharacterTalentEntity>(entity =>
+        {
+            entity.ToTable("character_talent");
+
+            // Composite: one rank of one talent per spec.
+            entity.HasKey(row => new { row.CharacterId, row.Spec, row.TalentId });
+
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.Spec).HasColumnName("talentGroup");
+            entity.Property(row => row.TalentId).HasColumnName("talentId");
+            entity.Property(row => row.Rank).HasColumnName("rank");
+        });
+
+        modelBuilder.Entity<CharacterGlyphEntity>(entity =>
+        {
+            entity.ToTable("character_glyphs");
+            entity.HasKey(row => new { row.CharacterId, row.Spec, row.Slot });
+
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.Spec).HasColumnName("talentGroup");
+            entity.Property(row => row.Slot).HasColumnName("slot");
+            entity.Property(row => row.GlyphId).HasColumnName("glyph");
         });
 
         modelBuilder.Entity<CharacterQuestDailyEntity>(entity =>

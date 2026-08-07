@@ -161,11 +161,14 @@ builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredKeyedService<LootStore>("gameobject_loot"),
     services.GetRequiredService<DbcStores>().Locks,
     services.GetRequiredKeyedService<LootStore>("skinning_loot"),
-    services.GetRequiredKeyedService<LootStore>("pickpocket_loot")));
+    services.GetRequiredKeyedService<LootStore>("pickpocket_loot"),
+    services.GetRequiredService<DbcStores>().Talents,
+    services.GetRequiredService<GroupRegistry>()));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in
 // registration order, so this one goes first.
+builder.Services.AddSingleton<GroupRegistry>();
 builder.Services.AddSingleton<SessionRegistry>();
 builder.Services.AddSingleton<WorldLoop>();
 builder.Services.AddHostedService(services => services.GetRequiredService<WorldLoop>());

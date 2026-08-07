@@ -75,6 +75,17 @@ public sealed class WorldServerOptions
     public bool AllowTwoSideAccounts { get; set; } = true;
 
     /// <summary>
+    /// Whether players of opposing factions may group together.
+    /// </summary>
+    /// <remarks>
+    /// <c>AllowTwoSide.Interaction.Group</c>, and <b>disabled</b> upstream by default — unlike
+    /// <see cref="AllowTwoSideAccounts"/>, which is enabled. Holding the same character to both
+    /// rules gets one of them backwards: an account may hold both sides, and those characters still
+    /// cannot party.
+    /// </remarks>
+    public bool AllowTwoSideGroups { get; set; }
+
+    /// <summary>
     /// The level an existing character must have reached before a death knight may be made.
     /// </summary>
     /// <remarks>

@@ -482,6 +482,7 @@ internal static class CreatureFixture
         uint skinLootId = 0,
         uint pickpocketLootId = 0,
         uint typeFlags = 0,
+        byte level = 5,
         IReadOnlyList<Waypoint>? path = null,
         CreatureEquipment? equipment = null,
         CreatureAddon? addon = null)
@@ -518,8 +519,8 @@ internal static class CreatureFixture
             ModelId2: 0,
             ModelId3: 0,
             ModelId4: 0,
-            MinLevel: 5,
-            MaxLevel: 5,
+            MinLevel: level,
+            MaxLevel: level,
             Expansion: 0,
             Faction: 14,
             NpcFlags: 0,
@@ -557,7 +558,7 @@ internal static class CreatureFixture
         CreatureBaseStats stats = new(100, 200, 300, 50, 60, 20, 5, 1.5f, 2f, 3f);
 
         Creature? creature = Creature.Create(
-            spawn, template, models, stats, level: 5, useOppositeGenderModel: false, displayId: 4481,
+            spawn, template, models, stats, level: level, useOppositeGenderModel: false, displayId: 4481,
             path: path,
             equipment: equipment,
             addon: addon);

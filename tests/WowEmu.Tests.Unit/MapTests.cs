@@ -887,5 +887,30 @@ public sealed class MapVisibilityTests
 
         public void SendFactionStanding(uint reputationListId, int standing) =>
             Standings.Add((reputationListId, standing));
+
+        /// <summary>Recorded rather than counted: no test asserts on the pane, only that it sends.</summary>
+        public int TalentPanesSent { get; private set; }
+
+        public void SendTalentsInfo() => TalentPanesSent++;
+
+        /// <summary>Recorded so a test can assert a roll opened without decoding the packet.</summary>
+        public List<(GroupLootRoll Roll, byte VoteMask)> RollsStarted { get; } = [];
+
+        public List<(ObjectGuid Player, byte Rolled, LootVote Vote)> RollVotes { get; } = [];
+
+        public List<(ObjectGuid Winner, byte Rolled, LootVote Vote)> RollsWon { get; } = [];
+
+        public int RollsAllPassed { get; private set; }
+
+        public void SendLootStartRoll(GroupLootRoll roll, uint mapId, byte voteMask) =>
+            RollsStarted.Add((roll, voteMask));
+
+        public void SendLootRoll(GroupLootRoll roll, ObjectGuid player, byte rolled, LootVote vote) =>
+            RollVotes.Add((player, rolled, vote));
+
+        public void SendLootRollWon(GroupLootRoll roll, ObjectGuid winner, byte rolled, LootVote vote) =>
+            RollsWon.Add((winner, rolled, vote));
+
+        public void SendLootAllPassed(GroupLootRoll roll) => RollsAllPassed++;
     }
 }

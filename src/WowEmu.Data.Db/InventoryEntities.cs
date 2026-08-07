@@ -189,6 +189,47 @@ public sealed class CharacterReputationEntity
 }
 
 /// <summary>
+/// One talent a character has taken, in one spec.
+/// </summary>
+/// <remarks>
+/// <b>Keyed by talent id and rank, where upstream keys by the rank's spell id and a spec mask.</b>
+/// A deliberate departure: this is exactly what the talent pane speaks in and what the in-memory
+/// model holds, so nothing has to be derived. Upstream's shape needs a spell-to-talent reverse
+/// index built at load, and a spell id that stops mapping to a talent — a DBC change, a custom
+/// build — becomes unrecoverable, where a talent id at least still names a talent.
+/// <para>
+/// One row per spec rather than one row with a mask, for the same reason: a talent taken to
+/// different ranks in the two specs cannot be expressed as a single masked row at all.
+/// </para>
+/// </remarks>
+public sealed class CharacterTalentEntity
+{
+    public uint CharacterId { get; set; }
+
+    /// <summary>Which spec. Zero or one.</summary>
+    public byte Spec { get; set; }
+
+    /// <summary><c>Talent.dbc</c> id.</summary>
+    public uint TalentId { get; set; }
+
+    /// <summary>Zero-based, as the client speaks it.</summary>
+    public byte Rank { get; set; }
+}
+
+/// <summary>One glyph socket's contents, in one spec.</summary>
+public sealed class CharacterGlyphEntity
+{
+    public uint CharacterId { get; set; }
+
+    public byte Spec { get; set; }
+
+    public byte Slot { get; set; }
+
+    /// <summary><c>GlyphProperties.dbc</c> id. Zero for an empty socket.</summary>
+    public uint GlyphId { get; set; }
+}
+
+/// <summary>
 /// One repeating quest a character has done since its last reset.
 /// </summary>
 /// <remarks>

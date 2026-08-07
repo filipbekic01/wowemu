@@ -20,6 +20,12 @@ public readonly record struct StoredItem(
     int RandomPropertyId = 0,
     uint SuffixFactor = 0);
 
+/// <summary>One stored talent: which spec, which talent, at what rank.</summary>
+public readonly record struct StoredTalent(byte Spec, uint TalentId, byte Rank);
+
+/// <summary>One stored glyph socket.</summary>
+public readonly record struct StoredGlyph(byte Spec, byte Slot, uint GlyphId);
+
 /// <summary>One stored quest.</summary>
 public readonly record struct StoredQuest(uint QuestId, byte Status, byte Slot, ushort[] Killed);
 
@@ -89,6 +95,18 @@ public interface IInventoryRepository
     Task SaveReputationAsync(
         uint characterId,
         IReadOnlyCollection<(ushort Faction, int Standing)> reputation,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>A character's talents and glyphs, and which spec is active.</summary>
+    Task<(byte ActiveSpec, byte SpecCount, IReadOnlyList<StoredTalent> Talents,
+        IReadOnlyList<StoredGlyph> Glyphs)>
+        LoadTalentsAsync(uint characterId, CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="SaveAsync"/>
+    Task SaveTalentsAsync(
+        uint characterId,
+        IReadOnlyCollection<StoredTalent> talents,
+        IReadOnlyCollection<StoredGlyph> glyphs,
         CancellationToken cancellationToken = default);
 
     /// <summary>Which repeating quests a character has done, by period.</summary>
@@ -504,6 +522,81 @@ public sealed class InventoryRepository(IDbContextFactory<CharactersDbContext> c
                 CharacterId = characterId,
                 FactionId = faction,
                 Standing = standing,
+            });
+        }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<(byte ActiveSpec, byte SpecCount, IReadOnlyList<StoredTalent> Talents,
+        IReadOnlyList<StoredGlyph> Glyphs)>
+        LoadTalentsAsync(uint characterId, CancellationToken cancellationToken = default)
+    {
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        List<StoredTalent> talents = await context.Talents.AsNoTracking()
+            .Where(row => row.CharacterId == characterId)
+            .Select(row => new StoredTalent(row.Spec, row.TalentId, row.Rank))
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        List<StoredGlyph> glyphs = await context.Glyphs.AsNoTracking()
+            .Where(row => row.CharacterId == characterId)
+            .Select(row => new StoredGlyph(row.Spec, row.Slot, row.GlyphId))
+            .ToListAsync(cancellationToken).ConfigureAwait(false);
+
+        var specs = await context.Characters.AsNoTracking()
+            .Where(character => character.Id == characterId)
+            .Select(character => new { character.ActiveSpec, character.SpecCount })
+            .SingleOrDefaultAsync(cancellationToken).ConfigureAwait(false);
+
+        return (specs?.ActiveSpec ?? 0, specs?.SpecCount ?? 1, talents, glyphs);
+    }
+
+    public async Task SaveTalentsAsync(
+        uint characterId,
+        IReadOnlyCollection<StoredTalent> talents,
+        IReadOnlyCollection<StoredGlyph> glyphs,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(talents);
+        ArgumentNullException.ThrowIfNull(glyphs);
+
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        // Whole-set, like the skills: a talent reset leaves nothing to update.
+        await context.Talents.Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+        await context.Glyphs.Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken).ConfigureAwait(false);
+
+        foreach (StoredTalent talent in talents)
+        {
+            context.Talents.Add(new CharacterTalentEntity
+            {
+                CharacterId = characterId,
+                Spec = talent.Spec,
+                TalentId = talent.TalentId,
+                Rank = talent.Rank,
+            });
+        }
+
+        foreach (StoredGlyph glyph in glyphs)
+        {
+            // An empty socket is the absence of a row, not a row of zero — otherwise every
+            // character carries twelve rows saying nothing.
+            if (glyph.GlyphId == 0)
+            {
+                continue;
+            }
+
+            context.Glyphs.Add(new CharacterGlyphEntity
+            {
+                CharacterId = characterId,
+                Spec = glyph.Spec,
+                Slot = glyph.Slot,
+                GlyphId = glyph.GlyphId,
             });
         }
 

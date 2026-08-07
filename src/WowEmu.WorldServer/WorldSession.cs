@@ -35,6 +35,8 @@ public sealed class WorldSession(
     ItemGuidGenerator itemGuids,
     WorldContent world,
     MapManager maps,
+    GroupRegistry groups,
+    SessionRegistry sessions,
     WorldServerOptions options,
     ILogger logger) : IPlayerConnection
 {
@@ -101,6 +103,18 @@ public sealed class WorldSession(
     public Map? CurrentMap => _map;
 
     /// <summary>Whether a character is in the world and therefore worth saving.</summary>
+    /// <summary>The character being played, or null before login.</summary>
+    public Player? Player => _player;
+
+    /// <summary>
+    /// Sends a packet to this session's client.
+    /// </summary>
+    /// <remarks>
+    /// Public because a group operation touches other people's sessions — a party frame is built
+    /// per recipient, so one session ends up sending to four others.
+    /// </remarks>
+    public void Send(ServerPacket packet) => connection.Send(packet);
+
     public bool HasPlayerInWorld => _player is not null;
 
     /// <summary>
@@ -331,6 +345,74 @@ public sealed class WorldSession(
 
             case Opcode.CMSG_CAST_SPELL:
                 HandleCastSpell(payload);
+                return;
+
+            case Opcode.CMSG_LOOT_MASTER_GIVE:
+                HandleLootMasterGive(payload);
+                return;
+
+            case Opcode.CMSG_LOOT_ROLL:
+                HandleLootRoll(payload);
+                return;
+
+            case Opcode.CMSG_GROUP_INVITE:
+                HandleGroupInvite(payload);
+                return;
+
+            case Opcode.CMSG_GROUP_ACCEPT:
+                HandleGroupAccept();
+                return;
+
+            case Opcode.CMSG_GROUP_DECLINE:
+                HandleGroupDecline();
+                return;
+
+            case Opcode.CMSG_GROUP_UNINVITE:
+                HandleGroupUninviteByName(payload);
+                return;
+
+            case Opcode.CMSG_GROUP_UNINVITE_GUID:
+                HandleGroupUninviteByGuid(payload);
+                return;
+
+            case Opcode.CMSG_GROUP_DISBAND:
+                HandleGroupLeave();
+                return;
+
+            case Opcode.CMSG_GROUP_SET_LEADER:
+                HandleGroupSetLeader(payload);
+                return;
+
+            case Opcode.CMSG_LOOT_METHOD:
+                HandleGroupLootMethod(payload);
+                return;
+
+            case Opcode.CMSG_GROUP_RAID_CONVERT:
+                HandleGroupConvertToRaid();
+                return;
+
+            case Opcode.CMSG_GROUP_CHANGE_SUB_GROUP:
+                HandleGroupChangeSubGroup(payload);
+                return;
+
+            case Opcode.CMSG_GROUP_ASSISTANT_LEADER:
+                HandleGroupAssistant(payload);
+                return;
+
+            case Opcode.CMSG_LEARN_TALENT:
+                HandleLearnTalent(payload);
+                return;
+
+            case Opcode.CMSG_LEARN_PREVIEW_TALENTS:
+                HandleLearnPreviewTalents(payload);
+                return;
+
+            case Opcode.MSG_TALENT_WIPE_CONFIRM:
+                HandleTalentWipe(payload);
+                return;
+
+            case Opcode.CMSG_REMOVE_GLYPH:
+                HandleRemoveGlyph(payload);
                 return;
 
             case Opcode.CMSG_SET_TITLE:
@@ -1150,6 +1232,784 @@ public sealed class WorldSession(
         string spellName = spell.Name;
 
         Log.SpellCast(logger, _player.Name, spellName, target?.Name ?? "self", connection.RemoteAddress);
+    }
+
+    // ------------------------------------------------------------------ groups
+
+    /// <summary>Hands a master-looted item to a group member.</summary>
+    private void HandleLootMasterGive(ReadOnlyMemory<byte> payload)
+    {
+        PacketReader reader = new(payload.Span);
+
+        if (_player is null || _map is null
+            || !reader.TryReadUInt64(out ulong _)
+            || !reader.TryReadUInt8(out byte slot)
+            || !reader.TryReadUInt64(out ulong recipient))
+        {
+            return;
+        }
+
+        _map.GiveMasterLoot(_player, slot, new ObjectGuid(recipient));
+    }
+
+    /// <summary>
+    /// Answers an open loot roll.
+    /// </summary>
+    /// <remarks>
+    /// The holder guid and slot come from the client and identify which roll — a player with three
+    /// windows open answers them independently, so the vote cannot be keyed on the player alone.
+    /// </remarks>
+    private void HandleLootRoll(ReadOnlyMemory<byte> payload)
+    {
+        PacketReader reader = new(payload.Span);
+
+        if (_player is null || _map is null
+            || !reader.TryReadUInt64(out ulong holder)
+            || !reader.TryReadUInt32(out uint slot)
+            || !reader.TryReadUInt8(out byte vote))
+        {
+            return;
+        }
+
+        // Anything the enum does not name is a pass. A modified client sending 200 should not be
+        // able to invent a vote that beats Need.
+        LootVote choice = vote switch
+        {
+            (byte)LootVote.Need => LootVote.Need,
+            (byte)LootVote.Greed => LootVote.Greed,
+            (byte)LootVote.Disenchant => LootVote.Disenchant,
+            _ => LootVote.Pass,
+        };
+
+        _map.VoteOnLoot(_player, new ObjectGuid(holder), (byte)slot, choice);
+    }
+
+    /// <summary>
+    /// Invites a named character to the party.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>WorldSession::HandleGroupInviteOpcode</c>. <b>Every refusal is answered on
+    /// <c>SMSG_PARTY_COMMAND_RESULT</c></b> — the client leaves its invite UI mid-operation until
+    /// something comes back.
+    /// <para>
+    /// The group is created at the moment of the invite rather than on accept, matching upstream:
+    /// without it, two simultaneous invites from the same player each start their own group and one
+    /// of them is silently lost.
+    /// </para>
+    /// </remarks>
+    private void HandleGroupInvite(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadCString(out string rawName))
+        {
+            return;
+        }
+
+        if (!CharacterName.TryNormalize(rawName, out string name))
+        {
+            SendPartyResult(PartyOperation.Invite, rawName, PartyResult.BadPlayerName);
+            return;
+        }
+
+        WorldSession? target = sessions.FindByCharacterName(name);
+
+        // Self-invite is a cheat, not a mistake — the client never offers it.
+        if (target?.Player is not { } invitee || ReferenceEquals(invitee, _player))
+        {
+            SendPartyResult(PartyOperation.Invite, name, PartyResult.BadPlayerName);
+            return;
+        }
+
+        if (!options.AllowTwoSideGroups
+            && CharacterCreationRules.TeamOf(_player.Race, world.Stores.Races)
+                != CharacterCreationRules.TeamOf(invitee.Race, world.Stores.Races))
+        {
+            SendPartyResult(PartyOperation.Invite, name, PartyResult.WrongFaction);
+            return;
+        }
+
+        // Already spoken for. The invitee is told too, on the same opcode as a real invite but with
+        // the flag cleared — that is what draws "already in a group" rather than a prompt.
+        if (groups.GroupOf(invitee.Guid) is not null || groups.InviteFor(invitee.Guid) is not null)
+        {
+            SendPartyResult(PartyOperation.Invite, name, PartyResult.AlreadyInGroup);
+
+            ServerPacket busy = new(Opcode.SMSG_GROUP_INVITE, 32);
+            GroupPackets.WriteInvite(busy.Body, _player.Name, accepted: false);
+
+            target.Send(busy);
+            return;
+        }
+
+        Group? group = groups.GroupOf(_player.Guid);
+
+        if (group is not null)
+        {
+            if (!group.CanCommand(_player.Guid))
+            {
+                SendPartyResult(PartyOperation.Invite, string.Empty, PartyResult.NotLeader);
+                return;
+            }
+
+            // Counted against the outstanding invites too: five accepts racing into four seats
+            // would otherwise overfill the group.
+            if (group.Members.Count + group.Invited.Count >= group.Capacity)
+            {
+                SendPartyResult(PartyOperation.Invite, string.Empty, PartyResult.GroupFull);
+                return;
+            }
+        }
+        else
+        {
+            group = groups.Create(_player.Guid, _player.Name);
+        }
+
+        groups.Invite(group, invitee.Guid);
+
+        ServerPacket packet = new(Opcode.SMSG_GROUP_INVITE, 32);
+        GroupPackets.WriteInvite(packet.Body, _player.Name);
+
+        target.Send(packet);
+
+        SendPartyResult(PartyOperation.Invite, name, PartyResult.Ok);
+    }
+
+    /// <summary>Accepts an outstanding invitation.</summary>
+    /// <remarks>
+    /// The group already exists — it was made when the invite was sent — so this only joins it.
+    /// Everyone's frame is rebuilt afterwards, including the new member's, because a party list is
+    /// built per recipient and no two of them are the same packet.
+    /// </remarks>
+    private void HandleGroupAccept()
+    {
+        if (_player is null || groups.InviteFor(_player.Guid) is not { } group)
+        {
+            return;
+        }
+
+        if (!groups.Add(group, _player.Guid, _player.Name))
+        {
+            groups.Uninvite(group, _player.Guid);
+
+            SendPartyResult(PartyOperation.Invite, string.Empty, PartyResult.GroupFull);
+            return;
+        }
+
+        BroadcastGroupList(group);
+    }
+
+    /// <summary>
+    /// Declines an invitation.
+    /// </summary>
+    /// <remarks>
+    /// The inviter is told with <c>SMSG_GROUP_DECLINE</c>, and a group left with one member is
+    /// disbanded — a party of one is not a party, and the client draws a frame for it regardless.
+    /// </remarks>
+    private void HandleGroupDecline()
+    {
+        if (_player is null || groups.InviteFor(_player.Guid) is not { } group)
+        {
+            return;
+        }
+
+        groups.Uninvite(group, _player.Guid);
+
+        if (sessions.FindByCharacter(group.Leader) is { } leader)
+        {
+            ServerPacket packet = new(Opcode.SMSG_GROUP_DECLINE, 32);
+            packet.Body.WriteCString(_player.Name);
+
+            leader.Send(packet);
+        }
+
+        // Nobody accepted, so the group the invite created has only its founder in it.
+        if (group.Members.Count < 2 && group.Invited.Count == 0)
+        {
+            DisbandGroup(group);
+        }
+    }
+
+    /// <summary>Kicks a member by name.</summary>
+    private void HandleGroupUninviteByName(ReadOnlyMemory<byte> payload)
+    {
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadCString(out string rawName)
+            || !CharacterName.TryNormalize(rawName, out string name))
+        {
+            return;
+        }
+
+        if (_player is null || groups.GroupOf(_player.Guid) is not { } group)
+        {
+            SendPartyResult(PartyOperation.Uninvite, rawName, PartyResult.NotInGroup);
+            return;
+        }
+
+        foreach (GroupMember member in group.Members)
+        {
+            if (string.Equals(member.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                Kick(group, member.Guid, name);
+                return;
+            }
+        }
+
+        SendPartyResult(PartyOperation.Uninvite, name, PartyResult.TargetNotInGroup);
+    }
+
+    /// <summary>Kicks a member by guid.</summary>
+    private void HandleGroupUninviteByGuid(ReadOnlyMemory<byte> payload)
+    {
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong raw))
+        {
+            return;
+        }
+
+        ObjectGuid target = new(raw);
+
+        if (_player is null || groups.GroupOf(_player.Guid) is not { } group)
+        {
+            SendPartyResult(PartyOperation.Uninvite, string.Empty, PartyResult.NotInGroup);
+            return;
+        }
+
+        Kick(group, target, group.Find(target)?.Name ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Takes a member out of a group, whoever asked.
+    /// </summary>
+    /// <remarks>
+    /// <b>Kicking yourself is leaving</b>, and is allowed without command rights — otherwise an
+    /// ordinary member could never get out of a party.
+    /// </remarks>
+    private void Kick(Group group, ObjectGuid target, string name)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        if (target != _player.Guid && !group.CanCommand(_player.Guid))
+        {
+            SendPartyResult(PartyOperation.Uninvite, name, PartyResult.NotLeader);
+            return;
+        }
+
+        if (!group.Contains(target))
+        {
+            SendPartyResult(PartyOperation.Uninvite, name, PartyResult.TargetNotInGroup);
+            return;
+        }
+
+        // Told before they are removed: after the removal there is no group to look up, and the
+        // packet that closes their party frame would never be sent.
+        if (sessions.FindByCharacter(target) is { } kicked)
+        {
+            ServerPacket destroyed = new(Opcode.SMSG_GROUP_DESTROYED, 0);
+
+            kicked.Send(destroyed);
+        }
+
+        if (groups.Remove(group, target))
+        {
+            DisbandGroup(group);
+            return;
+        }
+
+        BroadcastGroupList(group);
+    }
+
+    /// <summary>Leaves the group. The client sends this for both "leave" and "disband".</summary>
+    private void HandleGroupLeave()
+    {
+        if (_player is null || groups.GroupOf(_player.Guid) is not { } group)
+        {
+            return;
+        }
+
+        Kick(group, _player.Guid, _player.Name);
+    }
+
+    /// <summary>Hands leadership to another member.</summary>
+    private void HandleGroupSetLeader(ReadOnlyMemory<byte> payload)
+    {
+        PacketReader reader = new(payload.Span);
+
+        if (_player is null || !reader.TryReadUInt64(out ulong raw))
+        {
+            return;
+        }
+
+        ObjectGuid target = new(raw);
+
+        if (groups.GroupOf(_player.Guid) is not { } group)
+        {
+            return;
+        }
+
+        // Only the leader, not assistants. Handing the crown away is the one thing an assistant
+        // cannot do — otherwise any assistant could take the group.
+        if (!group.IsLeader(_player.Guid) || !group.SetLeader(target))
+        {
+            SendPartyResult(PartyOperation.Invite, string.Empty, PartyResult.NotLeader);
+            return;
+        }
+
+        BroadcastGroupList(group);
+    }
+
+    /// <summary>Sets how the group divides its loot.</summary>
+    private void HandleGroupLootMethod(ReadOnlyMemory<byte> payload)
+    {
+        PacketReader reader = new(payload.Span);
+
+        if (_player is null
+            || !reader.TryReadUInt32(out uint method)
+            || !reader.TryReadUInt64(out ulong master)
+            || !reader.TryReadUInt32(out uint threshold))
+        {
+            return;
+        }
+
+        if (groups.GroupOf(_player.Guid) is not { } group || !group.CanCommand(_player.Guid))
+        {
+            SendPartyResult(PartyOperation.Invite, string.Empty, PartyResult.NotLeader);
+            return;
+        }
+
+        if (method > LootMethod.NeedBeforeGreed)
+        {
+            return;
+        }
+
+        group.LootMethod = (byte)method;
+        group.MasterLooter = new ObjectGuid(master);
+        group.LootThreshold = (byte)threshold;
+
+        BroadcastGroupList(group);
+    }
+
+    /// <summary>
+    /// Turns the party into a raid.
+    /// </summary>
+    /// <remarks>
+    /// One-way. There is no convert-back in 3.3.5, and offering one would leave a raid of twenty
+    /// trying to become a party of five.
+    /// </remarks>
+    private void HandleGroupConvertToRaid()
+    {
+        if (_player is null || groups.GroupOf(_player.Guid) is not { } group)
+        {
+            return;
+        }
+
+        if (!group.IsLeader(_player.Guid))
+        {
+            SendPartyResult(PartyOperation.Invite, string.Empty, PartyResult.NotLeader);
+            return;
+        }
+
+        group.ConvertToRaid();
+
+        BroadcastGroupList(group);
+    }
+
+    /// <summary>Moves a member to another raid sub-group.</summary>
+    private void HandleGroupChangeSubGroup(ReadOnlyMemory<byte> payload)
+    {
+        PacketReader reader = new(payload.Span);
+
+        if (_player is null
+            || !reader.TryReadCString(out string rawName)
+            || !reader.TryReadUInt8(out byte subGroup)
+            || !CharacterName.TryNormalize(rawName, out string name))
+        {
+            return;
+        }
+
+        if (groups.GroupOf(_player.Guid) is not { } group || !group.CanCommand(_player.Guid))
+        {
+            SendPartyResult(PartyOperation.Swap, name, PartyResult.NotLeader);
+            return;
+        }
+
+        foreach (GroupMember member in group.Members)
+        {
+            if (!string.Equals(member.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (group.SetSubGroup(member.Guid, subGroup))
+            {
+                BroadcastGroupList(group);
+            }
+
+            return;
+        }
+
+        SendPartyResult(PartyOperation.Swap, name, PartyResult.TargetNotInGroup);
+    }
+
+    /// <summary>Promotes or demotes an assistant, main tank or main assist.</summary>
+    private void HandleGroupAssistant(ReadOnlyMemory<byte> payload)
+    {
+        PacketReader reader = new(payload.Span);
+
+        if (_player is null
+            || !reader.TryReadUInt64(out ulong raw)
+            || !reader.TryReadUInt8(out byte on))
+        {
+            return;
+        }
+
+        if (groups.GroupOf(_player.Guid) is not { } group || !group.IsLeader(_player.Guid))
+        {
+            SendPartyResult(PartyOperation.Invite, string.Empty, PartyResult.NotLeader);
+            return;
+        }
+
+        if (group.SetFlag(new ObjectGuid(raw), GroupMemberFlags.Assistant, on != 0))
+        {
+            BroadcastGroupList(group);
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds every member's party frame.
+    /// </summary>
+    /// <remarks>
+    /// <b>One packet per member, not one broadcast.</b> The list carries the recipient's own
+    /// sub-group and flags in its header and omits them from its body — a shared packet puts one
+    /// member's flags on everybody and shows each player a duplicate of themselves.
+    /// </remarks>
+    private void BroadcastGroupList(Group group)
+    {
+        foreach (GroupMember member in group.Members)
+        {
+            if (sessions.FindByCharacter(member.Guid) is not { } session)
+            {
+                continue;
+            }
+
+            ServerPacket packet = new(Opcode.SMSG_GROUP_LIST, 96);
+            GroupPackets.WriteGroupList(packet.Body, group, member.Guid);
+
+            session.Send(packet);
+        }
+    }
+
+    /// <summary>Dissolves a group and closes everyone's party frame.</summary>
+    private void DisbandGroup(Group group)
+    {
+        foreach (GroupMember member in group.Members)
+        {
+            if (sessions.FindByCharacter(member.Guid) is { } session)
+            {
+                ServerPacket destroyed = new(Opcode.SMSG_GROUP_DESTROYED, 0);
+
+                session.Send(destroyed);
+            }
+        }
+
+        groups.Disband(group);
+    }
+
+    public void SendLootStartRoll(GroupLootRoll roll, uint mapId, byte voteMask)
+    {
+        ServerPacket packet = new(Opcode.SMSG_LOOT_START_ROLL, 33);
+        GroupPackets.WriteStartRoll(packet.Body, roll, mapId, voteMask);
+
+        connection.Send(packet);
+    }
+
+    public void SendLootRoll(GroupLootRoll roll, ObjectGuid player, byte rolled, LootVote vote)
+    {
+        ServerPacket packet = new(Opcode.SMSG_LOOT_ROLL, 34);
+        GroupPackets.WriteRoll(packet.Body, roll, player, rolled, vote);
+
+        connection.Send(packet);
+    }
+
+    public void SendLootRollWon(GroupLootRoll roll, ObjectGuid winner, byte rolled, LootVote vote)
+    {
+        ServerPacket packet = new(Opcode.SMSG_LOOT_ROLL_WON, 34);
+        GroupPackets.WriteRollWon(packet.Body, roll, winner, rolled, vote);
+
+        connection.Send(packet);
+    }
+
+    public void SendLootAllPassed(GroupLootRoll roll)
+    {
+        ServerPacket packet = new(Opcode.SMSG_LOOT_ALL_PASSED, 24);
+        GroupPackets.WriteAllPassed(packet.Body, roll);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>Answers a party operation, refusal or not.</summary>
+    private void SendPartyResult(uint operation, string member, PartyResult result)
+    {
+        ServerPacket packet = new(Opcode.SMSG_PARTY_COMMAND_RESULT, 32);
+        GroupPackets.WritePartyResult(packet.Body, operation, member, result);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>
+    /// Learns one rank of one talent.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>WorldSession::HandleLearnTalentOpcode</c>. The whole pane is resent afterwards
+    /// whether or not anything was learned — a refusal the client is not told about leaves the
+    /// point drawn as spent, and the player believing they have a talent they do not.
+    /// </remarks>
+    private void HandleLearnTalent(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt32(out uint talentId) || !reader.TryReadUInt32(out uint rank))
+        {
+            return;
+        }
+
+        LearnOneTalent(talentId, rank);
+        SendTalentsInfo();
+    }
+
+    /// <summary>
+    /// Learns a whole previewed build in one message.
+    /// </summary>
+    /// <remarks>
+    /// What the client sends when a player plans a build and presses Learn. <b>Order matters</b>:
+    /// the talents arrive in the order the client planned them, and a deep talent whose row is not
+    /// yet unlocked is simply refused rather than reordered — which is what upstream does too.
+    /// </remarks>
+    private void HandleLearnPreviewTalents(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt32(out uint count))
+        {
+            return;
+        }
+
+        // The client can hold 44 talents per tree across three trees; upstream rounds that to 150
+        // and stops there rather than trusting the count it was sent.
+        const uint MaxPreviewed = 150;
+
+        for (uint i = 0; i < count && i < MaxPreviewed; i++)
+        {
+            if (!reader.TryReadUInt32(out uint talentId) || !reader.TryReadUInt32(out uint rank))
+            {
+                break;
+            }
+
+            LearnOneTalent(talentId, rank);
+        }
+
+        SendTalentsInfo();
+    }
+
+    /// <summary>Learns one talent and puts its spell in the spellbook.</summary>
+    private void LearnOneTalent(uint talentId, uint rank)
+    {
+        if (_player is null || rank > byte.MaxValue)
+        {
+            return;
+        }
+
+        TalentResult result = _player.Talents.Learn(
+            talentId, (byte)rank, world.Stores.Talents, world.Stores.TalentTabs, out uint spellId);
+
+        if (result != TalentResult.Ok || spellId == 0)
+        {
+            return;
+        }
+
+        bool addToBook = world.Stores.Talents.TryGet(talentId, out TalentEntry? talent)
+            && talent is not null
+            && talent.AddToSpellBook != 0;
+
+        LearnTalentSpell(spellId, addToBook);
+    }
+
+    /// <summary>
+    /// Puts a talent's spell on the character.
+    /// </summary>
+    /// <remarks>
+    /// <b>A passive talent is learned but never shown.</b> Upstream only adds a talent to the
+    /// spellbook when the DBC's <c>addToSpellBook</c> says so and the spell is not passive — the
+    /// rest are known and silently active. Adding them all fills the spellbook with entries no
+    /// player can cast.
+    /// </remarks>
+    private void LearnTalentSpell(uint spellId, bool addToSpellBook)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        // Three conditions, all of them upstream's. A talent only reaches the spellbook when the
+        // DBC asks for it AND the spell is castable — a passive or a learn-spell wrapper is known
+        // and silently active, and adding it fills the book with entries nobody can cast.
+        bool castable = addToSpellBook
+            && world.Spells.Spells.TryGet(spellId, out SpellEntry spell)
+            && !spell.IsPassive
+            && !HasLearnEffect(spell);
+
+        if (castable)
+        {
+            _player.Spells.Learn(spellId);
+        }
+
+        // Sent either way. The client draws the talent as taken from this packet, so a talent that
+        // is known but not in the book still has to be announced or the pane stays blank.
+        ServerPacket learned = new(Opcode.SMSG_LEARNED_SPELL, 6);
+        InitialSpells.WriteLearned(learned.Body, spellId);
+
+        connection.Send(learned);
+    }
+
+    /// <summary>Whether a spell's only job is to teach another one.</summary>
+    private static bool HasLearnEffect(SpellEntry spell)
+    {
+        foreach (SpellEffectEntry effect in spell.Effects)
+        {
+            if (effect.Effect == SpellEffectId.LearnSpell)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Wipes the active spec's talents, for a fee.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>WorldSession::HandleTalentWipeConfirmOpcode</c>. The cost escalates and then
+    /// decays — see <see cref="TalentResetCost"/> — and it is charged before anything is forgotten,
+    /// so a character who cannot afford it keeps their build.
+    /// </remarks>
+    private void HandleTalentWipe(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid))
+        {
+            return;
+        }
+
+        ObjectGuid trainerGuid = new(rawGuid);
+
+        // The trainer has to be a real, reachable trainer. Without the check any client could
+        // respec anywhere for the price, which is most of what a trainer is for.
+        if (_map?.Find(trainerGuid) is not Creature trainer
+            || !trainer.IsAlive
+            || _player.Position.GetExactDist2dSq(trainer.Position)
+                > Map.InteractionDistance * Map.InteractionDistance)
+        {
+            return;
+        }
+
+        if (_player.Talents.TotalSpent() == 0)
+        {
+            // Nothing to wipe. Answered rather than ignored: the client leaves its confirmation
+            // box up until something comes back.
+            ServerPacket empty = new(Opcode.MSG_TALENT_WIPE_CONFIRM, 12);
+            TalentPackets.WriteNothingToWipe(empty.Body);
+
+            connection.Send(empty);
+            return;
+        }
+
+        uint cost = TalentResetCost.Next(
+            _player.TalentResetCost,
+            _player.TalentResetTime,
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+        if (_player.Money < cost)
+        {
+            SendBuyFailed(ObjectGuid.Empty, 0, BuyResult.NotEnoughMoney);
+            return;
+        }
+
+        _player.Money -= cost;
+        _player.TalentResetCost = cost;
+        _player.TalentResetTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+        foreach (uint spellId in _player.Talents.Reset(world.Stores.Talents))
+        {
+            _player.Spells.Forget(spellId);
+
+            ServerPacket removed = new(Opcode.SMSG_REMOVED_SPELL, 4);
+            removed.Body.WriteUInt32(spellId);
+
+            connection.Send(removed);
+        }
+
+        SendTalentsInfo();
+    }
+
+    /// <summary>Takes a glyph out of a socket.</summary>
+    private void HandleRemoveGlyph(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt32(out uint slot) || slot >= PlayerGlyphs.SlotCount)
+        {
+            return;
+        }
+
+        _player.Glyphs.Set((int)slot, 0, world.Stores.GlyphProperties, world.Stores.GlyphSlots);
+
+        SendTalentsInfo();
+    }
+
+    /// <summary>Sends the whole talent pane.</summary>
+    public void SendTalentsInfo()
+    {
+        if (_player is null)
+        {
+            return;
+        }
+
+        ServerPacket packet = new(Opcode.SMSG_TALENTS_INFO, 64);
+        TalentPackets.WritePlayerTalents(packet.Body, _player);
+
+        connection.Send(packet);
     }
 
     /// <summary>
@@ -4786,6 +5646,17 @@ public sealed class WorldSession(
 
             connection.Send(banner);
         }
+
+        if (levels.Count > 0 && _player is not null)
+        {
+            // Derived from the new level rather than incremented per level gained: a counter bumped
+            // in a loop drifts the moment anything else touches the totals, and the drift is
+            // invisible until a player finds themselves a point short.
+            _player.Talents.Recalculate();
+            _player.Glyphs.InitialiseForLevel(world.Stores.GlyphSlots);
+
+            SendTalentsInfo();
+        }
     }
 
     /// <summary>Tells this client about one spell's damage.</summary>
@@ -5192,6 +6063,8 @@ public sealed class WorldSession(
 
         if (_player is not null)
         {
+            LeaveGroupOnLogout(_player);
+
             if (_map is not null)
             {
                 _map.Remove(_player);
@@ -5229,6 +6102,32 @@ public sealed class WorldSession(
     /// is posted to the loop rather than run where it was noticed. Awaiting the posted task is what
     /// keeps the host from disposing the connection out from under it.
     /// </remarks>
+    /// <summary>
+    /// Takes a logging-out character out of their group.
+    /// </summary>
+    /// <remarks>
+    /// <b>Offline members are not modelled.</b> Upstream keeps them in the group and draws them
+    /// greyed out; here a character that logs out leaves, because a member the registry cannot find
+    /// is one every broadcast has to skip and every loot rule has to special-case. Recorded as a
+    /// divergence rather than half-built — a party frame with a member nobody can reach is worse
+    /// than one that shrinks.
+    /// </remarks>
+    private void LeaveGroupOnLogout(Player player)
+    {
+        if (groups.GroupOf(player.Guid) is not { } group)
+        {
+            return;
+        }
+
+        if (groups.Remove(group, player.Guid))
+        {
+            DisbandGroup(group);
+            return;
+        }
+
+        BroadcastGroupList(group);
+    }
+
     public Task DisconnectAsync()
     {
         if (_scheduler is null)
@@ -5278,7 +6177,11 @@ public sealed class WorldSession(
                 PlayerFlags: player.PlayerFlags,
                 DeathExpireTime: player.DeathExpireTime,
                 ChosenTitle: player.Titles.Chosen,
-                KnownTitles: string.Join(' ', player.Titles.Known)),
+                KnownTitles: string.Join(' ', player.Titles.Known),
+                ActiveSpec: player.Talents.ActiveSpec,
+                SpecCount: player.Talents.SpecCount,
+                ResetTalentsCost: player.TalentResetCost,
+                ResetTalentsTime: player.TalentResetTime),
             cancellationToken).ConfigureAwait(true);
 
         await inventory
@@ -5299,6 +6202,11 @@ public sealed class WorldSession(
 
         await inventory
             .SaveReputationAsync(player.Guid.Counter, ReputationSnapshot(player), cancellationToken)
+            .ConfigureAwait(true);
+
+        await inventory
+            .SaveTalentsAsync(
+                player.Guid.Counter, TalentSnapshot(player), GlyphSnapshot(player), cancellationToken)
             .ConfigureAwait(true);
 
         await inventory
@@ -5396,6 +6304,7 @@ public sealed class WorldSession(
         await LoadSkillsAsync(player, cancellationToken).ConfigureAwait(true);
         await LoadReputationAsync(player, cancellationToken).ConfigureAwait(true);
         await LoadQuestResetsAsync(player, cancellationToken).ConfigureAwait(true);
+        await LoadTalentsAsync(player, cancellationToken).ConfigureAwait(true);
         await LoadHomebindAsync(player, cancellationToken).ConfigureAwait(true);
         await LoadActionsAsync(player, cancellationToken).ConfigureAwait(true);
 
@@ -5403,6 +6312,11 @@ public sealed class WorldSession(
         Status = SessionStatus.LoggedIn;
 
         PlayerLogin.SendLoginSequence(connection, player, options.Motd, SendAccountDataTimes);
+
+        // After the login sequence: the client has no talent pane to fill before it, and a pane
+        // sent early is simply dropped — leaving a character logged in with no talents drawn.
+        SendTalentsInfo();
+
         _knownItems.Clear();
 
         foreach (ObjectGuid itemGuid in PlayerLogin.SendSelfCreate(connection, player))
@@ -5786,6 +6700,41 @@ public sealed class WorldSession(
     }
 
     /// <summary>
+    /// Puts back a character's talents and glyphs.
+    /// </summary>
+    /// <remarks>
+    /// The point count is recomputed at the end rather than saved. It is <i>derived</i> from level
+    /// and what is spent, and a saved counter that disagreed with the talents would be believed —
+    /// leaving a character short of points, or with points they never earned.
+    /// </remarks>
+    private async Task LoadTalentsAsync(Player player, CancellationToken cancellationToken)
+    {
+        (byte activeSpec, byte specCount, IReadOnlyList<StoredTalent> talents,
+            IReadOnlyList<StoredGlyph> glyphs) = await inventory
+                .LoadTalentsAsync(player.Guid.Counter, cancellationToken)
+                .ConfigureAwait(true);
+
+        player.Talents.SpecCount = specCount == 0 ? (byte)1 : specCount;
+        player.Talents.RestoreActiveSpec(activeSpec);
+
+        foreach (StoredTalent talent in talents)
+        {
+            player.Talents.Restore(talent.Spec, talent.TalentId, talent.Rank);
+        }
+
+        // The sockets and the unlock mask before the glyphs go in: a glyph restored into a socket
+        // the fields do not yet describe is written and then overwritten by the initialise.
+        player.Glyphs.InitialiseForLevel(world.Stores.GlyphSlots);
+
+        foreach (StoredGlyph glyph in glyphs)
+        {
+            player.Glyphs.Restore(glyph.Spec, glyph.Slot, glyph.GlyphId);
+        }
+
+        player.Talents.Recalculate();
+    }
+
+    /// <summary>
     /// Puts back which repeating quests a character has already done.
     /// </summary>
     /// <remarks>
@@ -5799,6 +6748,44 @@ public sealed class WorldSession(
                 .ConfigureAwait(true);
 
         player.QuestResets.Restore(daily, weekly, monthly);
+    }
+
+    /// <summary>Every talent in both specs, for saving.</summary>
+    /// <remarks>
+    /// <b>Both specs, not just the active one.</b> Saving only what is being played wipes the
+    /// other spec on every logout, which a player only discovers by switching to it.
+    /// </remarks>
+    private static List<StoredTalent> TalentSnapshot(Player player)
+    {
+        List<StoredTalent> rows = [];
+
+        for (byte spec = 0; spec < PlayerTalents.MaxSpecs; spec++)
+        {
+            foreach ((uint talentId, byte rank) in player.Talents.InSpec(spec))
+            {
+                rows.Add(new StoredTalent(spec, talentId, rank));
+            }
+        }
+
+        return rows;
+    }
+
+    /// <summary>Every glyph in both specs, for saving.</summary>
+    private static List<StoredGlyph> GlyphSnapshot(Player player)
+    {
+        List<StoredGlyph> rows = [];
+
+        for (byte spec = 0; spec < PlayerTalents.MaxSpecs; spec++)
+        {
+            IReadOnlyList<uint> glyphs = player.Glyphs.InSpec(spec);
+
+            for (byte slot = 0; slot < PlayerGlyphs.SlotCount; slot++)
+            {
+                rows.Add(new StoredGlyph(spec, slot, glyphs[slot]));
+            }
+        }
+
+        return rows;
     }
 
     /// <summary>Every faction this character has a standing with, for saving.</summary>

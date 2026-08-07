@@ -50,7 +50,9 @@ public sealed class MapManager(
     LootStore? gameObjectLoot = null,
     DbcStore<LockEntry>? locks = null,
     LootStore? skinningLoot = null,
-    LootStore? pickpocketLoot = null) : IDisposable
+    LootStore? pickpocketLoot = null,
+    DbcStore<TalentEntry>? talents = null,
+    GroupRegistry? groups = null) : IDisposable
 {
     /// <summary>
     /// The four phases. Three update a category of map; the fourth is a pause.
@@ -100,6 +102,8 @@ public sealed class MapManager(
                 LockTable = locks,
                 SkinningLoot = skinningLoot,
                 PickpocketLoot = pickpocketLoot,
+                TalentTable = talents,
+                Groups = groups,
             };
             _maps[mapId] = map;
         }

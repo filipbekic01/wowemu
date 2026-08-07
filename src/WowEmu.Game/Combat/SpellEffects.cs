@@ -30,6 +30,15 @@ public static class SpellEffectId
     /// <summary>Weapon damage plus a flat bonus, dealt in no particular school.</summary>
     public const uint WeaponDamageNoSchool = 17;
 
+    /// <summary>Buys or refunds the second talent spec. <c>SPELL_EFFECT_TALENT_SPEC_COUNT</c>.</summary>
+    public const uint TalentSpecCount = 161;
+
+    /// <summary>Switches to a spec. <c>SPELL_EFFECT_TALENT_SPEC_SELECT</c>.</summary>
+    public const uint TalentSpecSelect = 162;
+
+    /// <summary>Teaches another spell. <c>SPELL_EFFECT_LEARN_SPELL</c>.</summary>
+    public const uint LearnSpell = 36;
+
     /// <summary>Picks a living creature's pocket. <c>SPELL_EFFECT_PICKPOCKET</c>.</summary>
     public const uint Pickpocket = 71;
 
