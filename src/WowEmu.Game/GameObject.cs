@@ -36,6 +36,15 @@ public sealed class GameObject : WorldObject
     /// <summary>The <c>gameobject_template</c> entry.</summary>
     public uint Entry { get; private init; }
 
+    /// <summary>
+    /// The row it was built from, kept so its type and data columns stay reachable.
+    /// </summary>
+    /// <remarks>
+    /// Held rather than looked up again: the <c>data</c> columns are a union read differently per
+    /// type, and every caller that wants one wants the type in the same breath.
+    /// </remarks>
+    public GameObjectTemplate Template { get; private init; } = null!;
+
     /// <summary>Which phases can see it. Everything is phase 1 until phasing exists.</summary>
     public uint PhaseMask { get; private init; }
 
@@ -48,6 +57,19 @@ public sealed class GameObject : WorldObject
     /// values update cannot carry it.
     /// </remarks>
     public ulong PackedRotation { get; private init; }
+
+    /// <summary>
+    /// What is inside, once somebody has opened it.
+    /// </summary>
+    /// <remarks>
+    /// Filled the first time a chest is opened rather than at spawn: rolling a loot table for every
+    /// chest on the continent up front is 38,594 rolls nobody has looked at.
+    /// <para>
+    /// An emptied chest keeps its (empty) loot rather than clearing it, so a second player is told
+    /// it is empty rather than handed a fresh roll.
+    /// </para>
+    /// </remarks>
+    public Loot? Loot { get; set; }
 
     /// <summary>What kind of object it is: door, chest, trap, and so on.</summary>
     public byte GoType => Fields.GetByte(UpdateFields.GAMEOBJECT_BYTES_1, 1);
@@ -73,6 +95,7 @@ public sealed class GameObject : WorldObject
         {
             SpawnId = spawn.SpawnId,
             Entry = spawn.Entry,
+            Template = template,
             PhaseMask = spawn.PhaseMask,
             MapId = spawn.MapId,
             Position = spawn.Position,

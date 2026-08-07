@@ -287,12 +287,14 @@
               "text": "Faction rules (no mixed-faction accounts on PvP realms)"
             },
             {
-              "done": false,
-              "text": "playercreateinfo_item — start the character with gear rather than naked"
+              "done": true,
+              "text": "playercreateinfo_item — start the character with gear rather than naked",
+              "note": "Already done — WorldContent.ApplyStartingGear reads playercreateinfo_item alongside CharStartOutfit, and a new character is dressed at creation."
             },
             {
-              "done": false,
-              "text": "playercreateinfo_spell / _action — starting abilities and action bar"
+              "done": true,
+              "text": "playercreateinfo_spell / _action — starting abilities and action bar",
+              "note": "Already done — starting spells and action bars are both applied at creation and re-applied on login, and the spells are what grant a character its skills."
             }
           ]
         }
@@ -561,12 +563,14 @@
               "text": "GameObject — a WorldObject but not a Unit; 18 field slots against a unit's 148"
             },
             {
-              "done": false,
-              "text": "Item / Bag — an Object but not a WorldObject"
+              "done": true,
+              "text": "Item / Bag — an Object but not a WorldObject",
+              "note": "Already done — Item and Bag derive from GameObjectBase, not WorldObject, and the base class's own doc explains the split. The board entry was stale."
             },
             {
-              "done": false,
-              "text": "Creature equipment, addon auras, and the creature_template_model split"
+              "done": true,
+              "text": "Creature equipment, addon auras, and the creature_template_model split",
+              "note": "Already done — creature equipment, addon application and spawn auras all landed with the creature work (ApplyAddon / ApplySpawnAuras / CreatureEquipment). The creature_template_model split is a data divergence recorded against the stores that hit it, not outstanding work. The board entry was stale."
             }
           ]
         },
@@ -1244,13 +1248,19 @@
               "text": "Death clears every aura and tells the client about each one"
             },
             {
-              "done": false,
-              "text": "Stacking, charges, dispel and proc triggers"
+              "done": true,
+              "text": "Aura stacking and charges",
+              "note": "Stacking and charges are in. Dispel and proc triggers are NOT — they need a proc system that does not exist, and are recorded below rather than pretended. BOTH COLUMNS ARE ZERO ON MOST SPELLS, and zero means 'no limit' in both: StackAmount 0 means the aura REFRESHES rather than stacks, and ProcCharges 0 means it is not charge-limited at all. Reading either as a limit makes every aura in the game either refuse to apply or fall off the first time anything happened. A STACK IS WORTH ITS COUNT. The count lives on the AURA, so the aggregation had to walk auras rather than the flattened effect list — summing effects alone gives a five-stack debuff the strength of a single application, which is the kind of wrong that looks like a tuning problem. The caster stays part of the key: two warlocks each get their own Corruption and neither stacks into the other's. At the stack cap only the duration moves, which is what makes a maintained debuff feel maintained rather than resetting to one stack. Spell.dbc now parses StackAmount (col 49) and ProcCharges (col 36). They were appended LAST in the SpellEntry record with defaults, because several test fixtures build a spell positionally and a parameter in the middle would have renamed everything after it."
             },
             {
               "done": true,
               "text": "MOD_STAT, MOD_INCREASE_SPEED and MOD_DECREASE_SPEED do something",
               "note": "Slows and speed buffs recompute the unit's speeds and go out on the wire — the controller gets SMSG_FORCE_*_SPEED_CHANGE with a counter it acknowledges, observers get SMSG_SPLINE_SET_* so their copy interpolates at the right rate. Only RUN carries an extra byte in the forced form, and leaving it out shifts the float. The rule that matters: speed modifiers take the STRONGEST (MaxPositive/MaxNegative) while stat modifiers SUM (Total) — that is per aura type upstream, not a convention, and picking one rule for both is wrong in one direction or the other. A buff and a slow compound (1.5 x 0.5 = 0.75) rather than cancelling. Recomputed from the unit's OWN base speeds, kept alongside the live ones, because a creature's template scales its walk and run at spawn. ModDamageDone is still unhandled."
+            },
+            {
+              "done": false,
+              "text": "Aura dispel and proc triggers",
+              "note": "Split out of the stacking item, which is done. Both need a proc system: something has to decide that an event triggers an aura and spend a charge for it. SpendCharge exists and is tested; nothing calls it yet."
             }
           ]
         },
@@ -1671,18 +1681,19 @@
               "text": "Groups, round-robin, need/greed rolls, master looter and free-for-all"
             },
             {
-              "done": false,
-              "text": "Quest drops are flagged and shown to everyone",
-              "note": "Nobody has any quests, so filtering them would hide every one of them."
+              "done": true,
+              "text": "Quest drops are shown only to players who need them",
+              "note": "The note here was stale — it said nobody has quests, and the quest system has existed for a while. The NeedsQuest flag was loaded from the loot template and never read, so quest drops were visible to everyone, which makes them worthless to the player who needs one: anyone can take it first. TWO CONDITIONS, both required (Player::HasQuestForItem): the quest must be IN THE LOG, and the player must still need MORE of the item. Someone holding all eight has no claim on a ninth, and showing it to them is how a full player blocks somebody else from a drop. FILTERED PER PLAYER, NOT PER CORPSE — one list for the corpse means either everybody loots the quest item or nobody does. The NUMBERING stays the corpse's: a player who cannot see slot 2 must still see slot 3 as slot 3, because the client sends the index back and renumbering hands them somebody else's item. THE TAKE PATH IS GUARDED SEPARATELY. Filtering only the window reads as working — nobody can click it — while anyone sending the packet by hand takes it anyway. With no quest store loaded, quest drops show to everyone: the same behaviour as before, and the safer failure, since hiding every quest item would make those quests impossible rather than untidy."
             },
             {
               "done": false,
-              "text": "Skinning, pickpocketing, fishing, disenchanting and gameobject loot"
+              "text": "Skinning, pickpocketing, fishing and disenchanting",
+              "note": "Gameobject loot is DONE — split out into the chest/lock item above. The four that remain each need a system that does not exist rather than loot work: skinning and disenchanting are spell effects, pickpocketing needs stealth, and fishing is a minigame with its own packets. The loot side of all four is the same code chests now use."
             },
             {
-              "done": false,
-              "text": "Item and gameobject loot templates, and the conditions system that gates rows",
-              "note": "MEASURED, and it is not the cheap win it looks like: 38,481 of the 38,594 spawned chests are LOCKED (gameobject_template.data0), so opening them without a lock system would be wrong for 99.7% of them — herb nodes gatherable without herbalism, locked chests opened without a key. Locks need Lock.dbc, and most of its entries are skill requirements, so this is gated on skills like proficiency is. The 113 unlocked spawns and the key-locked ones would work; the rest should refuse."
+              "done": true,
+              "text": "Chest loot and the lock system",
+              "note": "DONE. The measurement that blocked this for several phases — 38,481 of 38,594 spawned chests are LOCKED (gameobject_template.data0) — is what needed skills, and skills now exist. Lock.dbc (388 rows) loads, gameobject_template's 24 data columns are read (they are a UNION: data0 is the lock on a chest AND on a door, data1 is the loot id on a chest and 'starts open' on a door, so nothing can name them generically), and gameobject_loot_template is vendored (18,494 rows). ANY ONE OF A LOCK'S EIGHT CASES IS ENOUGH — a chest may list a key and a lockpicking requirement and either opens it; requiring all makes almost every locked thing impossible while the data looks fine. A row with NO requirements is NOT locked, and those rows exist. The index on a skill case is a LOCK TYPE, not a skill id: reading it directly asks for skills 1/2/3, which all exist and are the wrong ones. THE LOOT HOLDER IS NOW A WorldObject, not a Creature. Corpses and chests differ in how they come to hold loot and in nothing after it. A chest rolls its table on FIRST OPEN, not at spawn (38,594 rolls nobody looked at), and KEEPS the roll — rolling per player turns one chest into one chest each. An emptied chest keeps its empty loot rather than nulling it, so the next player is told it is empty instead of handed a fresh roll. Map.Add(GameObject) is public now, alongside Add(Player) and Add(Corpse) — a scripted spawn is a real case, not just a test one."
             }
           ]
         },
@@ -1875,8 +1886,8 @@
             },
             {
               "done": false,
-              "text": "Flight masters, bankers, innkeepers, auctioneers and stable masters",
-              "note": "Same shape as trainers: the line appears and clicking it closes the window."
+              "text": "Flight masters, auctioneers and stable masters",
+              "note": "BANKERS and INNKEEPERS are done and split out: the bank works (28 slots plus bought bags, keyring, move both ways) and an innkeeper sets the homebind. The three that remain each need a system that does not exist — flight paths, an auction house, and pets — so the line appears and clicking it closes the window, which is the honest behaviour until those exist."
             },
             {
               "done": true,
@@ -1888,9 +1899,9 @@
               "text": "Extended cost — honour, arena points and tokens. Those lines are shown and refused."
             },
             {
-              "done": false,
-              "text": "The reputation discount on repair and vendor prices",
-              "note": "Repair is done, and durability now actually moves: dying takes ten percent off what is WORN and nothing off what is carried (upstream passes inventory: false there — the spirit healer's twenty-five percent is a separate charge that does reach the bags). The loss always removes at least one point, because ten percent of a nine-durability item rounds to zero and those items would otherwise never wear out — which is most of what a level-one character is wearing. The bill multiplies points lost by a DurabilityCosts multiplier chosen by item LEVEL and kind, then by a DurabilityQuality modifier read at row (quality + 1) * 2 — not at the quality, which finds a row that exists and is wrong. Armour indexes twenty-one slots along from a weapon's, or a plate chestpiece is priced as a dagger. A zero bill is charged as one copper, upstream's own fix for artifact quality. CMSG_REPAIR_ITEM with an empty item guid means repair everything: the client sends the same opcode for both buttons. Repair-all goes item by item and stops when the money runs out, so a player short of the full amount still gets their weapon back. Inventory.Carried was added for the two 'and everything carried' passes — Inventory.All includes the equipment slots, which would wear a worn item twice per death. What is left here is the reputation discount, which needs a reputation system that does not exist."
+              "done": true,
+              "text": "Reputation, and the price discount it drives",
+              "note": "Reputation is in: 401 factions from Faction.dbc, the eight ranks, standing, and the vendor/repair price discount. IT IS NOT AN UPDATE FIELD. Standing reaches the client as SMSG_SET_FACTION_STANDING, keyed by the faction's REPUTATION LIST ID rather than its faction id — and most factions have no list id at all, so they are tracked server-side and never shown (401 factions against 128 slots). Looking for a field block to write is the wrong search; there is none. THE RANK BANDS ARE WILDLY UNEVEN and that is the whole arithmetic: Hated spans 36,000 and Exalted only 1,000. They are counted DOWN from the cap, which is upstream's shape — each rank's ceiling is the previous one's floor, and accumulating upward from the bottom puts every boundary wrong. Zero standing is NEUTRAL, not Hated: it is where everyone starts. THE DISCOUNT is 5% per rank above Neutral, so Exalted pays 80% — and NOTHING BELOW FRIENDLY. Extending the formula downwards is the obvious symmetry and is not what the game does; being disliked never costs more. Applied to vendor prices and to repair. A creature carries a faction TEMPLATE and the discount keys on the faction the template belongs to — reading the template id as a faction id looks up a row that usually exists and answers about somebody else."
             },
             {
               "done": false,
@@ -2003,16 +2014,18 @@
           "title": "Still to come",
           "items": [
             {
-              "done": false,
-              "text": "Vendors, trainers, gossip"
+              "done": true,
+              "text": "Vendors, trainers, gossip",
+              "note": "Already done — vendors (buy/sell/buyback/repair), trainers (list, purchase, skill requirements) and gossip menus all landed in this phase. This was a forward-looking placeholder written before them and never cleared."
             },
             {
               "done": false,
               "text": "Talents and glyphs"
             },
             {
-              "done": false,
-              "text": "Reputation"
+              "done": true,
+              "text": "Reputation, and the price discount it drives",
+              "note": "Reputation is in: 401 factions from Faction.dbc, the eight ranks, standing, and the vendor/repair price discount. IT IS NOT AN UPDATE FIELD. Standing reaches the client as SMSG_SET_FACTION_STANDING, keyed by the faction's REPUTATION LIST ID rather than its faction id — and most factions have no list id at all, so they are tracked server-side and never shown (401 factions against 128 slots). Looking for a field block to write is the wrong search; there is none. THE RANK BANDS ARE WILDLY UNEVEN and that is the whole arithmetic: Hated spans 36,000 and Exalted only 1,000. They are counted DOWN from the cap, which is upstream's shape — each rank's ceiling is the previous one's floor, and accumulating upward from the bottom puts every boundary wrong. Zero standing is NEUTRAL, not Hated: it is where everyone starts. THE DISCOUNT is 5% per rank above Neutral, so Exalted pays 80% — and NOTHING BELOW FRIENDLY. Extending the formula downwards is the obvious symmetry and is not what the game does; being disliked never costs more. Applied to vendor prices and to repair. A creature carries a faction TEMPLATE and the discount keys on the faction the template belongs to — reading the template id as a faction id looks up a row that usually exists and answers about somebody else."
             },
             {
               "done": true,

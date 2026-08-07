@@ -881,5 +881,11 @@ public sealed class MapVisibilityTests
         public List<(Opcode Opcode, ObjectGuid Unit)> SplineModes { get; } = [];
 
         public void SendSplineMode(Opcode opcode, ObjectGuid unit) => SplineModes.Add((opcode, unit));
+
+        /// <summary>Every standing change this connection was told, as (list id, standing).</summary>
+        public List<(uint ListId, int Standing)> Standings { get; } = [];
+
+        public void SendFactionStanding(uint reputationListId, int standing) =>
+            Standings.Add((reputationListId, standing));
     }
 }

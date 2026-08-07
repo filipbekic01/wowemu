@@ -49,6 +49,11 @@ public sealed class Player : Unit
 
     private Buyback? _buyback;
 
+    /// <summary>How every faction feels about this character.</summary>
+    public Reputation Reputation => _reputation ??= new Reputation(this);
+
+    private Reputation? _reputation;
+
     /// <summary>What this character is trained in.</summary>
     public PlayerSkills Skills => _skills ??= new PlayerSkills(this);
 

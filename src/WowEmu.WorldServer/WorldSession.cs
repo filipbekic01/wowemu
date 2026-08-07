@@ -2255,7 +2255,7 @@ public sealed class WorldSession(
             return;
         }
 
-        if (FindInteractable(new ObjectGuid(rawVendor)) is null)
+        if (FindInteractable(new ObjectGuid(rawVendor)) is not { } repairer)
         {
             return;
         }
@@ -2263,11 +2263,13 @@ public sealed class WorldSession(
         DbcStore<DurabilityCostsEntry> costs = world.Stores.DurabilityCosts;
         DbcStore<DurabilityQualityEntry> quality = world.Stores.DurabilityQuality;
 
+        float discount = DiscountFrom(repairer);
+
         ObjectGuid itemGuid = new(rawItem);
 
         if (itemGuid.IsEmpty)
         {
-            Durability.RepairAll(_player, costs, quality);
+            Durability.RepairAll(_player, costs, quality, discount);
             return;
         }
 
@@ -2276,7 +2278,27 @@ public sealed class WorldSession(
             return;
         }
 
-        Durability.Repair(_player, item, costs, quality);
+        Durability.Repair(_player, item, costs, quality, discount);
+    }
+
+    /// <summary>
+    /// What this creature's faction charges the player, as a multiplier.
+    /// </summary>
+    /// <remarks>
+    /// A creature carries a faction <i>template</i>, and the discount is keyed on the faction the
+    /// template belongs to — reading the template id as a faction id looks up the wrong row, and
+    /// most of them exist, so it answers confidently about somebody else.
+    /// </remarks>
+    private float DiscountFrom(Creature vendor)
+    {
+        if (_player is null
+            || !world.Stores.FactionTemplates.TryGet(vendor.FactionTemplate, out FactionTemplateEntry? template)
+            || template is null)
+        {
+            return 1.0f;
+        }
+
+        return _player.Reputation.PriceDiscount(template.Faction);
     }
 
     /// <summary>Opens a trainer's list. <c>CMSG_TRAINER_LIST</c>.</summary>
@@ -2480,7 +2502,10 @@ public sealed class WorldSession(
         // The count the client sends is a number of *stacks* of BuyCount, which is why a stack of
         // twenty arrows costs the same as one arrow times twenty.
         uint quantity = count * Math.Max(template.BuyCount, (byte)1);
-        uint price = (uint)Math.Max(template.BuyPrice, 0) * count;
+        // Floored, like upstream: the discount is generous enough already, and rounding a price up
+        // would make a discounted item cost more than an undiscounted one at some counts.
+        uint price = (uint)Math.Floor(
+            (uint)Math.Max(template.BuyPrice, 0) * count * (double)DiscountFrom(vendor));
 
         // Limited stock, restocked lazily on the way past. A maxcount of zero is unlimited and is
         // nearly every row, so the common case never touches the ledger at all.
@@ -2805,9 +2830,17 @@ public sealed class WorldSession(
             return;
         }
 
-        // Only the questgiver type is answered. FindQuestGiver already refuses everything else, so
-        // a chest or a door reaches here and is ignored rather than being special-cased away.
-        if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { IsObject: true } giver)
+        ObjectGuid objectGuid = new(rawGuid);
+
+        // A chest first: it is the one object type that answers a use with something other than a
+        // quest menu, and an object can be both a chest and a questgiver.
+        if (_map.Find(objectGuid) is GameObject { Template.Type: GameObjectTemplate.TypeChest } chest
+            && _map.OpenChest(_player, chest))
+        {
+            return;
+        }
+
+        if (FindQuestGiver(objectGuid) is not { IsObject: true } giver)
         {
             return;
         }
@@ -4963,6 +4996,28 @@ public sealed class WorldSession(
     {
         ServerPacket packet = new(opcode, 9);
         packet.Body.WritePackedGuid(unit);
+
+        connection.Send(packet);
+    }
+
+    /// <summary>
+    /// Tells this client its standing with one faction. <c>SMSG_SET_FACTION_STANDING</c>.
+    /// </summary>
+    /// <remarks>
+    /// One faction per packet, which is what upstream sends for a single change — it batches only
+    /// when several moved at once, and nothing here moves more than one at a time yet.
+    /// </remarks>
+    public void SendFactionStanding(uint reputationListId, int standing)
+    {
+        ServerPacket packet = new(Opcode.SMSG_SET_FACTION_STANDING, 20);
+
+        // A refer-a-friend bonus rate, and whether this was a gain. Zero and false: neither exists.
+        packet.Body.WriteSingle(0f);
+        packet.Body.WriteUInt8(0);
+
+        packet.Body.WriteUInt32(1);
+        packet.Body.WriteUInt32(reputationListId);
+        packet.Body.WriteUInt32(unchecked((uint)standing));
 
         connection.Send(packet);
     }

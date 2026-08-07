@@ -249,6 +249,39 @@ public sealed record DurabilityCostsEntry(uint ItemLevel, uint[] Multipliers)
 public sealed record DurabilityQualityEntry(uint Id, float Modifier);
 
 /// <summary>
+/// A row of <c>Faction.dbc</c> — one faction a character can have standing with.
+/// </summary>
+/// <remarks>
+/// <b><see cref="ReputationListId"/> is not the faction id.</b> It is the slot in the client's own
+/// 128-entry reputation block, and <b>most factions do not have one</b> — those are tracked but
+/// never shown. Writing standing by faction id runs off the end of the field block.
+/// </remarks>
+public sealed record FactionEntry(uint Id, int ReputationListId, uint ParentFactionId, string Name);
+
+/// <summary>
+/// A row of <c>Lock.dbc</c> — what it takes to open something.
+/// </summary>
+/// <remarks>
+/// Eight independent cases, and <b>any one of them is enough</b>. A chest can be opened with the
+/// right key or picked with enough lockpicking, and requiring all eight would make almost every
+/// locked thing in the game impossible.
+/// </remarks>
+public sealed record LockEntry(uint Id, uint[] Types, uint[] Indices, uint[] Skills)
+{
+    /// <summary>How many ways one lock can list. <c>MAX_LOCK_CASE</c>.</summary>
+    public const int Cases = 8;
+
+    /// <summary>Nothing at all. <c>LOCK_KEY_NONE</c>.</summary>
+    public const uint KeyNone = 0;
+
+    /// <summary>A specific item — a key. The index is its item id.</summary>
+    public const uint KeyItem = 1;
+
+    /// <summary>A skill at a value. The index is a <c>LockType</c>, not a skill id.</summary>
+    public const uint KeySkill = 2;
+}
+
+/// <summary>
 /// A row of <c>BankBagSlotPrices.dbc</c> — what the next bank bag slot costs.
 /// </summary>
 /// <remarks>
@@ -572,6 +605,13 @@ public sealed class DbcStores
     /// <summary>An id and a float — the one <c>gt*</c> table that does carry an id.</summary>
     private const string GameTableScalarFormat = "nf";
 
+    /// <summary>Fifty-seven columns, most of them localised text. <c>FactionEntryfmt</c>.</summary>
+    private const string FactionFormat =
+        "niiiiiiiiiiiiiiiiiiffixssssssssssssssssxxxxxxxxxxxxxxxxxx";
+
+    /// <summary>Thirty-three columns; the last eight are the actions we do not use. <c>LockEntryfmt</c>.</summary>
+    private const string LockFormat = "niiiiiiiiiiiiiiiiiiiiiiiixxxxxxxx";
+
     /// <summary>A slot number and a price. <c>BankBagSlotPricesEntryfmt</c>.</summary>
     private const string BankBagSlotPricesFormat = "ni";
 
@@ -609,8 +649,12 @@ public sealed class DbcStores
         DbcStore<ItemLimitCategoryEntry> itemLimitCategories,
         DbcStore<BankBagSlotPriceEntry> bankBagSlotPrices,
         CombatRatingTable combatRatings,
-        AttributeChanceTable attributeChances)
+        AttributeChanceTable attributeChances,
+        DbcStore<LockEntry> locks,
+        DbcStore<FactionEntry> factions)
     {
+        Locks = locks;
+        Factions = factions;
         CombatRatings = combatRatings;
         AttributeChances = attributeChances;
         Skills = skills;
@@ -683,6 +727,12 @@ public sealed class DbcStores
 
     /// <summary>What agility and intellect are worth, before any gear.</summary>
     public AttributeChanceTable AttributeChances { get; }
+
+    /// <summary>What it takes to open a locked thing.</summary>
+    public DbcStore<LockEntry> Locks { get; }
+
+    /// <summary>Every faction a character can have standing with.</summary>
+    public DbcStore<FactionEntry> Factions { get; }
 
     /// <summary>
     /// The zone an area belongs to, which is the area itself when it is already a zone.
@@ -918,7 +968,37 @@ public sealed class DbcStores
                 GameTable(directory, "gtChanceToMeleeCritBase.dbc"),
                 GameTable(directory, "gtChanceToMeleeCrit.dbc"),
                 GameTable(directory, "gtChanceToSpellCritBase.dbc"),
-                GameTable(directory, "gtChanceToSpellCrit.dbc")));
+                GameTable(directory, "gtChanceToSpellCrit.dbc")),
+
+            DbcStore<LockEntry>.Load(
+                Path.Combine(directory, "Lock.dbc"),
+                LockFormat,
+                idField: 0,
+                (in DbcRecord record) =>
+                {
+                    uint[] types = new uint[LockEntry.Cases];
+                    uint[] indices = new uint[LockEntry.Cases];
+                    uint[] skills = new uint[LockEntry.Cases];
+
+                    for (int i = 0; i < LockEntry.Cases; i++)
+                    {
+                        types[i] = record.GetUInt32(1 + i);
+                        indices[i] = record.GetUInt32(9 + i);
+                        skills[i] = record.GetUInt32(17 + i);
+                    }
+
+                    return new LockEntry(record.GetUInt32(0), types, indices, skills);
+                }),
+
+            DbcStore<FactionEntry>.Load(
+                Path.Combine(directory, "Faction.dbc"),
+                FactionFormat,
+                idField: 0,
+                (in DbcRecord record) => new FactionEntry(
+                    Id: record.GetUInt32(0),
+                    ReputationListId: record.GetInt32(1),
+                    ParentFactionId: record.GetUInt32(18),
+                    Name: record.GetLocalizedString(23, locale))));
     }
 
     /// <summary>One of the bare-float <c>gt*</c> tables, keyed by row position.</summary>

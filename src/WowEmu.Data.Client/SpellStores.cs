@@ -106,7 +106,30 @@ public sealed record SpellEntry(
     uint MaxAffectedTargets,
     uint SpellIconId,
     uint SpellVisual,
-    SpellEffectEntry[] Effects)
+    SpellEffectEntry[] Effects,
+
+    /// <summary>
+    /// How many times this aura may stack on one target. <c>m_cumulativeAura</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>Zero means it does not stack</b>, not that it stacks zero times — most spells are zero,
+    /// and reading it as a limit makes every aura in the game refuse to apply.
+    /// <para>
+    /// Defaulted, and last in the record, so the several test fixtures that build a spell
+    /// positionally keep working. A parameter in the middle would have been a rename of everything
+    /// after it.
+    /// </para>
+    /// </remarks>
+    uint StackAmount = 0,
+
+    /// <summary>
+    /// How many times the aura fires before it is used up, or 0 for no limit.
+    /// </summary>
+    /// <remarks>
+    /// Zero is unlimited here too, and for the same reason: the column is blank on everything that
+    /// simply runs on a timer.
+    /// </remarks>
+    uint ProcCharges = 0)
 {
     /// <summary>How many attribute words a spell carries. <c>Attributes</c> through <c>AttributesEx7</c>.</summary>
     public const int AttributeWords = 8;
@@ -398,6 +421,8 @@ public sealed class SpellStores
             PreventionType: record.GetUInt32(214),
             SpellFamilyName: record.GetUInt32(208),
             MaxAffectedTargets: record.GetUInt32(212),
+            StackAmount: record.GetUInt32(49),
+            ProcCharges: record.GetUInt32(36),
             SpellIconId: record.GetUInt32(133),
             SpellVisual: record.GetUInt32(131),
             Effects: effects);

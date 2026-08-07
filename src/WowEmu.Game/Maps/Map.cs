@@ -52,6 +52,9 @@ public interface IPlayerConnection
     /// <summary>Tells this client a unit has changed between walking and running.</summary>
     void SendSplineMode(Opcode opcode, ObjectGuid unit);
 
+    /// <summary>Tells this client its standing with one faction changed.</summary>
+    void SendFactionStanding(uint reputationListId, int standing);
+
 
     /// <summary>
     /// Notes that a creature has started walking somewhere, to go out at the next flush.
@@ -400,6 +403,18 @@ public sealed class Map(
 
     /// <summary>What creatures drop, and the shared lists those point at.</summary>
     public LootStore? CreatureLoot { get => _creatureLoot; init => _creatureLoot = value; }
+
+    /// <summary>What chests hold.</summary>
+    public LootStore? GameObjectLoot { get; init; }
+
+    /// <summary>
+    /// What it takes to open a locked thing.
+    /// </summary>
+    /// <remarks>
+    /// Named for the table rather than the concept, because <see cref="Game.Locks"/> is the rules
+    /// and a property called <c>Locks</c> here shadows it inside this class.
+    /// </remarks>
+    public DbcStore<LockEntry>? LockTable { get; init; }
 
     /// <inheritdoc cref="CreatureLoot"/>
     public LootStore? LootReferences { get => _lootReferences; init => _lootReferences = value; }
@@ -1048,6 +1063,28 @@ public sealed class Map(
         {
             other.VisibleObjects.Remove(corpse.Guid);
             SendDestroy(other, corpse.Guid);
+        }
+    }
+
+    /// <summary>
+    /// Puts a gameobject into the world.
+    /// </summary>
+    /// <remarks>
+    /// Most arrive through <c>IGridObjectLoader</c> when a grid loads. This is the same filing for
+    /// one that does not — a scripted spawn, or a test placing exactly one thing.
+    /// </remarks>
+    public void Add(GameObject spawned)
+    {
+        ArgumentNullException.ThrowIfNull(spawned);
+
+        File(spawned);
+
+        foreach (WorldObject other in FindInRangeCore(spawned.Position, VisibilityDistance, spawned))
+        {
+            if (other is Player observer)
+            {
+                MakeVisible(observer, spawned);
+            }
         }
     }
 
@@ -2026,7 +2063,82 @@ public sealed class Map(
         player.LootTarget = target;
 
         player.Connection?.SendLootWindow(
-            target, LootType.Corpse, creature.Loot.Gold, VisibleSlots(creature.Loot));
+            target, LootType.Corpse, creature.Loot.Gold, VisibleSlots(creature.Loot, player));
+    }
+
+    /// <summary>
+    /// Opens a chest, if the player can get into it.
+    /// </summary>
+    /// <remarks>
+    /// The loot is rolled the first time somebody opens it, not at spawn: a roll per chest on the
+    /// continent up front is 38,594 rolls nobody has looked at. Once rolled it stays, so two players
+    /// opening the same chest see the same contents rather than each getting their own.
+    /// </remarks>
+    /// <returns>False when it is not a chest, or is out of reach, or is locked against this player.</returns>
+    public bool OpenChest(Player player, GameObject chest)
+    {
+        ArgumentNullException.ThrowIfNull(player);
+        ArgumentNullException.ThrowIfNull(chest);
+
+        if (chest.Template.Type != GameObjectTemplate.TypeChest)
+        {
+            return false;
+        }
+
+        if (player.Position.GetExactDist2dSq(chest.Position)
+            > InteractionDistance * InteractionDistance)
+        {
+            player.Connection?.SendLootError(chest.Guid, LootError.TooFar);
+            return false;
+        }
+
+        if (Game.Locks.CanOpen(player, chest.Template.LockId, LockTable) != LockResult.Ok)
+        {
+            player.Connection?.SendLootError(chest.Guid, LootError.Locked);
+            return false;
+        }
+
+        chest.Loot ??= RollChestLoot(chest);
+
+        if (chest.Loot is not { } loot)
+        {
+            player.Connection?.SendLootError(chest.Guid, LootError.NoLoot);
+            return false;
+        }
+
+        player.LootTarget = chest.Guid;
+
+        player.Connection?.SendLootWindow(
+            chest.Guid, LootType.Corpse, loot.Gold, VisibleSlots(loot, player));
+
+        return true;
+    }
+
+    /// <summary>Rolls a chest's table, or null when there is nothing to roll.</summary>
+    private Loot? RollChestLoot(GameObject chest)
+    {
+        uint lootId = chest.Template.LootId;
+
+        if (lootId == 0 || GameObjectLoot is null || _lootReferences is null || _items is null
+            || !GameObjectLoot.TryGet(lootId, out LootTemplate? template) || template is null)
+        {
+            return null;
+        }
+
+        // No owner: a chest belongs to whoever reaches it, unlike a corpse which belongs to whoever
+        // killed it.
+        Loot loot = new();
+
+        LootRoll.Fill(
+            loot,
+            template,
+            _lootReferences,
+            _items,
+            () => GameRandom.Urand(0, 9999) / 100f,
+            count => (int)GameRandom.Urand(0, (uint)count - 1),
+            GameRandom.Urand);
+
+        return loot.IsEmpty ? null : loot;
     }
 
     /// <summary>
@@ -2041,12 +2153,21 @@ public sealed class Map(
     {
         ArgumentNullException.ThrowIfNull(player);
 
-        if (_items is null || _itemGuids is null || FindOpenLoot(player) is not (Creature creature, Loot loot))
+        if (_items is null || _itemGuids is null || FindOpenLoot(player) is not (WorldObject holder, Loot loot))
         {
             return;
         }
 
         if (loot.At(slot) is not { IsLooted: false } entry)
+        {
+            player.Connection?.SendLootError(player.LootTarget, LootError.NoLoot);
+            return;
+        }
+
+        // The slot number comes from the client, so a quest drop has to be refused here as well as
+        // hidden from the window. Filtering only the window is exactly the kind of gap that reads as
+        // working — nobody can click it, and anyone sending the packet by hand takes it anyway.
+        if (entry.NeedsQuest && !NeedsForQuest(player, entry.ItemId))
         {
             player.Connection?.SendLootError(player.LootTarget, LootError.NoLoot);
             return;
@@ -2098,7 +2219,7 @@ public sealed class Map(
                 TotalOfEntry: player.Inventory.CountOf(entry.ItemId)));
         }
 
-        ClearIfEmpty(creature, loot);
+        ClearIfEmpty(holder, loot);
     }
 
     /// <summary>Takes the money out of the open loot window.</summary>
@@ -2106,7 +2227,7 @@ public sealed class Map(
     {
         ArgumentNullException.ThrowIfNull(player);
 
-        if (FindOpenLoot(player) is not (Creature creature, Loot loot) || loot.Gold == 0)
+        if (FindOpenLoot(player) is not (WorldObject holder, Loot loot) || loot.Gold == 0)
         {
             return;
         }
@@ -2117,7 +2238,7 @@ public sealed class Map(
         player.Money += copper;
         player.Connection?.SendLootMoneyTaken(copper);
 
-        ClearIfEmpty(creature, loot);
+        ClearIfEmpty(holder, loot);
     }
 
     /// <summary>Closes the loot window.</summary>
@@ -2134,48 +2255,112 @@ public sealed class Map(
         player.LootTarget = ObjectGuid.Empty;
         player.Connection?.SendLootReleased(target);
 
-        if (Find(target) is Creature creature && creature.Loot is { } loot)
+        if (Find(target) is { } released)
         {
-            ClearIfEmpty(creature, loot);
+            Loot? loot = released switch
+            {
+                Creature creature => creature.Loot,
+                GameObject chest => chest.Loot,
+                _ => null,
+            };
+
+            if (loot is not null)
+            {
+                ClearIfEmpty(released, loot);
+            }
         }
     }
 
-    /// <summary>The corpse a player has open, if it is still there and still theirs.</summary>
-    private (Creature Creature, Loot Loot)? FindOpenLoot(Player player)
+    /// <summary>
+    /// Whatever this player has a loot window open on, and what is in it.
+    /// </summary>
+    /// <remarks>
+    /// Either a corpse or a chest. They differ in how they come to hold loot and in nothing after
+    /// that, which is why everything downstream takes the holder as a <see cref="WorldObject"/>.
+    /// </remarks>
+    private (WorldObject Holder, Loot Loot)? FindOpenLoot(Player player)
     {
-        if (player.LootTarget.IsEmpty || Find(player.LootTarget) is not Creature creature)
+        if (player.LootTarget.IsEmpty)
         {
             return null;
         }
 
-        if (creature.Loot is not { } loot || (!loot.Owner.IsEmpty && loot.Owner != player.Guid))
+        Loot? loot = Find(player.LootTarget) switch
+        {
+            Creature creature => creature.Loot,
+            GameObject chest => chest.Loot,
+            _ => null,
+        };
+
+        if (loot is null || (!loot.Owner.IsEmpty && loot.Owner != player.Guid))
         {
             return null;
         }
 
-        return (creature, loot);
+        return (Find(player.LootTarget)!, loot);
     }
 
-    /// <summary>Stops a corpse sparkling once there is nothing left in it.</summary>
-    private static void ClearIfEmpty(Creature creature, Loot loot)
+    /// <summary>Whether a player still needs an item for a quest, when quests are loaded at all.</summary>
+    /// <remarks>
+    /// With no quest store, quest drops are shown to everyone. That is the same behaviour as before
+    /// this existed, and the safer failure: hiding every quest item because a store was not wired up
+    /// would make those quests impossible rather than merely untidy.
+    /// </remarks>
+    private bool NeedsForQuest(Player viewer, uint itemId) =>
+        Quests is null || viewer.Quests.NeedsItem(itemId, Quests);
+
+    /// <summary>Stops a corpse or a chest sparkling once there is nothing left in it.</summary>
+    private static void ClearIfEmpty(WorldObject holder, Loot loot)
     {
         if (!loot.IsEmpty)
         {
             return;
         }
 
-        creature.Loot = null;
-        creature.DynamicFlags &= ~UnitDynamicFlags.Lootable;
+        switch (holder)
+        {
+            case Creature creature:
+                creature.Loot = null;
+                creature.DynamicFlags &= ~UnitDynamicFlags.Lootable;
+                break;
+
+            case GameObject chest:
+                // The loot stays on the object rather than being nulled: a chest that has been
+                // emptied is still a chest, and upstream keeps the empty loot so a second player
+                // opening it is told it is empty rather than being handed a fresh roll.
+                chest.Loot = loot;
+                break;
+
+            default:
+                break;
+        }
     }
 
-    /// <summary>The slots still worth drawing, in their original numbering.</summary>
-    private static List<LootSlot> VisibleSlots(Loot loot)
+    /// <summary>
+    /// The slots still worth drawing to this player, in their original numbering.
+    /// </summary>
+    /// <remarks>
+    /// <b>Per player, not per corpse.</b> A quest drop is shown only to someone who has the quest
+    /// and still needs one — everyone else does not see the slot at all. Building one list for the
+    /// corpse means either everybody loots the quest item or nobody does.
+    /// <para>
+    /// The numbering is the corpse's, not the visible list's. The client sends the slot back, so a
+    /// player who cannot see slot 2 must still see slot 3 as slot 3 — renumbering hands them
+    /// somebody else's item.
+    /// </para>
+    /// </remarks>
+    private List<LootSlot> VisibleSlots(Loot loot, Player viewer)
     {
         List<LootSlot> slots = [];
 
         foreach (LootItem item in loot.Items)
         {
             if (item.IsLooted)
+            {
+                continue;
+            }
+
+            if (item.NeedsQuest && !NeedsForQuest(viewer, item.ItemId))
             {
                 continue;
             }

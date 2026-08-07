@@ -222,9 +222,11 @@ internal static class WorldStartup
 
         LootStore creatureLoot = services.GetRequiredKeyedService<LootStore>("creature_loot");
         LootStore lootReferences = services.GetRequiredKeyedService<LootStore>("reference_loot");
+        LootStore gameObjectLoot = services.GetRequiredKeyedService<LootStore>("gameobject_loot");
 
         await creatureLoot.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await lootReferences.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await gameObjectLoot.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
         if (creatureLoot.Count == 0)
         {

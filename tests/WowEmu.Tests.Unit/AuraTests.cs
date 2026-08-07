@@ -45,6 +45,15 @@ internal static class AuraFixture
             0, 0, 0, 0, 0, 0, effects);
     }
 
+    /// <summary>The same, but one that stacks up to a limit.</summary>
+    public static SpellEntry Stacking(
+        uint auraType, int amountPerTick, uint stackAmount, uint id = 1, uint charges = 0) =>
+        Periodic(auraType, amountPerTick, amplitudeMs: 0, id) with
+        {
+            StackAmount = stackAmount,
+            ProcCharges = charges,
+        };
+
     /// <summary>A spell with no aura effect at all, for the "nothing applies" case.</summary>
     public static SpellEntry DirectDamageOnly(uint id = 2)
     {

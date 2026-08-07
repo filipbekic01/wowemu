@@ -46,6 +46,7 @@ builder.Services.AddSingleton<ItemTemplateStore>();
 // a creature row must never resolve against itself.
 builder.Services.AddKeyedSingleton("creature_loot", (_, _) => new LootStore("creature_loot_template"));
 builder.Services.AddKeyedSingleton("reference_loot", (_, _) => new LootStore("reference_loot_template"));
+builder.Services.AddKeyedSingleton("gameobject_loot", (_, _) => new LootStore("gameobject_loot_template"));
 
 builder.Services.AddSingleton<QuestStore>();
 builder.Services.AddSingleton<GossipStore>();
@@ -148,7 +149,9 @@ builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<DbcStores>().LiquidTypes,
     services.GetRequiredService<DbcStores>().Areas,
     services.GetRequiredService<NavMeshManager>(),
-    services.GetRequiredService<DbcStores>().Skills));
+    services.GetRequiredService<DbcStores>().Skills,
+    services.GetRequiredKeyedService<LootStore>("gameobject_loot"),
+    services.GetRequiredService<DbcStores>().Locks));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in

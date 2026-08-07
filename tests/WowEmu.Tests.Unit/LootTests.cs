@@ -62,6 +62,19 @@ internal static class LootFixture
         return store;
     }
 
+    /// <summary>A store of the given name holding one id.</summary>
+    public static LootStore Store(string name, uint id, LootTemplate template)
+    {
+        LootStore store = new(name);
+
+        System.Reflection.FieldInfo field = typeof(LootStore)
+            .GetField("_templates", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+
+        ((Dictionary<uint, LootTemplate>)field.GetValue(store)!)[id] = template;
+
+        return store;
+    }
+
     /// <summary>A reference store holding one id.</summary>
     public static LootStore References(uint id, LootTemplate template)
     {

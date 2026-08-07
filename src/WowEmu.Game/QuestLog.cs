@@ -292,6 +292,52 @@ public sealed class QuestLog(Player owner)
     /// trading, buying or being mailed, and an increment at each of those places is four chances to
     /// miss one — whereas a recount cannot drift.
     /// </remarks>
+    /// <summary>
+    /// Whether this character still needs an item for a quest they are on.
+    /// </summary>
+    /// <param name="quests">The templates, so a progress row can be read against its own quest.</param>
+    /// <remarks>
+    /// Port of <c>Player::HasQuestForItem</c>, and it is what decides whether a quest drop is shown
+    /// in a loot window at all. Two conditions and both matter:
+    /// <list type="bullet">
+    /// <item>
+    /// The quest must be <b>in the log</b>. A quest drop is invisible to someone who has not taken
+    /// the quest, which is the whole point — otherwise everyone loots everything and the item is
+    /// worthless to the person who needs it.
+    /// </item>
+    /// <item>
+    /// They must still need <b>more of it</b>. Someone holding all eight already has no claim on a
+    /// ninth, and showing it to them is how a full player blocks a group-mate from a drop.
+    /// </item>
+    /// </list>
+    /// </remarks>
+    public bool NeedsItem(uint itemId, QuestStore quests)
+    {
+        ArgumentNullException.ThrowIfNull(quests);
+
+        foreach (QuestProgress progress in _quests.Values)
+        {
+            if (!progress.IsInLog || !quests.TryGet(progress.QuestId, out QuestTemplate? quest)
+                || quest is null)
+            {
+                continue;
+            }
+
+            for (int i = 0; i < quest.RequiredItems.Length; i++)
+            {
+                QuestItem required = quest.RequiredItems[i];
+
+                if (required.IsUsed && required.ItemId == itemId
+                    && progress.Collected[i] < required.Count)
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
     public void RecountItems(QuestTemplate quest, QuestProgress progress)
     {
         ArgumentNullException.ThrowIfNull(quest);

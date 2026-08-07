@@ -20,7 +20,33 @@ public sealed record GameObjectTemplate(
     string Name,
     uint Faction,
     uint Flags,
-    float Size);
+    float Size,
+
+    /// <summary>
+    /// The twenty-four <c>data</c> columns, whose meaning depends on <see cref="Type"/>.
+    /// </summary>
+    /// <remarks>
+    /// A union in the client's own headers, and read as one here: for a chest <c>data0</c> is the
+    /// lock id and <c>data1</c> the loot id, and for a door <c>data0</c> is the lock and
+    /// <c>data1</c> is whether it starts open. The same column means different things, so nothing
+    /// can name them generically.
+    /// </remarks>
+    uint[]? Data = null)
+{
+    /// <summary>How many <c>data</c> columns the table has. <c>MAX_GAMEOBJECT_DATA</c>.</summary>
+    public const int DataCount = 24;
+
+    /// <summary>A chest. <c>GAMEOBJECT_TYPE_CHEST</c>.</summary>
+    public const byte TypeChest = 3;
+
+    /// <summary>What has to be opened to get at it, or 0. <c>data0</c> on a chest or a door.</summary>
+    public uint LockId => At(0);
+
+    /// <summary>Which <c>gameobject_loot_template</c> row it holds. <c>data1</c> on a chest.</summary>
+    public uint LootId => Type == TypeChest ? At(1) : 0;
+
+    private uint At(int index) => Data is { } data && index < data.Length ? data[index] : 0;
+}
 
 /// <summary>
 /// One row of <c>gameobject</c>: an object standing at a particular place.
@@ -68,13 +94,27 @@ public sealed class GameObjectTemplateStore
 
         await using MySqlCommand command = connection.CreateCommand();
         command.CommandText =
-            "SELECT entry, type, displayId, name, faction, flags, size FROM gameobject_template";
+            @"SELECT entry, type, displayId, name, faction, flags, size,
+                     data0, data1, data2, data3, data4, data5, data6, data7,
+                     data8, data9, data10, data11, data12, data13, data14, data15,
+                     data16, data17, data18, data19, data20, data21, data22, data23
+              FROM gameobject_template";
 
         await using MySqlDataReader reader =
             (MySqlDataReader)await command.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
 
         while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
         {
+            uint[] data = new uint[GameObjectTemplate.DataCount];
+
+            for (int i = 0; i < data.Length; i++)
+            {
+                // Signed in the table and read unsigned: several rows carry -1 for "none", which is
+                // how the column says nothing rather than a real value.
+                int raw = reader.GetInt32(7 + i);
+                data[i] = raw < 0 ? 0u : (uint)raw;
+            }
+
             GameObjectTemplate template = new(
                 Entry: reader.GetUInt32(0),
                 Type: reader.GetByte(1),
@@ -82,7 +122,8 @@ public sealed class GameObjectTemplateStore
                 Name: reader.GetString(3),
                 Faction: reader.GetUInt16(4),
                 Flags: reader.GetUInt32(5),
-                Size: reader.GetFloat(6));
+                Size: reader.GetFloat(6),
+                Data: data);
 
             _templates[template.Entry] = template;
         }

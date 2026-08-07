@@ -638,7 +638,9 @@ internal static class MapCombatFixture
         uint lootId = 0,
         uint minGold = 0,
         uint maxGold = 0,
-        QuestStore? quests = null)
+        QuestStore? quests = null,
+        LootStore? gameObjectLoot = null,
+        DbcStore<LockEntry>? locks = null)
     {
         Creature victim = CreatureFixture.Build(
             position: new Position(distance, 0f, 0f, 0f),
@@ -658,6 +660,8 @@ internal static class MapCombatFixture
             LootReferences = lootReferences,
             NextItemGuid = InventoryFixture.NextGuid,
             Quests = quests,
+            GameObjectLoot = gameObjectLoot,
+            LockTable = locks,
         };
 
         // Unique, not 1: a fixed id here collides with the ids InventoryFixture hands out, and two
@@ -778,6 +782,12 @@ internal static class MapCombatFixture
         public List<(Opcode Opcode, ObjectGuid Unit)> SplineModes { get; } = [];
 
         public void SendSplineMode(Opcode opcode, ObjectGuid unit) => SplineModes.Add((opcode, unit));
+
+        /// <summary>Every standing change this connection was told, as (list id, standing).</summary>
+        public List<(uint ListId, int Standing)> Standings { get; } = [];
+
+        public void SendFactionStanding(uint reputationListId, int standing) =>
+            Standings.Add((reputationListId, standing));
 
         public void QueueMonsterMove(ObjectGuid mover, CreatureMove move, uint splineId)
         {

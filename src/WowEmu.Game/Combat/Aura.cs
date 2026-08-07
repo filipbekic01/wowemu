@@ -224,6 +224,38 @@ public sealed class Aura
     /// <summary>How many are stacked. One until stacking exists.</summary>
     public byte StackAmount { get; internal set; } = 1;
 
+    /// <summary>
+    /// How many uses are left, or 0 when it is not charge-limited.
+    /// </summary>
+    /// <remarks>
+    /// Zero is unlimited, matching the spell column it comes from — a timer-only aura has no
+    /// charges and must not be removed as though it had run out of them.
+    /// </remarks>
+    public uint ChargesLeft { get; internal set; }
+
+    /// <summary>Whether this aura is used up by being triggered rather than by time.</summary>
+    public bool HasCharges => Spell.ProcCharges > 0;
+
+    /// <summary>
+    /// Spends one charge.
+    /// </summary>
+    /// <returns>True when that was the last one and the aura should come off.</returns>
+    /// <remarks>
+    /// An aura with no charges is never spent — returning true for it would remove every
+    /// timer-based buff the first time anything triggered.
+    /// </remarks>
+    public bool SpendCharge()
+    {
+        if (!HasCharges || ChargesLeft == 0)
+        {
+            return false;
+        }
+
+        ChargesLeft--;
+
+        return ChargesLeft == 0;
+    }
+
     /// <summary>Whether it lasts until something removes it.</summary>
     public bool IsPermanent => MaxDurationMs < 0;
 
@@ -397,9 +429,21 @@ public sealed class AuraContainer
     {
         int total = 0;
 
-        foreach (AuraEffect effect in EffectsOf(type, miscValue))
+        // Walks the auras rather than the flattened effects, because a stack of three is worth
+        // three times one and only the aura knows how many it has. Summing the effects alone gives
+        // a five-stack debuff the strength of a single application.
+        foreach (Aura aura in _auras)
         {
-            total += effect.Amount;
+            foreach (AuraEffect effect in aura.Effects)
+            {
+                if (effect.Type != type || (miscValue is { } wanted
+                    && effect.MiscValue != wanted && effect.MiscValue != AllStats))
+                {
+                    continue;
+                }
+
+                total += effect.Amount * aura.StackAmount;
+            }
         }
 
         return total;
@@ -457,12 +501,21 @@ public sealed class AuraContainer
     public const int AllStats = -1;
 
     /// <summary>
-    /// Applies an aura, replacing the same caster's earlier one.
+    /// Applies an aura: stacking it, refreshing it, or putting a new one up.
     /// </summary>
     /// <remarks>
-    /// Refreshing rather than stacking: a second Corruption from the same warlock replaces the
-    /// first, which is what the game does. Two casters each get their own, which is why the caster
-    /// is part of the key.
+    /// Three behaviours off one spell column. A spell with a <see cref="SpellEntry.StackAmount"/> of
+    /// zero <b>refreshes</b> — a second Corruption from the same warlock replaces the first. One
+    /// with a stack limit <b>stacks</b> up to it and refreshes the duration each time.
+    /// <para>
+    /// <b>Zero does not mean "stacks zero times".</b> Most spells in the game are zero, so reading
+    /// the column as a limit makes every aura refuse to apply — which is the failure this shape
+    /// exists to avoid.
+    /// </para>
+    /// <para>
+    /// The caster is part of the key either way: two warlocks each get their own Corruption, and
+    /// neither stacks into the other's.
+    /// </para>
     /// </remarks>
     /// <returns>The aura now in place, or null when the spell has no aura effects at all.</returns>
     public Aura? Apply(SpellEntry spell, ObjectGuid caster, byte casterLevel, int durationMs, Func<SpellEffectEntry, int> amountFor)
@@ -490,17 +543,32 @@ public sealed class AuraContainer
             return null;
         }
 
-        // Same spell from the same caster refreshes in place, keeping its slot so the client's buff
-        // bar does not flicker the icon away and back.
+        // Same spell from the same caster keeps its slot, so the client's buff bar does not flicker
+        // the icon away and back.
         Aura? existing = Find(spell.Id, caster);
         byte slot = existing?.Slot ?? NextFreeSlot();
 
+        byte stacks = 1;
+
         if (existing is not null)
         {
+            // One more, up to the limit. At the limit it stays there and only the duration moves —
+            // which is what makes a maintained debuff feel maintained rather than resetting.
+            if (spell.StackAmount > 0)
+            {
+                stacks = (byte)Math.Min(existing.StackAmount + 1, spell.StackAmount);
+            }
+
             _auras.Remove(existing);
         }
 
-        Aura aura = new(spell, caster, casterLevel, durationMs, effects) { Slot = slot };
+        Aura aura = new(spell, caster, casterLevel, durationMs, effects)
+        {
+            Slot = slot,
+            StackAmount = stacks,
+            ChargesLeft = spell.ProcCharges,
+        };
+
         _auras.Add(aura);
 
         return aura;
