@@ -95,6 +95,22 @@ public sealed class PathGenerator
     /// <summary>Most corners a route may have. <c>MAX_POINT_PATH_LENGTH</c>.</summary>
     public const int MaxPathPoints = 74;
 
+    /// <summary>How far apart the points of a resampled leg are. <c>SMOOTH_PATH_STEP_SIZE</c>.</summary>
+    public const float StepSize = 4.0f;
+
+    /// <summary>
+    /// How far above the polygon a resampled point sits.
+    /// </summary>
+    /// <remarks>
+    /// Upstream's <c>result[1] += 0.5f</c>. The mesh is built a little below where a unit's feet
+    /// actually rest, and without the lift every sampled point is fractionally underground — which
+    /// the client draws as a creature wading through the floor.
+    /// </remarks>
+    public const float HeightLift = 0.5f;
+
+    /// <summary>Polygons one surface step may cross. <c>MAX_VISIT_POLY</c>.</summary>
+    private const int MaxVisitedPerStep = 16;
+
     /// <summary>
     /// How far from a point to look for a polygon, in Detour's axes.
     /// </summary>
@@ -179,14 +195,63 @@ public sealed class PathGenerator
             return NavPath.None(PathResult.NoPolygon);
         }
 
-        List<Position> points = new(cornerCount);
+        List<Position> points = [FromDetour(corners[0].pos)];
+        long currentPoly = startRef;
 
-        for (int i = 0; i < cornerCount; i++)
+        for (int i = 1; i < cornerCount && points.Count < MaxPathPoints; i++)
         {
-            points.Add(FromDetour(corners[i].pos));
+            Resample(ref currentPoly, corners[i - 1].pos, corners[i].pos, points);
         }
 
         return new NavPath(complete ? PathResult.Complete : PathResult.Partial, points);
+    }
+
+    /// <summary>
+    /// Walks one leg along the surface, adding a point every <see cref="StepSize"/> yards.
+    /// </summary>
+    /// <remarks>
+    /// <c>MoveAlongSurface</c> rather than a plain interpolation: it slides along the mesh and stops
+    /// at its edge, so a step that would leave the corridor is clamped to it rather than taken. The
+    /// polygon it ends on is carried into the next step, which is what makes the height lookup cheap
+    /// — no spatial query per sample.
+    /// <para>
+    /// The leg's own end corner is always added, whatever the sampling did. A leg shorter than one
+    /// step produces no intermediate points at all, and dropping its end would lose the corner.
+    /// </para>
+    /// </remarks>
+    private void Resample(ref long currentPoly, RcVec3f from, RcVec3f to, List<Position> into)
+    {
+        float length = RcVec3f.Distance(from, to);
+        int steps = (int)(length / StepSize);
+
+        RcVec3f position = from;
+        Span<long> visited = stackalloc long[MaxVisitedPerStep];
+
+        for (int step = 1; step <= steps && into.Count < MaxPathPoints - 1; step++)
+        {
+            RcVec3f target = RcVec3f.Lerp(from, to, step * StepSize / length);
+
+            if (!_query.MoveAlongSurface(currentPoly, position, target, _filter, out RcVec3f moved,
+                    visited, out int visitedCount, MaxVisitedPerStep).Succeeded())
+            {
+                break;
+            }
+
+            if (visitedCount > 0)
+            {
+                currentPoly = visited[visitedCount - 1];
+            }
+
+            if (_query.GetPolyHeight(currentPoly, moved, out float height).Succeeded())
+            {
+                moved.Y = height + HeightLift;
+            }
+
+            position = moved;
+            into.Add(FromDetour(moved));
+        }
+
+        into.Add(FromDetour(to));
     }
 
     /// <summary>A world position in Detour's axes: <c>(y, z, x)</c>.</summary>

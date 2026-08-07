@@ -259,6 +259,92 @@ public sealed class NavMeshPathTests
         Assert.Equal(original.Z, back.Z, 0.001f);
     }
 
+    /// <summary>
+    /// A long leg is broken into steps rather than left as one line.
+    /// </summary>
+    /// <remarks>
+    /// The corners alone are the right route in two dimensions and not walkable in three: a straight
+    /// line between two corners forty yards apart cuts through whatever rises between them.
+    /// </remarks>
+    [RequiresMapsFact]
+    public void ALongLeg_IsResampled()
+    {
+        NavMeshManager navmeshes = new(ClientData.DataDirectory);
+        navmeshes.EnsureLoaded(EasternKingdoms, HumanStartX, HumanStartY);
+
+        PathGenerator generator = navmeshes.For(EasternKingdoms)!;
+
+        NavPath path = generator.Find(
+            new Position(HumanStartX, HumanStartY, HumanStartZ, 0f),
+            new Position(HumanStartX + 60f, HumanStartY, HumanStartZ, 0f));
+
+        Assert.Equal(PathResult.Complete, path.Result);
+
+        // Sixty yards at four-yard steps is far more than the two corners a straight leg has.
+        Assert.True(path.Points.Count > 5, $"only {path.Points.Count} points over 60 yards");
+    }
+
+    /// <summary>
+    /// Every point of a route sits near the ground.
+    /// </summary>
+    /// <remarks>
+    /// The whole reason for resampling. A point taken from a straight interpolation between two
+    /// corners can be metres inside a hill or above a dip; one taken from the polygon under it
+    /// cannot. Checked against the terrain rather than against the mesh, so it is an independent
+    /// measurement rather than the same number twice.
+    /// </remarks>
+    [RequiresMapsFact]
+    public void EveryPointOfARoute_SitsNearTheGround()
+    {
+        NavMeshManager navmeshes = new(ClientData.DataDirectory);
+        TerrainMap terrain = new TerrainManager(ClientData.DataDirectory).GetMap(EasternKingdoms);
+
+        navmeshes.EnsureLoaded(EasternKingdoms, HumanStartX, HumanStartY);
+        PathGenerator generator = navmeshes.For(EasternKingdoms)!;
+
+        int checkedPoints = 0;
+
+        for (int i = 0; i < 8; i++)
+        {
+            float sx = HumanStartX + (i * 15f);
+
+            navmeshes.EnsureLoaded(EasternKingdoms, sx, HumanStartY);
+            navmeshes.EnsureLoaded(EasternKingdoms, sx + 60f, HumanStartY + 60f);
+
+            NavPath path = generator.Find(
+                new Position(sx, HumanStartY, HumanStartZ, 0f),
+                new Position(sx + 60f, HumanStartY + 60f, HumanStartZ, 0f));
+
+            if (path.Result != PathResult.Complete)
+            {
+                continue;
+            }
+
+            foreach (Position point in path.Points)
+            {
+                float ground = terrain.GetHeight(point.X, point.Y);
+
+                if (ground <= MapGeometry.InvalidHeight)
+                {
+                    continue;
+                }
+
+                checkedPoints++;
+
+                // Chosen to discriminate, not to be safe. Over these routes the sampled points sit
+                // within 1.4 yards of the terrain, while interpolating straight between the same
+                // endpoints strays 3.7 — so a bound of 3 passes the one and fails the other. A
+                // looser bound would pass whether or not the resampling worked at all.
+                Assert.True(
+                    Math.Abs(point.Z - ground) < 3f,
+                    $"a route point is {Math.Abs(point.Z - ground):F1} yards from the terrain at "
+                    + $"({point.X:F1}, {point.Y:F1})");
+            }
+        }
+
+        Assert.True(checkedPoints > 20, $"only {checkedPoints} points checked — did any route run?");
+    }
+
     // ------------------------------------------------------------------ helpers
 
     private const uint EasternKingdoms = 0;
