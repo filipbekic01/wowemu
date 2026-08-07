@@ -616,9 +616,9 @@
               "note": "character_spell and character_action landed with the spellbook and action bars; homebind is still the only one of the three that is not written."
             },
             {
-              "done": false,
-              "text": "Level, stats and health saved",
-              "note": "Only position is written today; the rest is recomputed from base tables on every login."
+              "done": true,
+              "text": "Health, powers and death state saved",
+              "note": "The board note was stale: level, money and experience were ALREADY written with the position. What was missing is health, the seven powers, PLAYER_FLAGS and the corpse-reclaim penalty window. THE DEATH STATE IS THE ONE THAT MATTERED — a player who logged out dead came back ALIVE, which undoes the corpse, the reclaim penalty and the durability charge in a single loading screen and makes every death optional. Upstream derives the state from the ghost bit in PLAYER_FLAGS on load (PlayerStorage.cpp: HasPlayerFlag(GHOST) -> DeathState::Dead), and so does this. Restoring the flags WITHOUT the state leaves a character that IsGhost calls a ghost and IsAlive calls alive — a state nothing else knows how to be in, and one that lets a corpse swing a sword. All SEVEN powers, like upstream: a druid holds rage and energy at once, so saving only the class's 'current' resource loses the rest. Values are CLAMPED on restore because the maximum is recomputed from the base tables every login, and a character whose level or gear changed would otherwise come back over its own cap. A health of ZERO is read as 'never saved' rather than 'died', since the two are indistinguishable — that costs one corpse its state exactly once, on the first login after this. The penalty window is restored OUTSIDE that guard, so an unsaved character does not get a free reset. SaveProgressAsync now takes a CharacterProgress record: it had ten positional parameters and would have had eighteen, which is one transposition away from writing health into mana with nothing to catch it."
             }
           ]
         }
@@ -635,8 +635,7 @@
           "items": [
             {
               "done": true,
-              "text": "Grid unloading — measured, and deliberately not done",
-              "note": "NOT DOING THIS — the premise is wrong, and it is measured. AzerothCore has NO grid state machine in this version: the only caller of MapGridManager::UnloadGrid is Map::UnloadAll, which runs at shutdown. Instances are unloaded whole when they empty; continents keep every grid they ever touched, for the life of the process. So our behaviour already matches upstream. It is also not a leak but a BOUNDED WORKING SET: a map is 64x64 grids, and the largest content maps hold ~58k spawns (map 0: 29,678 creatures + 28,649 gameobjects; map 571: 33,519 + 14,441). MEASURED (GridResidencyTests): every terrain tile of Eastern Kingdoms resident is 687 tiles and 171 MB, about 255 KB per tile. Four fully-explored continents would be roughly 700 MB of terrain. Substantial, bounded, and the same shape upstream carries. Revisit only if memory becomes a real constraint — and if it does, unloading INSTANCES when they empty is upstream's answer and the one to copy, not per-grid unloading."
+              "text": "Map per map id, objects filed into 8×8 cells per grid"
             },
             {
               "done": true,
@@ -684,9 +683,9 @@
               "text": "Sessions moved onto the TickScheduler; the map lock is gone"
             },
             {
-              "done": false,
-              "text": "Unload cells and tiles when a grid empties",
-              "note": "A grid, once loaded, stays for the life of the process."
+              "done": true,
+              "text": "Grid and cell unloading — measured, and deliberately not done",
+              "note": "NOT DOING THIS — the premise is wrong, and it is measured. AzerothCore has NO grid state machine in this version: the only caller of MapGridManager::UnloadGrid is Map::UnloadAll, which runs at shutdown. Instances are unloaded whole when they empty; continents keep every grid they ever touched, for the life of the process. So our behaviour already matches upstream. It is also not a leak but a BOUNDED WORKING SET: a map is 64x64 grids, and the largest content maps hold ~58k spawns (map 0: 29,678 creatures + 28,649 gameobjects; map 571: 33,519 + 14,441). MEASURED (GridResidencyTests): every terrain tile of Eastern Kingdoms resident is 687 tiles and 171 MB, about 255 KB per tile. Four fully-explored continents would be roughly 700 MB of terrain. Substantial, bounded, and the same shape upstream carries. Revisit only if memory becomes a real constraint — and if it does, unloading INSTANCES when they empty is upstream's answer and the one to copy, not per-grid unloading."
             },
             {
               "done": false,

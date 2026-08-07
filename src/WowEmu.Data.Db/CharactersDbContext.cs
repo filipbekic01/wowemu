@@ -62,6 +62,35 @@ public sealed class CharacterEntity
 
     public float Orientation { get; set; }
 
+    /// <summary>
+    /// Health at logout, and the seven powers.
+    /// </summary>
+    /// <remarks>
+    /// Stored rather than recomputed because they are state, not derivation. A character who logs
+    /// out at a sliver of health and comes back full has had a free heal; one who logs out DEAD and
+    /// comes back alive has undone the entire death system, corpse and penalty and all.
+    /// <para>
+    /// Seven powers because the client has seven and a character can carry values in more than one
+    /// — a druid's rage and energy both survive a form change.
+    /// </para>
+    /// </remarks>
+    public uint Health { get; set; }
+
+    public uint Power1 { get; set; }
+    public uint Power2 { get; set; }
+    public uint Power3 { get; set; }
+    public uint Power4 { get; set; }
+    public uint Power5 { get; set; }
+    public uint Power6 { get; set; }
+    public uint Power7 { get; set; }
+
+    /// <summary>When the escalating corpse-reclaim penalty runs out, in unix seconds.</summary>
+    /// <remarks>
+    /// Without it, logging out and back in resets the penalty — which makes chain-dying free for
+    /// anyone willing to sit through a loading screen.
+    /// </remarks>
+    public long DeathExpireTime { get; set; }
+
     /// <summary>Player flags echoed in the character list — ghost, resting, hidden helm.</summary>
     public uint PlayerFlags { get; set; }
 
@@ -147,6 +176,16 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
             entity.Property(character => character.PositionY).HasColumnName("position_y");
             entity.Property(character => character.PositionZ).HasColumnName("position_z");
             entity.Property(character => character.Orientation).HasColumnName("orientation");
+
+            entity.Property(character => character.Health).HasColumnName("health");
+            entity.Property(character => character.Power1).HasColumnName("power1");
+            entity.Property(character => character.Power2).HasColumnName("power2");
+            entity.Property(character => character.Power3).HasColumnName("power3");
+            entity.Property(character => character.Power4).HasColumnName("power4");
+            entity.Property(character => character.Power5).HasColumnName("power5");
+            entity.Property(character => character.Power6).HasColumnName("power6");
+            entity.Property(character => character.Power7).HasColumnName("power7");
+            entity.Property(character => character.DeathExpireTime).HasColumnName("death_expire_time");
             entity.Property(character => character.PlayerFlags).HasColumnName("player_flags");
             entity.Property(character => character.Money).HasColumnName("money");
             entity.Property(character => character.Experience).HasColumnName("xp");

@@ -4759,17 +4759,29 @@ public sealed class WorldSession(
             return;
         }
 
+        uint[] powers = new uint[CharacterProgress.PowerCount];
+
+        for (byte power = 0; power < powers.Length; power++)
+        {
+            powers[power] = player.GetPower(power);
+        }
+
         await characters.SaveProgressAsync(
             player.Guid.Counter,
-            player.MapId,
-            player.ZoneId,
-            player.Position.X,
-            player.Position.Y,
-            player.Position.Z,
-            player.Position.Orientation,
-            player.Money,
-            player.Xp,
-            player.Level,
+            new CharacterProgress(
+                MapId: player.MapId,
+                ZoneId: player.ZoneId,
+                X: player.Position.X,
+                Y: player.Position.Y,
+                Z: player.Position.Z,
+                Orientation: player.Position.Orientation,
+                Money: player.Money,
+                Experience: player.Xp,
+                Level: player.Level,
+                Health: player.Health,
+                Powers: powers,
+                PlayerFlags: player.PlayerFlags,
+                DeathExpireTime: player.DeathExpireTime),
             cancellationToken).ConfigureAwait(true);
 
         await inventory

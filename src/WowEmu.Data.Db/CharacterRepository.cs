@@ -26,7 +26,41 @@ public sealed record CharacterSummary(
     uint PlayerFlags,
     ushort AtLoginFlags,
     uint Money = 0,
-    uint Experience = 0);
+    uint Experience = 0,
+    uint Health = 0,
+    uint[]? Powers = null,
+    long DeathExpireTime = 0);
+
+/// <summary>
+/// Everything about a character that changes while it is being played.
+/// </summary>
+/// <remarks>
+/// A record rather than another eight positional parameters. The save already took ten, and a call
+/// site with eighteen floats and uints in a row is one transposition away from writing a character's
+/// health into its mana and nobody noticing.
+/// </remarks>
+/// <param name="Powers">
+/// All seven, indexed by power type. A character can hold values in more than one — a druid's rage
+/// and energy both survive a form change — so saving only the "current" one loses the others.
+/// </param>
+public sealed record CharacterProgress(
+    uint MapId,
+    uint ZoneId,
+    float X,
+    float Y,
+    float Z,
+    float Orientation,
+    uint Money,
+    uint Experience,
+    byte Level,
+    uint Health,
+    uint[] Powers,
+    uint PlayerFlags,
+    long DeathExpireTime)
+{
+    /// <summary>How many power types the client has.</summary>
+    public const int PowerCount = 7;
+}
 
 /// <summary>Reads and writes the realm's characters.</summary>
 public interface ICharacterRepository
@@ -47,24 +81,14 @@ public interface ICharacterRepository
     Task<uint?> CreateAsync(CharacterEntity character, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Saves where a character is and what it has, so logging back in resumes there.
+    /// Saves everything that changed while a character was played, so logging back in resumes it.
     /// </summary>
     /// <remarks>
-    /// Money and experience ride along with the position rather than having their own call: they
-    /// are written at exactly the same moments, and two calls is two chances for one to be missed.
+    /// One call rather than several: all of it is written at exactly the same moment, and every
+    /// extra call is another chance for one to be missed on some path.
     /// </remarks>
     Task SaveProgressAsync(
-        uint characterId,
-        uint mapId,
-        uint zoneId,
-        float x,
-        float y,
-        float z,
-        float orientation,
-        uint money,
-        uint experience,
-        byte level,
-        CancellationToken cancellationToken = default);
+        uint characterId, CharacterProgress progress, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Deletes a character, but only if it belongs to <paramref name="accountId"/>. Returns false
@@ -109,7 +133,14 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
                 character.PlayerFlags,
                 character.AtLoginFlags,
                 character.Money,
-                character.Experience))
+                character.Experience,
+                character.Health,
+                new[]
+                {
+                    character.Power1, character.Power2, character.Power3, character.Power4,
+                    character.Power5, character.Power6, character.Power7,
+                },
+                character.DeathExpireTime))
             .ToListAsync(cancellationToken)
             .ConfigureAwait(false);
     }
@@ -158,18 +189,10 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
     }
 
     public async Task SaveProgressAsync(
-        uint characterId,
-        uint mapId,
-        uint zoneId,
-        float x,
-        float y,
-        float z,
-        float orientation,
-        uint money,
-        uint experience,
-        byte level,
-        CancellationToken cancellationToken = default)
+        uint characterId, CharacterProgress progress, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(progress);
+
         await using CharactersDbContext context = await contextFactory
             .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
 
@@ -182,16 +205,29 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
             return;
         }
 
-        character.Map = mapId;
-        character.Zone = zoneId;
-        character.PositionX = x;
-        character.PositionY = y;
-        character.PositionZ = z;
-        character.Orientation = orientation;
-        character.Money = money;
-        character.Experience = experience;
-        character.Level = level;
+        character.Map = progress.MapId;
+        character.Zone = progress.ZoneId;
+        character.PositionX = progress.X;
+        character.PositionY = progress.Y;
+        character.PositionZ = progress.Z;
+        character.Orientation = progress.Orientation;
+        character.Money = progress.Money;
+        character.Experience = progress.Experience;
+        character.Level = progress.Level;
+        character.Health = progress.Health;
+        character.PlayerFlags = progress.PlayerFlags;
+        character.DeathExpireTime = progress.DeathExpireTime;
         character.LastLoginAt = DateTime.UtcNow;
+
+        uint[] powers = progress.Powers;
+
+        character.Power1 = At(powers, 0);
+        character.Power2 = At(powers, 1);
+        character.Power3 = At(powers, 2);
+        character.Power4 = At(powers, 3);
+        character.Power5 = At(powers, 4);
+        character.Power6 = At(powers, 5);
+        character.Power7 = At(powers, 6);
 
         // The character has now been in the world, so it is no longer a first login — the client
         // shows its zone in the character list from here on.
@@ -199,6 +235,8 @@ public sealed class CharacterRepository(IDbContextFactory<CharactersDbContext> c
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }
+
+    private static uint At(uint[] powers, int index) => index < powers.Length ? powers[index] : 0;
 
     public async Task<bool> DeleteAsync(uint accountId, uint characterId, CancellationToken cancellationToken = default)
     {

@@ -92,6 +92,61 @@ public sealed class Player : Unit
     }
 
     /// <summary>
+    /// Puts back the health, powers and death state a character logged out with.
+    /// </summary>
+    /// <remarks>
+    /// Everything above this fills the fields from the base tables, which is right for a character
+    /// being created and wrong for one being loaded — those are derivations, and these are state.
+    /// <para>
+    /// <b>The death state matters most.</b> Without it a player who logs out dead comes back alive,
+    /// which undoes the corpse, the reclaim penalty and the durability charge in one loading screen.
+    /// The ghost bit rides in <c>PLAYER_FLAGS</c>, so restoring the flags restores the state.
+    /// </para>
+    /// <para>
+    /// A character that has never been saved has a health of zero, which is indistinguishable from
+    /// one that logged out dead — so zero is read as "never saved" and the freshly computed values
+    /// stand. It costs a corpse its state exactly once, on the first login after this landed.
+    /// </para>
+    /// </remarks>
+    private static void RestoreSavedState(Player player, CharacterSummary character)
+    {
+        // Outside the health guard: the penalty window is a window in absolute time and decays on
+        // its own, so it is meaningful even for a character with nothing else saved. Carrying it is
+        // what stops chain-dying being free for anyone willing to sit through a loading screen.
+        player.DeathExpireTime = character.DeathExpireTime;
+
+        if (character.Health == 0)
+        {
+            return;
+        }
+
+        player.PlayerFlags = character.PlayerFlags;
+
+        // Derived from the ghost flag, exactly as upstream does it — a character with the flag comes
+        // back Dead, and everything else comes back alive. Restoring the flags alone would leave a
+        // ghost that IsGhost says is a ghost and IsAlive says is alive, which is a state nothing
+        // else in the codebase knows how to be in.
+        if (player.IsGhost)
+        {
+            player.DeathState = DeathState.Dead;
+        }
+
+        // Clamped, because the maximum is recomputed from the base tables above and a character
+        // whose gear or level changed could otherwise come back with more health than it can hold.
+        player.Health = Math.Min(character.Health, player.MaxHealth);
+
+        if (character.Powers is not { } powers)
+        {
+            return;
+        }
+
+        for (byte power = 0; power < powers.Length; power++)
+        {
+            player.SetPower(power, Math.Min(powers[power], player.GetMaxPower(power)));
+        }
+    }
+
+    /// <summary>
     /// The five attributes before anything is worn.
     /// </summary>
     /// <remarks>
@@ -403,6 +458,8 @@ public sealed class Player : Unit
         // Last, because it reads the stats and level set above. Without it the character has no
         // weapon damage and no attack time — a swing every tick, for nothing, with no error.
         PlayerCombatStats.Apply(player);
+
+        RestoreSavedState(player, character);
 
         player.SyncMovement();
         return player;
