@@ -133,6 +133,101 @@ public sealed class CombatRatingTests
     public void WithNoTables_ARatingIsWorthNothing() =>
         Assert.Equal(0f, CombatRatingTable.Empty.MultiplierFor(CombatRating.CritMelee, 80, Warrior));
 
+    /// <summary>
+    /// Agility gives crit, at the documented per-class rate.
+    /// </summary>
+    /// <remarks>
+    /// The published level-80 figures, and they differ per class: 62.5 agility per one percent of
+    /// crit for a warrior, 83.33 for a rogue, 51.02 for a mage. They check the class-block
+    /// addressing rather than restate it — reading the wrong class's block still yields a number
+    /// that looks entirely believable.
+    /// </remarks>
+    [RequiresClientDataFact]
+    public void Agility_GivesCritAtTheDocumentedRate()
+    {
+        AttributeChanceTable table = Attributes();
+
+        Assert.Equal(62.5f, AgilityPerCritPercent(table, Warrior), 0.05f);
+        Assert.Equal(83.33f, AgilityPerCritPercent(table, Rogue), 0.05f);
+        Assert.Equal(51.02f, AgilityPerCritPercent(table, Mage), 0.05f);
+    }
+
+    /// <summary>
+    /// And dodge, which a rogue converts far better than a warrior.
+    /// </summary>
+    /// <remarks>
+    /// Dodge has no table of its own — it reuses the crit ratio scaled by a per-class constant.
+    /// <b>Both terms differ per class</b>, so the ratio between two classes is not simply the ratio
+    /// of their constants: a rogue's 2.00 against a warrior's 0.85 would suggest 2.35×, but the
+    /// rogue's crit ratio is lower, and the real answer is 1.76×. Asserting the constants' ratio is
+    /// the mistake this test exists to have already made.
+    /// </remarks>
+    [RequiresClientDataFact]
+    public void Agility_GivesDodgeAtAClassSpecificRate()
+    {
+        AttributeChanceTable table = Attributes();
+
+        float rogue = PerPointOfDodge(table, Rogue);
+        float warrior = PerPointOfDodge(table, Warrior);
+
+        // 0.020870 against 0.011826 per point of agility.
+        Assert.Equal(0.020870f, rogue, 0.000001f);
+        Assert.Equal(0.011826f, warrior, 0.000001f);
+        Assert.True(rogue > warrior);
+    }
+
+    private static float PerPointOfDodge(AttributeChanceTable table, byte characterClass) =>
+        (table.Dodge(characterClass, 80, 1000) - table.Dodge(characterClass, 80, 0)) / 1000f;
+
+    /// <summary>
+    /// A hunter's flat dodge is negative, and stays negative.
+    /// </summary>
+    /// <remarks>
+    /// The obvious tidy-up — clamping a base value to zero — hands hunters roughly four percent of
+    /// dodge they should not have.
+    /// </remarks>
+    [RequiresClientDataFact]
+    public void AHuntersFlatDodge_IsNegative()
+    {
+        Assert.True(Attributes().Dodge(Hunter, 80, 0) < 0f);
+    }
+
+    /// <summary>Intellect gives spell crit, and it is not the same as the melee figure.</summary>
+    [RequiresClientDataFact]
+    public void Intellect_GivesSpellCrit()
+    {
+        AttributeChanceTable table = Attributes();
+
+        float spell = table.SpellCrit(Mage, 80, 1000);
+        float melee = table.MeleeCrit(Mage, 80, 1000);
+
+        Assert.True(spell > 0f);
+        Assert.NotEqual(melee, spell);
+    }
+
+    /// <summary>With no tables loaded, an attribute is worth nothing rather than something.</summary>
+    [Fact]
+    public void WithNoTables_AttributesAreWorthNothing()
+    {
+        Assert.Equal(0f, AttributeChanceTable.Empty.MeleeCrit(Warrior, 80, 1000));
+        Assert.Equal(0f, AttributeChanceTable.Empty.Dodge(Warrior, 80, 1000));
+    }
+
+    private const byte Hunter = 3;
+    private const byte Rogue = 4;
+    private const byte Mage = 8;
+
+    private static AttributeChanceTable Attributes() =>
+        DbcStores.Load(ClientData.DbcDirectory).AttributeChances;
+
+    /// <summary>How much agility buys one percent of crit — the figure players quote.</summary>
+    private static float AgilityPerCritPercent(AttributeChanceTable table, byte characterClass)
+    {
+        float perPoint = table.MeleeCrit(characterClass, 80, 1000) - table.MeleeCrit(characterClass, 80, 0);
+
+        return 1000f / perPoint;
+    }
+
     private const byte Warrior = 1;
     private const byte Paladin = 2;
 

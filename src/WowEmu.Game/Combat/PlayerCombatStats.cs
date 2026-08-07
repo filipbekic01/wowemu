@@ -324,10 +324,10 @@ public static class PlayerCombatStats
     /// These fields were never written at all before this, so a player dodged and crit exactly
     /// nothing however they were geared.
     /// <para>
-    /// <b>What is here is the rating contribution only.</b> A character's <i>base</i> dodge and crit
-    /// come from agility through <c>gtChanceToMeleeCrit</c> and its base table, which is the other
-    /// half of the same gap and is not done — so an ungeared character still shows zero. That is
-    /// visible and wrong rather than invisible and wrong, which is the better of the two.
+    /// Two halves, added: what the body gives through agility and intellect, and what the gear's
+    /// ratings are worth. Either alone produces a plausible-looking number that is wrong by the size
+    /// of the other — an ungeared rogue with no base dodge reads zero, and a geared one with no
+    /// rating contribution reads whatever a naked character would.
     /// </para>
     /// </remarks>
     private static void ApplyDefenceChances(Player player)
@@ -340,9 +340,17 @@ public static class PlayerCombatStats
         byte level = player.Level;
         byte characterClass = player.Class;
 
+        AttributeChanceTable attributes = player.AttributeChances ?? AttributeChanceTable.Empty;
+
+        uint agility = player.GetStat(1);
+        uint intellect = player.GetStat(3);
+
+        // Base from the body plus whatever the gear's ratings are worth. Either half alone reads as
+        // a plausible number and is wrong by the size of the other.
         player.Fields.SetFloat(
             UpdateFields.PLAYER_DODGE_PERCENTAGE,
-            Percent(player, table, CrDodge, level, characterClass));
+            attributes.Dodge(characterClass, level, agility)
+            + Percent(player, table, CrDodge, level, characterClass));
 
         player.Fields.SetFloat(
             UpdateFields.PLAYER_PARRY_PERCENTAGE,
@@ -353,17 +361,28 @@ public static class PlayerCombatStats
             Percent(player, table, CrBlock, level, characterClass));
 
         // The three crit fields the client draws separately, each from its own rating.
+        float critFromAgility = attributes.MeleeCrit(characterClass, level, agility);
+
         player.Fields.SetFloat(
             UpdateFields.PLAYER_CRIT_PERCENTAGE,
-            Percent(player, table, CrCritMelee, level, characterClass));
+            critFromAgility + Percent(player, table, CrCritMelee, level, characterClass));
 
         player.Fields.SetFloat(
             UpdateFields.PLAYER_RANGED_CRIT_PERCENTAGE,
-            Percent(player, table, CrCritRanged, level, characterClass));
+            critFromAgility + Percent(player, table, CrCritRanged, level, characterClass));
 
         player.Fields.SetFloat(
             UpdateFields.PLAYER_OFFHAND_CRIT_PERCENTAGE,
-            Percent(player, table, CrCritMelee, level, characterClass));
+            critFromAgility + Percent(player, table, CrCritMelee, level, characterClass));
+
+        // Spell crit is per school and they all read the same figure until talents differ them.
+        float spellCrit = attributes.SpellCrit(characterClass, level, intellect)
+            + Percent(player, table, CrCritSpell, level, characterClass);
+
+        for (int school = 0; school < SpellSchools; school++)
+        {
+            player.Fields.SetFloat(UpdateFields.PLAYER_SPELL_CRIT_PERCENTAGE1 + school, spellCrit);
+        }
     }
 
     /// <summary>What a stored rating is worth as a percentage, for this character.</summary>

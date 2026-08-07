@@ -119,6 +119,157 @@ public sealed class CombatRatingTable
         amount * MultiplierFor(rating, level, characterClass);
 }
 
+/// <summary>
+/// What agility and intellect are worth, before any gear ratings.
+/// </summary>
+/// <remarks>
+/// Port of <c>Player::GetMeleeCritFromAgility</c>, <c>GetDodgeFromAgility</c> and
+/// <c>GetSpellCritFromIntellect</c>. This is the half of a character's defences that comes from
+/// their body rather than their gear — an ungeared level-80 rogue still dodges, and without this
+/// the character sheet reads zero for everyone who has not been handed a rating.
+/// </remarks>
+public sealed class AttributeChanceTable
+{
+    private readonly DbcStore<GameTableFloat> _meleeCritBase;
+    private readonly DbcStore<GameTableFloat> _meleeCritRatio;
+    private readonly DbcStore<GameTableFloat> _spellCritBase;
+    private readonly DbcStore<GameTableFloat> _spellCritRatio;
+
+    public AttributeChanceTable(
+        DbcStore<GameTableFloat> meleeCritBase,
+        DbcStore<GameTableFloat> meleeCritRatio,
+        DbcStore<GameTableFloat> spellCritBase,
+        DbcStore<GameTableFloat> spellCritRatio)
+    {
+        ArgumentNullException.ThrowIfNull(meleeCritBase);
+        ArgumentNullException.ThrowIfNull(meleeCritRatio);
+        ArgumentNullException.ThrowIfNull(spellCritBase);
+        ArgumentNullException.ThrowIfNull(spellCritRatio);
+
+        _meleeCritBase = meleeCritBase;
+        _meleeCritRatio = meleeCritRatio;
+        _spellCritBase = spellCritBase;
+        _spellCritRatio = spellCritRatio;
+    }
+
+    /// <summary>Nothing loaded, for callers that must run without a client extracted.</summary>
+    public static AttributeChanceTable Empty { get; } = new(
+        DbcStore<GameTableFloat>.Empty,
+        DbcStore<GameTableFloat>.Empty,
+        DbcStore<GameTableFloat>.Empty,
+        DbcStore<GameTableFloat>.Empty);
+
+    /// <summary>Melee crit chance from agility, as a percentage.</summary>
+    public float MeleeCrit(byte characterClass, byte level, uint agility) =>
+        FromAttribute(_meleeCritBase, _meleeCritRatio, characterClass, level, agility);
+
+    /// <summary>Spell crit chance from intellect, as a percentage.</summary>
+    public float SpellCrit(byte characterClass, byte level, uint intellect) =>
+        FromAttribute(_spellCritBase, _spellCritRatio, characterClass, level, intellect);
+
+    /// <summary>
+    /// Dodge chance from agility, as a percentage.
+    /// </summary>
+    /// <remarks>
+    /// <b>Dodge has no table of its own.</b> It reuses the melee crit ratio, scaled by a per-class
+    /// constant — a rogue converts agility to dodge more than twice as well as a warrior. The 1.15
+    /// divisor is patch 3.2.0 raising the agility needed across the board, and it is folded into the
+    /// constants rather than applied separately, exactly as upstream writes them.
+    /// <para>
+    /// Upstream splits the result into a diminishing part (from gear agility) and a
+    /// non-diminishing part (from base agility); we have no diminishing returns, so the whole of it
+    /// is computed together. That overstates dodge for a heavily geared character, which is the
+    /// direction to be aware of rather than a rounding difference.
+    /// </para>
+    /// </remarks>
+    public float Dodge(byte characterClass, byte level, uint agility)
+    {
+        if (RatioFor(_meleeCritRatio, characterClass, level) is not { } ratio
+            || ClassIndex(characterClass) is not { } index
+            || index >= DodgeBase.Length)
+        {
+            return 0f;
+        }
+
+        return 100f * (DodgeBase[index] + (agility * ratio * CritToDodge[index]));
+    }
+
+    private static float FromAttribute(
+        DbcStore<GameTableFloat> baseTable,
+        DbcStore<GameTableFloat> ratioTable,
+        byte characterClass,
+        byte level,
+        uint attribute)
+    {
+        if (ClassIndex(characterClass) is not { } index
+            || !baseTable.TryGet((uint)index, out GameTableFloat? classBase) || classBase is null
+            || RatioFor(ratioTable, characterClass, level) is not { } ratio)
+        {
+            return 0f;
+        }
+
+        return (classBase.Value + (attribute * ratio)) * 100f;
+    }
+
+    /// <summary>The per-level ratio for a class, or null when it is not in the table.</summary>
+    private static float? RatioFor(DbcStore<GameTableFloat> table, byte characterClass, byte level)
+    {
+        if (ClassIndex(characterClass) is not { } index || level == 0)
+        {
+            return null;
+        }
+
+        uint capped = Math.Min(level, (byte)CombatRatingTable.MaxLevel);
+        uint row = ((uint)index * CombatRatingTable.MaxLevel) + capped - 1;
+
+        return table.TryGet(row, out GameTableFloat? entry) && entry is not null ? entry.Value : null;
+    }
+
+    private static int? ClassIndex(byte characterClass) =>
+        characterClass is > 0 and <= Classes ? characterClass - 1 : null;
+
+    /// <summary>How many class slots the tables carry. <c>MAX_CLASSES</c>.</summary>
+    private const int Classes = 11;
+
+    /// <summary>
+    /// Flat dodge per class, before agility. Index 9 is the gap where no class exists.
+    /// </summary>
+    /// <remarks>
+    /// A hunter's is <b>negative</b>. Clamping it to zero as an obvious tidy-up gives hunters four
+    /// percent of dodge they should not have.
+    /// </remarks>
+    private static readonly float[] DodgeBase =
+    [
+        0.036640f,  // Warrior
+        0.034943f,  // Paladin
+        -0.040873f, // Hunter
+        0.020957f,  // Rogue
+        0.034178f,  // Priest
+        0.036640f,  // Death knight
+        0.021080f,  // Shaman
+        0.036587f,  // Mage
+        0.024211f,  // Warlock
+        0.0f,       // no class 10
+        0.056097f,  // Druid
+    ];
+
+    /// <summary>How well each class turns crit-per-agility into dodge-per-agility.</summary>
+    private static readonly float[] CritToDodge =
+    [
+        0.85f / 1.15f,  // Warrior
+        1.00f / 1.15f,  // Paladin
+        1.11f / 1.15f,  // Hunter
+        2.00f / 1.15f,  // Rogue
+        1.00f / 1.15f,  // Priest
+        0.85f / 1.15f,  // Death knight
+        1.60f / 1.15f,  // Shaman
+        1.00f / 1.15f,  // Mage
+        0.97f / 1.15f,  // Warlock
+        0.0f,           // no class 10
+        2.00f / 1.15f,  // Druid
+    ];
+}
+
 /// <summary>One bare float from a <c>gt*</c> table, addressed by its row's position.</summary>
 public sealed record GameTableFloat(float Value);
 

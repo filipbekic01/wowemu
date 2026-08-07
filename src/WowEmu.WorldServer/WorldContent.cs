@@ -140,6 +140,7 @@ public sealed class WorldContent(
         player.Inventory.LimitCategories = Stores.ItemLimitCategories;
         player.Spells.Ranks = SpellRanks;
         player.CombatRatings = Stores.CombatRatings;
+        player.AttributeChances = Stores.AttributeChances;
 
         // The saved zone is where the character logged out; the terrain is the authority on where
         // it actually is. They differ whenever a character was moved by anything but walking.

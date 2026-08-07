@@ -214,6 +214,9 @@ public sealed class Player : Unit
     /// </remarks>
     public CombatRatingTable? CombatRatings { get; set; }
 
+    /// <summary>What agility and intellect are worth to this character, before gear.</summary>
+    public AttributeChanceTable? AttributeChances { get; set; }
+
     /// <summary>Experience accumulated towards the next level.</summary>
     /// <remarks>
     /// Reset to the <i>remainder</i> on levelling, not to zero — overshooting a level carries the

@@ -608,9 +608,11 @@ public sealed class DbcStores
         SkillLines skills,
         DbcStore<ItemLimitCategoryEntry> itemLimitCategories,
         DbcStore<BankBagSlotPriceEntry> bankBagSlotPrices,
-        CombatRatingTable combatRatings)
+        CombatRatingTable combatRatings,
+        AttributeChanceTable attributeChances)
     {
         CombatRatings = combatRatings;
+        AttributeChances = attributeChances;
         Skills = skills;
         ItemLimitCategories = itemLimitCategories;
         BankBagSlotPrices = bankBagSlotPrices;
@@ -678,6 +680,9 @@ public sealed class DbcStores
 
     /// <summary>What a point of a combat rating is worth, by level and class.</summary>
     public CombatRatingTable CombatRatings { get; }
+
+    /// <summary>What agility and intellect are worth, before any gear.</summary>
+    public AttributeChanceTable AttributeChances { get; }
 
     /// <summary>
     /// The zone an area belongs to, which is the area itself when it is already a zone.
@@ -907,8 +912,21 @@ public sealed class DbcStores
                     GameTableScalarFormat,
                     idField: 0,
                     (in DbcRecord record) => new GameTableScalar(
-                        record.GetUInt32(0), record.GetFloat(1)))));
+                        record.GetUInt32(0), record.GetFloat(1)))),
+
+            new AttributeChanceTable(
+                GameTable(directory, "gtChanceToMeleeCritBase.dbc"),
+                GameTable(directory, "gtChanceToMeleeCrit.dbc"),
+                GameTable(directory, "gtChanceToSpellCritBase.dbc"),
+                GameTable(directory, "gtChanceToSpellCrit.dbc")));
     }
+
+    /// <summary>One of the bare-float <c>gt*</c> tables, keyed by row position.</summary>
+    private static DbcStore<GameTableFloat> GameTable(string directory, string file) =>
+        DbcStore<GameTableFloat>.LoadByOrdinal(
+            Path.Combine(directory, file),
+            GameTableFloatFormat,
+            (in DbcRecord record) => new GameTableFloat(record.GetFloat(0)));
 
     /// <summary>The four skill tables, loaded together because none of them is useful alone.</summary>
     private static SkillLines LoadSkills(string directory, int locale)
