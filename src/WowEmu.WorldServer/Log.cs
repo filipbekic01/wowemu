@@ -176,6 +176,14 @@ internal static partial class Log
         Message = "Loaded {Outfits} creature outfits across {Entries} entries")]
     public static partial void CreatureEquipmentLoaded(ILogger logger, int outfits, int entries);
 
+    [LoggerMessage(EventId = 2333, Level = LogLevel.Information,
+        Message = "Startup complete: {Summary}")]
+    public static partial void StartupComplete(ILogger logger, string summary);
+
+    [LoggerMessage(EventId = 2334, Level = LogLevel.Warning,
+        Message = "Startup took {Summary}, over the {BudgetSeconds:F0}s budget in PLAN §6")]
+    public static partial void StartupOverBudget(ILogger logger, string summary, double budgetSeconds);
+
     [LoggerMessage(EventId = 2315, Level = LogLevel.Error,
         Message = "Handler for {Opcode} threw ({Address})")]
     public static partial void PacketHandlerFailed(

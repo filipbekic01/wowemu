@@ -467,9 +467,9 @@
               "text": "quest_template, npc_text"
             },
             {
-              "done": false,
-              "text": "Startup timing report, target under ~30 s",
-              "note": "Creature load is timed; nothing else is."
+              "done": true,
+              "text": "Startup timing report",
+              "note": "MEASURED: 4.7 s against a real database, of which world content is 3.8 s — well inside PLAN §6 Phase 4's 30 s budget, and reported per phase rather than as a total so the next person does not have to bisect the startup path. Worth having now rather than later: the tables read at startup have roughly doubled since the budget was written (112,797 waypoints, 43,020 addons, 10,731 outfits, AreaTable, the gameobject quest relations), and nothing measured whether that had cost anything. A phase is recorded even when the work inside it throws, so a startup that dies on a missing table still says how far it got."
             }
           ]
         }

@@ -24,6 +24,7 @@ internal static class WorldStartup
         CancellationToken cancellationToken)
     {
         ILogger logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("Startup");
+        StartupReport report = new();
 
         if (options.ApplyMigrationsOnStartup)
         {
@@ -55,7 +56,9 @@ internal static class WorldStartup
         string worldConnection = PlayerCreateInfoStore.ResolveConnectionString(options.WorldConnectionString);
 
         PlayerCreateInfoStore createInfo = services.GetRequiredService<PlayerCreateInfoStore>();
-        await createInfo.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        await report.MeasureAsync("playercreateinfo", () =>
+            createInfo.LoadAsync(worldConnection, cancellationToken)).ConfigureAwait(false);
 
         if (createInfo.Count == 0)
         {
@@ -66,13 +69,15 @@ internal static class WorldStartup
         }
 
         PlayerStatsStore stats = services.GetRequiredService<PlayerStatsStore>();
-        await stats.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
-
         PlayerXpStore experience = services.GetRequiredService<PlayerXpStore>();
-        await experience.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
-
         GraveyardStore graveyards = services.GetRequiredService<GraveyardStore>();
-        await graveyards.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
+        await report.MeasureAsync("player stats", async () =>
+        {
+            await stats.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+            await experience.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+            await graveyards.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        }).ConfigureAwait(false);
 
         if (experience.Count == 0)
         {
@@ -88,7 +93,8 @@ internal static class WorldStartup
                 "with no health. Import both with: tools/db/import-world.sh");
         }
 
-        await LoadCreatureContentAsync(services, worldConnection, options, logger, cancellationToken)
+        await report.MeasureAsync("world content", () =>
+            LoadCreatureContentAsync(services, worldConnection, options, logger, report, cancellationToken))
             .ConfigureAwait(false);
 
         WorldContent content = services.GetRequiredService<WorldContent>();
@@ -122,6 +128,22 @@ internal static class WorldStartup
 
         Log.GraveyardsLoaded(
             logger, graveyards.Count, graveyards.ZoneCount, content.Stores.WorldSafeLocs.Count);
+
+        // Last, so the total includes everything above it. A budget nobody measures is a number in
+        // a document — PLAN.md §6 Phase 4 allows thirty seconds, and the tables read here have
+        // roughly doubled since that was written.
+        // Built into a local: the analyzer objects to work inside a log call, and the summary sorts
+        // and formats the phase list.
+        string summary = report.Summary();
+
+        if (report.OverBudget)
+        {
+            Log.StartupOverBudget(logger, summary, StartupReport.Budget.TotalSeconds);
+        }
+        else
+        {
+            Log.StartupComplete(logger, summary);
+        }
     }
 
     /// <summary>
@@ -142,6 +164,7 @@ internal static class WorldStartup
         string worldConnection,
         WorldServerOptions options,
         ILogger logger,
+        StartupReport report,
         CancellationToken cancellationToken)
     {
         long started = Stopwatch.GetTimestamp();
