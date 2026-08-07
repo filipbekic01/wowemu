@@ -220,6 +220,14 @@ internal static class WorldStartup
         await questStarters.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
         await questEnders.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
 
+        QuestRelationStore objectStarters =
+            services.GetRequiredKeyedService<QuestRelationStore>("go_quest_starters");
+        QuestRelationStore objectEnders =
+            services.GetRequiredKeyedService<QuestRelationStore>("go_quest_enders");
+
+        await objectStarters.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+        await objectEnders.LoadAsync(worldConnection, cancellationToken).ConfigureAwait(false);
+
         if (quests.Count == 0)
         {
             throw new InvalidOperationException(

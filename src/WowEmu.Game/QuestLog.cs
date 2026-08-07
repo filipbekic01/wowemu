@@ -105,12 +105,17 @@ public sealed class QuestLog(Player owner)
     /// Whether a player may take a quest, and why not.
     /// </summary>
     /// <remarks>
-    /// Port of the checks in <c>Player::CanTakeQuest</c> this phase can answer. Reputation, skill,
-    /// timers and exclusive groups are absent and <b>pass</b>, so a quest gated on any of them is
-    /// offered when it should not be.
+    /// Port of the checks in <c>Player::CanTakeQuest</c> this phase can answer. Reputation, skill
+    /// and timers are absent and <b>pass</b>, so a quest gated on any of them is offered when it
+    /// should not be.
     /// </remarks>
+    /// <param name="quests">
+    /// Every quest, for the chain and group tests. Optional — without it a quest is judged on its
+    /// own <c>PrevQuestId</c> alone, which is what this did before the indexes existed: the reverse
+    /// links from <c>NextQuestId</c> and every exclusive group are then invisible and pass.
+    /// </param>
     /// <seealso cref="SatisfiesPreviousQuest"/>
-    public QuestTakeResult CanTake(QuestTemplate quest)
+    public QuestTakeResult CanTake(QuestTemplate quest, QuestStore? quests = null)
     {
         ArgumentNullException.ThrowIfNull(quest);
 
@@ -126,9 +131,14 @@ public sealed class QuestLog(Player owner)
             return QuestTakeResult.AlreadyDone;
         }
 
-        if (!SatisfiesPreviousQuest(quest))
+        if (!SatisfiesPreviousQuest(quest, quests))
         {
             return QuestTakeResult.MissingPrerequisite;
+        }
+
+        if (!SatisfiesExclusiveGroup(quest, quests))
+        {
+            return QuestTakeResult.ExcludedByAnother;
         }
 
         if (owner.Level < quest.MinLevel)
@@ -639,34 +649,131 @@ public sealed class QuestLog(Player owner)
     }
 
     /// <summary>
-    /// Whether the quest ahead of this one in its chain has been done.
+    /// Whether the quests ahead of this one in its chain have been done.
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Port of <c>Player::SatisfyQuestPreviousQuest</c>, reduced to the single-prerequisite case.
-    /// <b>The sign of <c>PrevQuestId</c> chooses the test</b>: a positive id must have been handed
-    /// in, a negative one need only have been started. The C++ reads a whole list of them, built
-    /// from <c>PrevQuestId</c> plus every quest whose <c>ExclusiveGroup</c> ties it in; only the one
-    /// column is loaded here, so a quest gated on a group is admitted on its first prerequisite.
+    /// Port of <c>Player::SatisfyQuestPreviousQuest</c>. <b>The sign of each prerequisite chooses
+    /// the test</b>: a positive id must have been handed in, a negative one need only have been
+    /// started. <b>Any one satisfied prerequisite is enough</b> — the list is alternatives, not
+    /// requirements, which is what lets two separate quest lines both open the same follow-up.
     /// </para>
     /// <para>
-    /// Without this check a questgiver offers its entire chain at once. That is how a fresh level-1
-    /// character can take the second quest in a line before the first, which then reads as the
-    /// wrong quest appearing in the log.
+    /// The one exception is a prerequisite sitting in a <i>negative</i> exclusive group. That is
+    /// upstream's "each from all": the quest opens only once every quest in that group is done, not
+    /// just the one named. Skipping it opens a convergence quest as soon as one of its several
+    /// feeder lines finishes.
+    /// </para>
+    /// <para>
+    /// Without any of this a questgiver offers its entire chain at once, and a fresh level-1
+    /// character can take the second quest in a line before the first.
     /// </para>
     /// </remarks>
-    private bool SatisfiesPreviousQuest(QuestTemplate quest)
+    private bool SatisfiesPreviousQuest(QuestTemplate quest, QuestStore? quests)
     {
-        if (quest.PrevQuestId == 0)
+        IReadOnlyList<int> previous = quests?.PreviousQuests(quest.Id) ?? [];
+
+        if (previous.Count == 0)
+        {
+            // Without the store, fall back to the quest's own column — see CanTake.
+            return quests is not null || quest.PrevQuestId == 0 || SatisfiedBy(quest.PrevQuestId);
+        }
+
+        foreach (int prerequisite in previous)
+        {
+            if (SatisfiedBy(prerequisite) && SatisfiesEachFromAll(prerequisite, quests))
+            {
+                return true;
+            }
+        }
+
+        return false;
+
+        bool SatisfiedBy(int prerequisite)
+        {
+            uint id = (uint)Math.Abs(prerequisite);
+
+            return prerequisite > 0
+                ? IsRewarded(id)
+                : StatusOf(id) != QuestStatus.None;
+        }
+    }
+
+    /// <summary>
+    /// Whether a satisfied prerequisite's whole group is satisfied too.
+    /// </summary>
+    /// <remarks>
+    /// Only meaningful for a prerequisite in a <b>negative</b> exclusive group, which is upstream's
+    /// "each from all" — every quest in the group has to be finished, not just the one that happened
+    /// to be named. A prerequisite in a positive group or no group at all passes on its own.
+    /// </remarks>
+    private bool SatisfiesEachFromAll(int prerequisite, QuestStore? quests)
+    {
+        uint id = (uint)Math.Abs(prerequisite);
+
+        if (quests is null
+            || !quests.TryGet(id, out QuestTemplate? previous)
+            || previous is null
+            || previous.ExclusiveGroup >= 0)
         {
             return true;
         }
 
-        uint previous = (uint)Math.Abs(quest.PrevQuestId);
+        foreach (uint sibling in quests.QuestsInGroup(previous.ExclusiveGroup))
+        {
+            if (sibling == id)
+            {
+                continue;
+            }
 
-        return quest.PrevQuestId > 0
-            ? IsRewarded(previous)
-            : StatusOf(previous) != QuestStatus.None;
+            bool done = prerequisite > 0
+                ? IsRewarded(sibling)
+                : StatusOf(sibling) != QuestStatus.None;
+
+            if (!done)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Whether anything in this quest's exclusive group has already been taken.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>Player::SatisfyQuestExclusiveGroup</c>. A <b>positive</b> group is "one from all":
+    /// starting or finishing any quest in it locks out the rest, which is how a choice between two
+    /// rival quest lines is expressed. A negative group means nothing here — it only matters when
+    /// the quest is somebody else's prerequisite.
+    /// <para>
+    /// Upstream's own comment above this describes it backwards, saying a positive group can be
+    /// started if another in the group already has been. The code beneath it returns false in
+    /// exactly that case, and the code is what the game does.
+    /// </para>
+    /// </remarks>
+    private bool SatisfiesExclusiveGroup(QuestTemplate quest, QuestStore? quests)
+    {
+        if (quests is null || quest.ExclusiveGroup <= 0)
+        {
+            return true;
+        }
+
+        foreach (uint sibling in quests.QuestsInGroup(quest.ExclusiveGroup))
+        {
+            if (sibling == quest.Id)
+            {
+                continue;
+            }
+
+            if (StatusOf(sibling) != QuestStatus.None)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>
@@ -693,6 +800,9 @@ public enum QuestTakeResult
 
     /// <summary>The quest before this one in its chain has not been done.</summary>
     MissingPrerequisite,
+
+    /// <summary>Another quest in the same exclusive group has already been taken.</summary>
+    ExcludedByAnother,
     TooLowLevel,
     TooHighLevel,
     WrongClass,

@@ -26,6 +26,8 @@ public sealed class WorldContent(
     QuestStore quests,
     [FromKeyedServices("quest_starters")] QuestRelationStore questStarters,
     [FromKeyedServices("quest_enders")] QuestRelationStore questEnders,
+    [FromKeyedServices("go_quest_starters")] QuestRelationStore objectQuestStarters,
+    [FromKeyedServices("go_quest_enders")] QuestRelationStore objectQuestEnders,
     PlayerXpStore experienceTable,
     GossipStore gossip,
     VendorStore vendors,
@@ -52,6 +54,12 @@ public sealed class WorldContent(
 
     /// <summary>Which creature takes which quest back. Very often not the same one.</summary>
     public QuestRelationStore QuestEnders { get; } = questEnders;
+
+    /// <summary>Quests that start at an object rather than an NPC.</summary>
+    public QuestRelationStore ObjectQuestStarters { get; } = objectQuestStarters;
+
+    /// <summary>Quests handed in at an object rather than an NPC.</summary>
+    public QuestRelationStore ObjectQuestEnders { get; } = objectQuestEnders;
 
     /// <summary>The experience-per-level table, for quest rewards that cross a level.</summary>
     public PlayerXpStore ExperienceTable { get; } = experienceTable;

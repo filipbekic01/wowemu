@@ -27,6 +27,8 @@ internal static class QuestFixture
         uint flags = 0,
         uint specialFlags = 0,
         int prevQuestId = 0,
+        int nextQuestId = 0,
+        int exclusiveGroup = 0,
         byte requiredPlayerKills = 0,
         QuestObjective[]? objectives = null,
         QuestItem[]? requiredItems = null,
@@ -43,8 +45,9 @@ internal static class QuestFixture
             SuggestedPlayers: 0,
             RequiredClasses: requiredClasses,
             RequiredRaces: requiredRaces,
+            ExclusiveGroup: exclusiveGroup,
             PrevQuestId: prevQuestId,
-            NextQuestId: 0,
+            NextQuestId: nextQuestId,
             NextQuestIdChain: 0,
             RewardXpDifficulty: rewardXpDifficulty,
             RewardOrRequiredMoney: rewardOrRequiredMoney,
@@ -95,22 +98,287 @@ internal static class QuestFixture
     }
 
     /// <summary>A quest store holding exactly the templates a test names.</summary>
+    /// <remarks>
+    /// Through the store's own <c>Add</c> rather than by reaching into its dictionary, which is what
+    /// this used to do. The chain and group indexes are built as quests arrive, so a fixture that
+    /// bypassed that would leave every prerequisite and exclusive group invisible — and the tests
+    /// asserting they are enforced would pass by never seeing them.
+    /// </remarks>
     public static QuestStore Store(params QuestTemplate[] quests)
     {
         QuestStore store = new();
 
-        System.Reflection.FieldInfo field = typeof(QuestStore)
-            .GetField("_quests", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-
-        Dictionary<uint, QuestTemplate> map = (Dictionary<uint, QuestTemplate>)field.GetValue(store)!;
-
         foreach (QuestTemplate quest in quests)
         {
-            map[quest.Id] = quest;
+            store.Add(quest);
         }
 
         return store;
     }
+}
+
+/// <summary>
+/// Quest chains: what has to be done before a quest opens, and what taking it locks out.
+/// </summary>
+/// <remarks>
+/// 4,694 quests name a prerequisite, 587 name a successor, and 927 sit in an exclusive group. The
+/// sign of every one of those columns changes what it means, which is the whole difficulty.
+/// </remarks>
+public sealed class QuestChainTests
+{
+    /// <summary>A positive prerequisite must have been handed in, not merely started.</summary>
+    [Fact]
+    public void APositivePrerequisite_MustBeRewarded()
+    {
+        Player player = InventoryFixture.Player(level: 30);
+        QuestTemplate first = QuestFixture.Build(id: 1);
+        QuestTemplate second = QuestFixture.Build(id: 2, prevQuestId: 1);
+
+        QuestStore store = QuestFixture.Store(first, second);
+
+        Assert.Equal(QuestTakeResult.MissingPrerequisite, player.Quests.CanTake(second, store));
+
+        // Taking the first is not enough.
+        player.Quests.Accept(first);
+        Assert.Equal(QuestTakeResult.MissingPrerequisite, player.Quests.CanTake(second, store));
+
+        Finish(player, first);
+        Assert.Equal(QuestTakeResult.Ok, player.Quests.CanTake(second, store));
+    }
+
+    /// <summary>A negative one need only have been started.</summary>
+    /// <remarks>
+    /// This is how a quest that runs alongside its predecessor works — the follow-up opens the
+    /// moment you take the first, not when you finish it.
+    /// </remarks>
+    [Fact]
+    public void ANegativePrerequisite_NeedOnlyBeStarted()
+    {
+        Player player = InventoryFixture.Player(level: 30);
+        QuestTemplate first = QuestFixture.Build(id: 1);
+        QuestTemplate second = QuestFixture.Build(id: 2, prevQuestId: -1);
+
+        QuestStore store = QuestFixture.Store(first, second);
+
+        Assert.Equal(QuestTakeResult.MissingPrerequisite, player.Quests.CanTake(second, store));
+
+        player.Quests.Accept(first);
+        Assert.Equal(QuestTakeResult.Ok, player.Quests.CanTake(second, store));
+    }
+
+    /// <summary>
+    /// A prerequisite named from the other end counts too.
+    /// </summary>
+    /// <remarks>
+    /// The link is stored from either end: a quest can name its predecessor with
+    /// <c>PrevQuestId</c>, or its predecessor can name it with <c>NextQuestId</c>. 587 quests use
+    /// the reverse direction, and reading only the forward column leaves every one of their
+    /// successors completely ungated.
+    /// </remarks>
+    [Fact]
+    public void ANextQuestIdLink_GatesTheQuestItNames()
+    {
+        Player player = InventoryFixture.Player(level: 30);
+        QuestTemplate first = QuestFixture.Build(id: 1, nextQuestId: 2);
+        QuestTemplate second = QuestFixture.Build(id: 2);
+
+        QuestStore store = QuestFixture.Store(first, second);
+
+        Assert.Equal(QuestTakeResult.MissingPrerequisite, player.Quests.CanTake(second, store));
+
+        Finish(player, first);
+        Assert.Equal(QuestTakeResult.Ok, player.Quests.CanTake(second, store));
+    }
+
+    /// <summary>
+    /// Any one of several prerequisites is enough.
+    /// </summary>
+    /// <remarks>
+    /// The list is alternatives rather than requirements, which is what lets two separate quest
+    /// lines both open the same follow-up. Requiring all of them would lock the follow-up behind
+    /// doing every line.
+    /// </remarks>
+    [Fact]
+    public void AnyOnePrerequisite_IsEnough()
+    {
+        Player player = InventoryFixture.Player(level: 30);
+
+        QuestTemplate lineA = QuestFixture.Build(id: 1, nextQuestId: 3);
+        QuestTemplate lineB = QuestFixture.Build(id: 2, nextQuestId: 3);
+        QuestTemplate converge = QuestFixture.Build(id: 3);
+
+        QuestStore store = QuestFixture.Store(lineA, lineB, converge);
+
+        Assert.Equal(QuestTakeResult.MissingPrerequisite, player.Quests.CanTake(converge, store));
+
+        Finish(player, lineB);
+        Assert.Equal(QuestTakeResult.Ok, player.Quests.CanTake(converge, store));
+    }
+
+    /// <summary>
+    /// Unless the prerequisite is in a negative group, when every quest in it must be done.
+    /// </summary>
+    /// <remarks>
+    /// Upstream's "each from all". A convergence quest fed by several lines that share a negative
+    /// group opens only when all of them are finished — skipping this opens it as soon as the first
+    /// feeder line completes, which is the whole point of the group.
+    /// </remarks>
+    [Fact]
+    public void ANegativeGroupPrerequisite_NeedsEveryQuestInIt()
+    {
+        Player player = InventoryFixture.Player(level: 30);
+
+        QuestTemplate lineA = QuestFixture.Build(id: 1, nextQuestId: 3, exclusiveGroup: -100);
+        QuestTemplate lineB = QuestFixture.Build(id: 2, exclusiveGroup: -100);
+        QuestTemplate converge = QuestFixture.Build(id: 3);
+
+        QuestStore store = QuestFixture.Store(lineA, lineB, converge);
+
+        // One of the pair done is not enough, even though it is the one that names the follow-up.
+        Finish(player, lineA);
+        Assert.Equal(QuestTakeResult.MissingPrerequisite, player.Quests.CanTake(converge, store));
+
+        Finish(player, lineB);
+        Assert.Equal(QuestTakeResult.Ok, player.Quests.CanTake(converge, store));
+    }
+
+    /// <summary>
+    /// A positive group is one-from-all: taking any locks out the rest.
+    /// </summary>
+    /// <remarks>
+    /// How a choice between two rival quest lines is expressed. Upstream's own comment above the
+    /// check describes this backwards — it says a positive group can start if another in the group
+    /// already has — and the code beneath returns false in exactly that case.
+    /// </remarks>
+    [Fact]
+    public void APositiveGroup_LocksOutTheOthersOnceOneIsTaken()
+    {
+        Player player = InventoryFixture.Player(level: 30);
+
+        QuestTemplate left = QuestFixture.Build(id: 1, exclusiveGroup: 100);
+        QuestTemplate right = QuestFixture.Build(id: 2, exclusiveGroup: 100);
+
+        QuestStore store = QuestFixture.Store(left, right);
+
+        // Either is available to begin with.
+        Assert.Equal(QuestTakeResult.Ok, player.Quests.CanTake(left, store));
+        Assert.Equal(QuestTakeResult.Ok, player.Quests.CanTake(right, store));
+
+        player.Quests.Accept(left);
+
+        Assert.Equal(QuestTakeResult.ExcludedByAnother, player.Quests.CanTake(right, store));
+    }
+
+    /// <summary>And finishing one keeps the others locked out.</summary>
+    [Fact]
+    public void APositiveGroup_StaysLockedAfterTheChoiceIsFinished()
+    {
+        Player player = InventoryFixture.Player(level: 30);
+
+        QuestTemplate left = QuestFixture.Build(id: 1, exclusiveGroup: 100);
+        QuestTemplate right = QuestFixture.Build(id: 2, exclusiveGroup: 100);
+
+        QuestStore store = QuestFixture.Store(left, right);
+
+        Finish(player, left);
+
+        Assert.Equal(QuestTakeResult.ExcludedByAnother, player.Quests.CanTake(right, store));
+    }
+
+    /// <summary>A negative group does not lock anything out on its own.</summary>
+    /// <remarks>
+    /// The mirror of the case above, and the reason the sign has to be read rather than the value.
+    /// A negative group only means something when the quest is somebody else's prerequisite.
+    /// </remarks>
+    [Fact]
+    public void ANegativeGroup_LocksNothingOut()
+    {
+        Player player = InventoryFixture.Player(level: 30);
+
+        QuestTemplate left = QuestFixture.Build(id: 1, exclusiveGroup: -100);
+        QuestTemplate right = QuestFixture.Build(id: 2, exclusiveGroup: -100);
+
+        QuestStore store = QuestFixture.Store(left, right);
+
+        player.Quests.Accept(left);
+
+        Assert.Equal(QuestTakeResult.Ok, player.Quests.CanTake(right, store));
+    }
+
+    /// <summary>Hands a quest in, taking it first if it is not already in the log.</summary>
+    private static void Finish(Player player, QuestTemplate quest)
+    {
+        QuestProgress progress =
+            player.Quests.Find(quest.Id) ?? player.Quests.Accept(quest)!;
+
+        player.Quests.Reward(progress);
+    }
+
+    /// <summary>A prerequisite naming a quest that does not exist is dropped, not enforced.</summary>
+    /// <remarks>
+    /// Gating a quest on something that can never be satisfied locks it out for good. Upstream logs
+    /// the broken reference and carries on.
+    /// </remarks>
+    [Fact]
+    public void APrerequisiteThatDoesNotExist_IsIgnored()
+    {
+        Player player = InventoryFixture.Player(level: 30);
+        QuestTemplate orphan = QuestFixture.Build(id: 2, prevQuestId: 999);
+
+        QuestStore store = QuestFixture.Store(orphan);
+
+        Assert.Equal(QuestTakeResult.Ok, player.Quests.CanTake(orphan, store));
+    }
+}
+
+/// <summary>
+/// Quests that live on an object rather than an NPC.
+/// </summary>
+/// <remarks>
+/// 447 quests start at a gameobject and 457 end at one — a scroll on a table, a bulletin board, a
+/// half-buried crate. Before this they were unreachable: every quest path resolved its giver to a
+/// creature and quietly found nothing.
+/// </remarks>
+public sealed class ObjectQuestRelationTests
+{
+    /// <summary>
+    /// The two keyspaces are separate, and an entry in one means nothing in the other.
+    /// </summary>
+    /// <remarks>
+    /// Creature entry 1234 and gameobject entry 1234 are unrelated. Sharing one store between them
+    /// would hand a bulletin board an innkeeper's quests, or find nothing at all — and both look
+    /// like missing data rather than a lookup against the wrong table.
+    /// </remarks>
+    [Fact]
+    public void CreatureAndObjectEntries_AreSeparateKeyspaces()
+    {
+        QuestRelationStore creatures = new("creature_queststarter");
+        QuestRelationStore objects = new("gameobject_queststarter");
+
+        creatures.Add(entry: 1234, questId: 10);
+        objects.Add(entry: 1234, questId: 20);
+
+        Assert.Equal([10u], creatures.For(1234));
+        Assert.Equal([20u], objects.For(1234));
+    }
+
+    /// <summary>A giver with several quests lists them in the order the table gave them.</summary>
+    [Fact]
+    public void AGiverWithSeveralQuests_KeepsTheTableOrder()
+    {
+        QuestRelationStore objects = new("gameobject_queststarter");
+
+        objects.Add(entry: 5, questId: 30);
+        objects.Add(entry: 5, questId: 10);
+        objects.Add(entry: 5, questId: 20);
+
+        Assert.Equal([30u, 10u, 20u], objects.For(5));
+    }
+
+    /// <summary>An entry nothing is keyed under comes back empty rather than throwing.</summary>
+    [Fact]
+    public void AnUnknownEntry_HasNoQuests() =>
+        Assert.Empty(new QuestRelationStore("gameobject_queststarter").For(999));
 }
 
 /// <summary>The two overloaded columns, and what a quest is worth.</summary>

@@ -59,6 +59,14 @@ builder.Services.AddKeyedSingleton(
     "quest_starters", (_, _) => new QuestRelationStore("creature_queststarter"));
 builder.Services.AddKeyedSingleton(
     "quest_enders", (_, _) => new QuestRelationStore("creature_questender"));
+
+// The same two relations for objects rather than NPCs. Kept apart because the ids mean different
+// things: 447 quests start at a gameobject entry and 457 end at one, and a creature entry that
+// happens to share a number is a different thing entirely.
+builder.Services.AddKeyedSingleton(
+    "go_quest_starters", (_, _) => new QuestRelationStore("gameobject_queststarter"));
+builder.Services.AddKeyedSingleton(
+    "go_quest_enders", (_, _) => new QuestRelationStore("gameobject_questender"));
 builder.Services.AddSingleton<GameObjectSpawnStore>();
 builder.Services.AddSingleton<PlayerXpStore>();
 builder.Services.AddSingleton<GraveyardStore>();

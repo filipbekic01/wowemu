@@ -856,15 +856,15 @@
               "note": "Every vertex inside its tile bounds, every polygon indexing a real vertex, every detail base inside its array, every BV escape inside the tree, and each section consuming exactly its predicted bytes."
             },
             {
-              "done": false,
-              "text": "DECISION NEEDED: fork DotRecast (zlib) and change DT_SALT_BITS / TILE_BITS / POLY_BITS to 12/21/31",
+              "done": true,
+              "text": "DotRecast — no fork needed",
               "blocked": true,
-              "note": "Three constants, but it means vendoring and maintaining a third-party codebase — worth a deliberate yes rather than drifting into it."
+              "note": "DECISION RESOLVED, and it turned out not to be a decision. The fear was that AzerothCore's patched Detour (DT_POLYREF64 plus a 12/21/31 salt/tile/poly split) made its tiles unreadable by a stock port. Only the reference WIDTH reaches the disk, through sizeof(dtLink), and all 400 sampled tiles measure as 64-bit — which DotRecast is too (DtLink.refs is a long). The PACKING never reaches the disk: DtNavMesh.AddTile takes a parsed DtMeshData with no link array, and Detour rebuilds every link itself, so a poly ref is created and consumed inside one process and never compared against anything AzerothCore wrote. Stock DotRecast.Detour from NuGet, no fork, no vendored third-party codebase."
             },
             {
-              "done": false,
-              "text": "Load a real tile into a mesh, run a path, compare against the C++ server's .mmap path",
-              "note": "The phase's actual exit criterion, and still unproven."
+              "done": true,
+              "text": "Load a real tile into a mesh and run a path",
+              "note": "Done: 515 tiles of Eastern Kingdoms load into a stock DtNavMesh, and FindPath runs between two points near the human start. The swizzle is (y, z, x) straight from PathGenerator — NOT negated. Negating it (which the terrain tiles' origin-centred inversion tempts you into) puts the point outside the mesh and comes back as \"no polygon here\" rather than as an error, which is what happened on the first attempt. Still to do: comparing our path against the C++ server's for the same endpoints, which needs a running C++ server."
             },
             {
               "done": false,
@@ -1763,8 +1763,9 @@
               "note": "Status mark, menu, details, accept, walk to a different NPC, hand in, 85 experience, and the quest no longer on offer."
             },
             {
-              "done": false,
-              "text": "Quest chains — PrevQuestId, NextQuestId and exclusive groups are read and ignored"
+              "done": true,
+              "text": "Quest chains — PrevQuestId, NextQuestId and exclusive groups",
+              "note": "A quest's prerequisites are its own PrevQuestId PLUS every quest whose NextQuestId points back at it — the link is stored from either end, and 587 quests use the reverse direction, so reading only the forward column left all their successors ungated. Any ONE prerequisite satisfied is enough (they are alternatives, which is how two lines both open the same follow-up), except where the prerequisite sits in a NEGATIVE exclusive group, which is upstream's \"each from all\" and needs the whole group done. A POSITIVE group is \"one from all\": taking any locks out the rest (644 quests). Note upstream's own comment above SatisfyQuestExclusiveGroup describes the positive case backwards; the code beneath it is what the game does. Reputation, skill and timed quests are still absent and still pass."
             },
             {
               "done": false,
@@ -1775,8 +1776,9 @@
               "text": "Reputation and skill requirements, spell and title rewards, daily resets"
             },
             {
-              "done": false,
-              "text": "gameobject_queststarter / _questender — only creatures give quests"
+              "done": true,
+              "text": "gameobject_queststarter / _questender",
+              "note": "Both vendored (447 starters, 457 enders). The whole quest conversation now resolves its giver to a small QuestGiver record covering creatures and objects alike, so accepting, handing in and the status marks all work from either. Creature and gameobject entries are SEPARATE keyspaces — entry 1234 is a different thing in each — so the two pairs of relation tables are kept apart. Reaching an object needs CMSG_GAMEOBJ_USE, which was not handled at all: the client sends questgiver-hello only for NPCs. Verified against the data: all 377 distinct starter entries are gameobject type 2 (questgiver), so the type gate excludes nothing, and 393 of them are spawned."
             },
             {
               "done": true,
@@ -1858,8 +1860,9 @@
               "note": "Same shape as trainers: the line appears and clicking it closes the window."
             },
             {
-              "done": false,
-              "text": "Vendor stock limits and restock timers — every vendor has infinite supply"
+              "done": true,
+              "text": "Vendor stock limits and restock timers",
+              "note": "maxcount and incrtime were being loaded and ignored — this is the runtime half. Stock is per VENDOR, not per entry: two innkeepers of the same template have their own shelves. maxcount counts ITEMS, not purchases, so a client buying one stack of twenty is asking for twenty of them — upstream uses BuyCount * count for both the check and the decrement. Restocking is lazy (nothing needs to know until somebody looks), happens on whole intervals only, and adds a purchase's worth per interval rather than one item. An incrtime of 0 means never refills. The ledger is sparse: unlimited rows never enter it and a fully restocked item is dropped from it. Stock is taken only after the sale goes through, so a purchase refused for bag space does not cost the vendor anything."
             },
             {
               "done": false,

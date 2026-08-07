@@ -57,6 +57,18 @@ public sealed class Creature : Unit
     /// <summary>Which gossip menu right-clicking opens. Zero means it has none of its own.</summary>
     public uint GossipMenuId { get; private init; }
 
+    /// <summary>
+    /// What this particular vendor has left of anything it stocks a limited number of.
+    /// </summary>
+    /// <remarks>
+    /// Per creature rather than per entry: two innkeepers of the same template each have their own
+    /// shelves. Created on demand, because the overwhelming majority of creatures are not vendors
+    /// and the overwhelming majority of vendor rows are unlimited.
+    /// </remarks>
+    public VendorStock Stock => _stock ??= new VendorStock();
+
+    private VendorStock? _stock;
+
     /// <summary>The copper range the corpse carries, before it is rolled.</summary>
     public uint MinGold { get; private init; }
 
@@ -419,6 +431,10 @@ public sealed class Creature : Unit
     public void Respawn()
     {
         DeathState = DeathState.Alive;
+
+        // A vendor that has been killed and come back has restocked. Upstream reloads its counts
+        // from scratch for the same reason.
+        _stock?.Clear();
 
         Health = MaxHealth;
         Power = MaxPower;

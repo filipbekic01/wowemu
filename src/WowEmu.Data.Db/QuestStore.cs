@@ -205,6 +205,28 @@ public sealed record QuestTemplate(
     int PrevQuestId,
     int NextQuestId,
     uint NextQuestIdChain,
+
+    /// <summary>
+    /// Ties this quest to others, and <b>the sign is the whole meaning</b>.
+    /// </summary>
+    /// <remarks>
+    /// Positive is "one from all": taking or finishing any quest in the group locks out the rest —
+    /// the choice between two rival factions' quest lines, or one of three rewards' worth of
+    /// follow-ups. 644 quests carry one.
+    /// <para>
+    /// Negative is "each from all", and it means nothing on its own — it only matters when the
+    /// quest is somebody else's <i>prerequisite</i>. A quest whose predecessor sits in a negative
+    /// group opens only once every quest in that group is done, not just the one named. 283 quests
+    /// carry one.
+    /// </para>
+    /// <para>
+    /// Upstream's own comment above <c>SatisfyQuestExclusiveGroup</c> describes the positive case
+    /// backwards — it says a positive group can start "if any other quest in exclusive group already
+    /// started/completed", and the code beneath returns false in exactly that case. The code is what
+    /// the game does.
+    /// </para>
+    /// </remarks>
+    int ExclusiveGroup,
     byte RewardXpDifficulty,
 
     /// <summary>
@@ -383,6 +405,19 @@ public sealed class QuestRelationStore(string tableName)
 
     public string TableName { get; } = tableName;
 
+    /// <summary>Links a quest to a giver directly. Tests and fixtures only.</summary>
+    public void Add(uint entry, uint questId)
+    {
+        if (!_byCreature.TryGetValue(entry, out List<uint>? quests))
+        {
+            quests = [];
+            _byCreature[entry] = quests;
+        }
+
+        quests.Add(questId);
+        RowCount++;
+    }
+
     /// <summary>How many creatures have at least one quest here.</summary>
     public int Count => _byCreature.Count;
 
@@ -442,12 +477,94 @@ public sealed class QuestStore
     public bool IgnoreAutoAccept { get; set; }
 
     private readonly Dictionary<uint, QuestTemplate> _quests = [];
+    private readonly Dictionary<int, List<uint>> _exclusiveGroups = [];
+    private readonly Dictionary<uint, List<int>> _previousQuests = [];
 
     public int Count => _quests.Count;
 
     public IEnumerable<QuestTemplate> All => _quests.Values;
 
     public bool TryGet(uint questId, out QuestTemplate? quest) => _quests.TryGetValue(questId, out quest);
+
+    /// <summary>Every quest sharing an exclusive group. Empty for a group nothing is in.</summary>
+    public IReadOnlyList<uint> QuestsInGroup(int group) =>
+        _exclusiveGroups.TryGetValue(group, out List<uint>? quests) ? quests : [];
+
+    /// <summary>
+    /// The quests that must be done before one opens, signed.
+    /// </summary>
+    /// <remarks>
+    /// <b>Not just <c>PrevQuestId</c>.</b> A quest's prerequisites are its own <c>PrevQuestId</c>
+    /// <i>plus every quest whose <c>NextQuestId</c> points back at it</i> — the link is stored from
+    /// either end and upstream builds one list from both. 587 quests name a successor that way, and
+    /// reading only the forward column leaves every one of those successors ungated.
+    /// <para>
+    /// The sign is carried through: a positive prerequisite must have been handed in, a negative one
+    /// need only have been started.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<int> PreviousQuests(uint questId) =>
+        _previousQuests.TryGetValue(questId, out List<int>? previous) ? previous : [];
+
+    /// <summary>
+    /// Builds the chain and group indexes, once every quest is loaded.
+    /// </summary>
+    /// <remarks>
+    /// After the load rather than during it, because a <c>NextQuestId</c> can point at a quest that
+    /// has not been read yet — the table is not ordered by chain and nothing says it would be.
+    /// </remarks>
+    private void BuildChainIndexes()
+    {
+        _exclusiveGroups.Clear();
+        _previousQuests.Clear();
+
+        foreach (QuestTemplate quest in _quests.Values)
+        {
+            if (quest.ExclusiveGroup != 0)
+            {
+                if (!_exclusiveGroups.TryGetValue(quest.ExclusiveGroup, out List<uint>? group))
+                {
+                    group = [];
+                    _exclusiveGroups[quest.ExclusiveGroup] = group;
+                }
+
+                group.Add(quest.Id);
+            }
+
+            // A prerequisite that names a quest we do not have is dropped rather than kept: it would
+            // gate the quest on something that can never be satisfied, which locks it out forever.
+            if (quest.PrevQuestId != 0 && _quests.ContainsKey((uint)Math.Abs(quest.PrevQuestId)))
+            {
+                Link(quest.Id, quest.PrevQuestId);
+            }
+
+            if (quest.NextQuestId > 0 && _quests.ContainsKey((uint)quest.NextQuestId))
+            {
+                // The reverse direction: this quest becomes a prerequisite of the one it names.
+                Link((uint)quest.NextQuestId, (int)quest.Id);
+            }
+        }
+
+        void Link(uint questId, int prerequisite)
+        {
+            if (!_previousQuests.TryGetValue(questId, out List<int>? previous))
+            {
+                previous = [];
+                _previousQuests[questId] = previous;
+            }
+
+            previous.Add(prerequisite);
+        }
+    }
+
+    /// <summary>Adds a quest directly and rebuilds the indexes. Tests and fixtures only.</summary>
+    public void Add(QuestTemplate quest)
+    {
+        ArgumentNullException.ThrowIfNull(quest);
+
+        _quests[quest.Id] = quest;
+        BuildChainIndexes();
+    }
 
     public async Task LoadAsync(string connectionString, CancellationToken cancellationToken = default)
     {
@@ -467,6 +584,8 @@ public sealed class QuestStore
             QuestTemplate quest = Read(reader);
             _quests[quest.Id] = quest;
         }
+
+        BuildChainIndexes();
     }
 
     public override string ToString() => string.Create(CultureInfo.InvariantCulture, $"{Count} quests");
@@ -501,7 +620,11 @@ public sealed class QuestStore
                IFNULL(OfferRewardText, ''), IFNULL(RequestItemsText, ''),
                IFNULL(ObjectiveText1, ''), IFNULL(ObjectiveText2, ''),
                IFNULL(ObjectiveText3, ''), IFNULL(ObjectiveText4, ''),
-               RequiredPlayerKills
+               RequiredPlayerKills,
+
+               -- Appended rather than placed with the other chain columns: every reader index
+               -- below is positional, so inserting a column mid-list silently shifts sixty of them.
+               ExclusiveGroup
         FROM quest_template
         """;
 
@@ -606,6 +729,7 @@ public sealed class QuestStore
             OfferRewardText: reader.GetString(71),
             RequestItemsText: reader.GetString(72),
             ObjectiveText: objectiveText,
-            RequiredPlayerKills: reader.GetByte(77));
+            RequiredPlayerKills: reader.GetByte(77),
+            ExclusiveGroup: reader.GetInt32(78));
     }
 }

@@ -388,6 +388,10 @@ public sealed class WorldSession(
                 HandleQuestGiverHello(payload);
                 return;
 
+            case Opcode.CMSG_GAMEOBJ_USE:
+                HandleGameObjectUse(payload);
+                return;
+
             case Opcode.CMSG_QUESTGIVER_QUERY_QUEST:
                 HandleQuestGiverQueryQuest(payload);
                 return;
@@ -1863,6 +1867,21 @@ public sealed class WorldSession(
         uint quantity = count * Math.Max(template.BuyCount, (byte)1);
         uint price = (uint)Math.Max(template.BuyPrice, 0) * count;
 
+        // Limited stock, restocked lazily on the way past. A maxcount of zero is unlimited and is
+        // nearly every row, so the common case never touches the ledger at all.
+        if (line.MaxCount > 0)
+        {
+            // Compared in items, not in purchases: maxcount counts arrows, and a client buying one
+            // stack of twenty is asking for twenty of them.
+            uint available = vendor.Stock.Available(line, template.BuyCount, GameTime.Now);
+
+            if (available < quantity)
+            {
+                SendBuyFailed(vendorGuid, itemId, BuyResult.ItemSoldOut);
+                return;
+            }
+        }
+
         if (_player.Money < price)
         {
             SendBuyFailed(vendorGuid, itemId, BuyResult.NotEnoughMoney);
@@ -1877,6 +1896,13 @@ public sealed class WorldSession(
 
         _player.Inventory.Store(template, quantity, itemGuids.Next, out IReadOnlyList<Item> bought);
         _player.Money -= price;
+
+        // Taken off the shelf only once the sale has actually gone through — a purchase refused for
+        // want of bag space must not cost the vendor its stock.
+        if (line.MaxCount > 0)
+        {
+            vendor.Stock.Take(line, template.BuyCount, quantity, GameTime.Now);
+        }
 
         ServerPacket packet = new(Opcode.SMSG_BUY_ITEM, 24);
 
@@ -1961,7 +1987,7 @@ public sealed class WorldSession(
                 BoxText: option.BoxText));
         }
 
-        List<QuestMenuEntry> quests = BuildQuestMenu(npc);
+        List<QuestMenuEntry> quests = BuildQuestMenu(new QuestGiver(npc.Guid, npc.Entry, IsObject: false));
 
         ServerPacket packet = new(
             Opcode.SMSG_GOSSIP_MESSAGE, 32 + (lines.Count * 128) + (quests.Count * 96));
@@ -1996,9 +2022,11 @@ public sealed class WorldSession(
                 ItemId: template.Entry,
                 DisplayId: template.DisplayId,
 
-                // Unlimited stock, which is what a maxcount of zero means and what nearly every
-                // row has. A real count would need the restock timer this phase does not run.
-                InStock: -1,
+                // -1 is the client's "unlimited", which a maxcount of zero means and nearly every
+                // row has. A limited row reports what is actually left, restocked on the way past.
+                InStock: stock[i].MaxCount == 0
+                    ? -1
+                    : (int)vendor.Stock.Available(stock[i], template.BuyCount, GameTime.Now),
                 Price: (uint)Math.Max(template.BuyPrice, 0),
                 MaxDurability: template.MaxDurability,
                 BuyCount: Math.Max(template.BuyCount, (byte)1),
@@ -2137,6 +2165,42 @@ public sealed class WorldSession(
     }
 
     /// <summary>
+    /// Clicking an object. <c>CMSG_GAMEOBJ_USE</c>.
+    /// </summary>
+    /// <remarks>
+    /// A questgiver object is reached this way rather than through
+    /// <c>CMSG_QUESTGIVER_HELLO</c> — the client sends that only for NPCs, and an object it can
+    /// interact with produces a use instead. Every other object type falls through and does nothing,
+    /// which is what a chest, a door and a chair all currently do anyway.
+    /// <para>
+    /// The payload is a plain guid rather than a packed one, unlike most of the movement opcodes.
+    /// </para>
+    /// </remarks>
+    private void HandleGameObjectUse(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid))
+        {
+            return;
+        }
+
+        // Only the questgiver type is answered. FindQuestGiver already refuses everything else, so
+        // a chest or a door reaches here and is ignored rather than being special-cased away.
+        if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { IsObject: true } giver)
+        {
+            return;
+        }
+
+        OpenQuestGiver(giver);
+    }
+
+    /// <summary>
     /// Opens a questgiver. <c>CMSG_QUESTGIVER_HELLO</c>.
     /// </summary>
     /// <remarks>
@@ -2166,6 +2230,19 @@ public sealed class WorldSession(
             return;
         }
 
+        OpenQuestGiver(npc);
+    }
+
+    /// <summary>
+    /// Builds a questgiver's menu and shows it.
+    /// </summary>
+    /// <remarks>
+    /// Shared by the NPC and object paths, which arrive on different opcodes and are identical from
+    /// here on: an object's quests come from its own relation tables and everything downstream —
+    /// the menu, the windows, accepting, handing in — is keyed by the guid the client named.
+    /// </remarks>
+    private void OpenQuestGiver(QuestGiver npc)
+    {
         List<QuestMenuEntry> menu = BuildQuestMenu(npc);
 
         QuestTrace(
@@ -2190,7 +2267,7 @@ public sealed class WorldSession(
     /// an "available" one sends <c>CMSG_QUESTGIVER_QUERY_QUEST</c>, so an icon and a window that
     /// disagree put the two halves of the conversation on different opcodes.
     /// </remarks>
-    private void SendPreparedQuest(Creature npc, List<QuestMenuEntry> menu)
+    private void SendPreparedQuest(QuestGiver npc, List<QuestMenuEntry> menu)
     {
         if (_player is null || menu.Count == 0)
         {
@@ -2263,7 +2340,7 @@ public sealed class WorldSession(
 
         QuestTrace(
             "query",
-            $"CanTake says {_player.Quests.CanTake(quest)}, autoAccept {quest.IsAutoAccept}, "
+            $"CanTake says {_player.Quests.CanTake(quest, world.Quests)}, autoAccept {quest.IsAutoAccept}, "
                 + $"autoComplete {quest.IsAutoComplete}, method {quest.Method}",
             npc.Entry,
             questId);
@@ -2305,7 +2382,7 @@ public sealed class WorldSession(
             return;
         }
 
-        QuestTakeResult verdict = _player.Quests.CanTake(quest);
+        QuestTakeResult verdict = _player.Quests.CanTake(quest, world.Quests);
 
         if (_player.Quests.Accept(quest) is null)
         {
@@ -2348,7 +2425,7 @@ public sealed class WorldSession(
     /// then sets the state word. <c>SMSG_QUESTUPDATE_COMPLETE</c> is not part of this path.
     /// </para>
     /// </remarks>
-    private void OnQuestAdded(Creature npc, QuestTemplate quest, string step)
+    private void OnQuestAdded(QuestGiver npc, QuestTemplate quest, string step)
     {
         if (_player is null)
         {
@@ -2443,7 +2520,7 @@ public sealed class WorldSession(
         // Only the ender takes a quest back. Without this a "go and speak to someone" errand can be
         // handed straight back to the person who gave it.
         if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } giver
-            || !world.QuestEnders.For(giver.Entry).Contains(questId))
+            || !QuestsEndedBy(giver).Contains(questId))
         {
             QuestTrace("complete", "this NPC does not end that quest", 0, questId);
 
@@ -2495,7 +2572,7 @@ public sealed class WorldSession(
         // actually pays, so without it a reward can be claimed from any guid the client names —
         // including the NPC that gave the quest, which is one click away in the reward window.
         if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } giver
-            || !world.QuestEnders.For(giver.Entry).Contains(questId))
+            || !QuestsEndedBy(giver).Contains(questId))
         {
             return;
         }
@@ -2568,7 +2645,7 @@ public sealed class WorldSession(
         }
 
         if (FindQuestGiver(new ObjectGuid(rawGuid)) is not { } giver
-            || !world.QuestEnders.For(giver.Entry).Contains(questId))
+            || !QuestsEndedBy(giver).Contains(questId))
         {
             QuestTrace("request-reward", "this NPC does not end that quest", 0, questId);
 
@@ -2671,7 +2748,7 @@ public sealed class WorldSession(
     /// accept-then-hand-in flows with a dead end.
     /// </para>
     /// </remarks>
-    private void OpenQuest(Creature npc, QuestTemplate quest)
+    private void OpenQuest(QuestGiver npc, QuestTemplate quest)
     {
         if (_player is null)
         {
@@ -2684,7 +2761,7 @@ public sealed class WorldSession(
         // packet and the quest is never added by anyone. It has to happen on both routes into this
         // window, which is why it lives here rather than in either handler: the C++ repeats it in
         // SendPreparedQuest and HandleQuestgiverQueryQuestOpcode for the same reason.
-        if (quest.IsAutoAccept && _player.Quests.CanTake(quest) == QuestTakeResult.Ok
+        if (quest.IsAutoAccept && _player.Quests.CanTake(quest, world.Quests) == QuestTakeResult.Ok
             && _player.Quests.Accept(quest) is not null)
         {
             OnQuestAdded(npc, quest, "auto-accept");
@@ -2861,7 +2938,7 @@ public sealed class WorldSession(
             : QuestGiverStatusFor(npc);
 
     /// <inheritdoc cref="QuestGiverStatusFor(ObjectGuid)"/>
-    private uint QuestGiverStatusFor(Creature npc)
+    private uint QuestGiverStatusFor(QuestGiver npc)
     {
         if (_player is null)
         {
@@ -2871,7 +2948,7 @@ public sealed class WorldSession(
         uint result = QuestGiverStatus.None;
 
         // What this NPC takes back.
-        foreach (uint questId in world.QuestEnders.For(npc.Entry))
+        foreach (uint questId in QuestsEndedBy(npc))
         {
             if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
             {
@@ -2890,7 +2967,7 @@ public sealed class WorldSession(
 
         // What it hands out. Only quests the player has not touched: one already in the log is the
         // ender's business, and drawing an exclamation for it sends the player back the way they came.
-        foreach (uint questId in world.QuestStarters.For(npc.Entry))
+        foreach (uint questId in QuestsStartedBy(npc))
         {
             if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null
                 || _player.Quests.StatusOf(questId) != QuestStatus.None)
@@ -2968,7 +3045,7 @@ public sealed class WorldSession(
                 continue;
             }
 
-            marks.Add((npc.Guid, (byte)QuestGiverStatusFor(npc)));
+            marks.Add((npc.Guid, (byte)QuestGiverStatusFor(npc.Guid)));
         }
 
         ServerPacket packet = new(
@@ -2996,7 +3073,7 @@ public sealed class WorldSession(
     /// that gave it has nothing left to say about it.
     /// </para>
     /// </remarks>
-    private List<QuestMenuEntry> BuildQuestMenu(Creature npc)
+    private List<QuestMenuEntry> BuildQuestMenu(QuestGiver npc)
     {
         List<QuestMenuEntry> menu = [];
 
@@ -3005,7 +3082,7 @@ public sealed class WorldSession(
             return menu;
         }
 
-        foreach (uint questId in world.QuestEnders.For(npc.Entry))
+        foreach (uint questId in QuestsEndedBy(npc))
         {
             if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null)
             {
@@ -3020,10 +3097,10 @@ public sealed class WorldSession(
             }
         }
 
-        foreach (uint questId in world.QuestStarters.For(npc.Entry))
+        foreach (uint questId in QuestsStartedBy(npc))
         {
             if (!world.Quests.TryGet(questId, out QuestTemplate? quest) || quest is null
-                || _player.Quests.CanTake(quest) != QuestTakeResult.Ok)
+                || _player.Quests.CanTake(quest, world.Quests) != QuestTakeResult.Ok)
             {
                 continue;
             }
@@ -3056,11 +3133,11 @@ public sealed class WorldSession(
     }
 
     /// <summary>Every quest an NPC is involved in, starter and ender alike.</summary>
-    private List<uint> QuestsFor(Creature npc)
+    private List<uint> QuestsFor(QuestGiver npc)
     {
-        List<uint> quests = [.. world.QuestStarters.For(npc.Entry)];
+        List<uint> quests = [.. QuestsStartedBy(npc)];
 
-        foreach (uint questId in world.QuestEnders.For(npc.Entry))
+        foreach (uint questId in QuestsEndedBy(npc))
         {
             if (!quests.Contains(questId))
             {
@@ -3101,21 +3178,55 @@ public sealed class WorldSession(
     private void QuestTrace(string step, string reason, uint npcEntry, uint questId) =>
         Log.QuestStep(logger, step, reason, npcEntry, questId, connection.RemoteAddress);
 
-    /// <summary>The creature behind a guid, if it is one, alive, and a questgiver in range.</summary>
-    private Creature? FindQuestGiver(ObjectGuid guid)
+    /// <summary>
+    /// Whatever a quest conversation is being had with — an NPC or an object.
+    /// </summary>
+    /// <param name="Guid">What the client named.</param>
+    /// <param name="Entry">Its template entry, which is what the relation tables are keyed by.</param>
+    /// <param name="IsObject">
+    /// Which pair of relation tables applies. The two keyspaces are unrelated: creature entry 1234
+    /// and gameobject entry 1234 are different things, and asking the wrong table finds either
+    /// nothing or somebody else's quest.
+    /// </param>
+    private readonly record struct QuestGiver(ObjectGuid Guid, uint Entry, bool IsObject);
+
+    /// <summary>The quests this giver hands out.</summary>
+    private IReadOnlyList<uint> QuestsStartedBy(QuestGiver giver) =>
+        (giver.IsObject ? world.ObjectQuestStarters : world.QuestStarters).For(giver.Entry);
+
+    /// <summary>The quests this giver takes back.</summary>
+    private IReadOnlyList<uint> QuestsEndedBy(QuestGiver giver) =>
+        (giver.IsObject ? world.ObjectQuestEnders : world.QuestEnders).For(giver.Entry);
+
+    /// <summary>
+    /// The questgiver behind a guid, whether it is a creature or an object.
+    /// </summary>
+    /// <remarks>
+    /// A creature has to be alive and flagged; an object has to be of the questgiver type. There is
+    /// no equivalent of the npc flag on an object — the type <i>is</i> the flag.
+    /// </remarks>
+    private QuestGiver? FindQuestGiver(ObjectGuid guid)
     {
-        if (_player is null || _map is null || _map.Find(guid) is not Creature npc)
+        if (_player is null || _map is null)
         {
             return null;
         }
 
-        if (!npc.IsAlive || (npc.NpcFlags & NpcFlagQuestGiver) == 0)
+        switch (_map.Find(guid))
         {
-            return null;
-        }
+            case Creature npc when npc.IsAlive && (npc.NpcFlags & NpcFlagQuestGiver) != 0:
+                return new QuestGiver(npc.Guid, npc.Entry, IsObject: false);
 
-        return npc;
+            case GameObject go when go.GoType == GameObjectTypeQuestGiver:
+                return new QuestGiver(go.Guid, go.Entry, IsObject: true);
+
+            default:
+                return null;
+        }
     }
+
+    /// <summary>A gameobject that hands out quests. <c>GAMEOBJECT_TYPE_QUESTGIVER</c>.</summary>
+    private const byte GameObjectTypeQuestGiver = 2;
 
     private uint DisplayIdFor(uint itemId) =>
         world.Items.TryGet(itemId, out ItemTemplate? template) && template is not null ? template.DisplayId : 0;
