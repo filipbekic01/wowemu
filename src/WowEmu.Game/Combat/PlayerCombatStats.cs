@@ -1,4 +1,5 @@
 using WowEmu.Data.Db;
+using WowEmu.Protocol;
 
 namespace WowEmu.Game.Combat;
 
@@ -98,6 +99,9 @@ public static class PlayerCombatStats
         player.MaxDamage = weaponMax + fromAttackPower;
 
         player.Armor = ArmorFromEquipment(player);
+
+        ApplyResistances(player);
+        ApplyRatings(player);
     }
 
     /// <summary>
@@ -108,9 +112,9 @@ public static class PlayerCombatStats
     /// A delta is one missed call away from a character who gains three strength every time they
     /// take a belt off, and nothing would ever notice.
     /// <para>
-    /// The stat <i>type</i> column is an <c>ItemModType</c>, and only the five attributes are
-    /// handled — the resistances, the combat ratings and the flat spell power on an item are read
-    /// and ignored.
+    /// The stat <i>type</i> column is an <c>ItemModType</c>. The five attributes land here; the
+    /// combat ratings go to <see cref="ApplyRatings"/>, and the flat spell power and regen terms are
+    /// still read and ignored.
     /// </para>
     /// <para>
     /// Auras are summed in on top, and <b>they sum rather than taking the strongest</b> — unlike
@@ -222,6 +226,172 @@ public static class PlayerCombatStats
     /// <c>gtChanceToMeleeCrit</c> and friends. That is a gap, not a simplification — a level-1
     /// character's agility armour is small, and a level-80 rogue's is not.
     /// </remarks>
+    /// <summary>
+    /// Writes the six magic resistances from what is worn.
+    /// </summary>
+    /// <remarks>
+    /// They share a field block with armour: <c>UNIT_FIELD_RESISTANCES</c> is seven entries and slot
+    /// 0 is <i>armour</i>, which is the physical school. Writing holy into slot 0 overwrites the
+    /// armour that <see cref="ArmorFromEquipment"/> just computed, and the character loses every
+    /// point of mitigation while gaining holy resistance nobody asked for.
+    /// <para>
+    /// These come from the item's own columns rather than its stat list — resistances are not
+    /// <c>ItemModType</c>s, which is why an item can carry both.
+    /// </para>
+    /// </remarks>
+    private static void ApplyResistances(Player player)
+    {
+        Span<uint> totals = stackalloc uint[SpellSchools];
+
+        for (byte slot = InventorySlots.EquipmentStart; slot < InventorySlots.EquipmentEnd; slot++)
+        {
+            if (player.Inventory.Equipped(slot) is not { IsBroken: false } item)
+            {
+                continue;
+            }
+
+            ItemTemplate template = item.Template;
+
+            totals[SchoolHoly] += template.HolyResistance;
+            totals[SchoolFire] += template.FireResistance;
+            totals[SchoolNature] += template.NatureResistance;
+            totals[SchoolFrost] += template.FrostResistance;
+            totals[SchoolShadow] += template.ShadowResistance;
+            totals[SchoolArcane] += template.ArcaneResistance;
+        }
+
+        // From one, not zero: slot 0 is armour and is written elsewhere.
+        for (int school = SchoolHoly; school < SpellSchools; school++)
+        {
+            player.Fields.SetUInt32(UpdateFields.UNIT_FIELD_RESISTANCES + school, totals[school]);
+        }
+    }
+
+    /// <summary>
+    /// Writes the twenty-five combat ratings from what is worn.
+    /// </summary>
+    /// <remarks>
+    /// Port of the rating half of <c>Player::_ApplyItemMods</c>. The mapping is not one-to-one:
+    /// <b>several item mods fan out to three ratings each</b> — a "hit rating" on an item feeds
+    /// melee, ranged <i>and</i> spell hit, and resilience feeds all three crit-taken ratings.
+    /// Treating them as single ratings loses two thirds of what the item says it gives.
+    /// <para>
+    /// <b>These are stored ratings, not percentages.</b> The client shows the rating and works out
+    /// the percentage itself; the server turning a rating into a chance needs
+    /// <c>gtCombatRatings.dbc</c> and its class scalar, which is the separate gap already recorded.
+    /// So a crit rating shows correctly on the character sheet and does not yet change a roll.
+    /// </para>
+    /// </remarks>
+    private static void ApplyRatings(Player player)
+    {
+        Span<int> totals = stackalloc int[CombatRatings];
+
+        totals.Clear();
+
+        for (byte slot = InventorySlots.EquipmentStart; slot < InventorySlots.EquipmentEnd; slot++)
+        {
+            if (player.Inventory.Equipped(slot) is not { IsBroken: false } item)
+            {
+                continue;
+            }
+
+            int declared = Math.Min((int)item.Template.StatsCount, ItemConstants.MaxStats);
+
+            for (int i = 0; i < declared; i++)
+            {
+                ItemStat stat = item.Template.Stats[i];
+
+                foreach (int rating in RatingsFor(stat.Type))
+                {
+                    totals[rating] += stat.Value;
+                }
+            }
+        }
+
+        for (int rating = 0; rating < CombatRatings; rating++)
+        {
+            player.Fields.SetUInt32(
+                UpdateFields.PLAYER_FIELD_COMBAT_RATING_1 + rating, (uint)Math.Max(totals[rating], 0));
+        }
+    }
+
+    /// <summary>
+    /// Which combat ratings an <c>ItemModType</c> feeds. Empty for anything that feeds none.
+    /// </summary>
+    /// <remarks>
+    /// The three-way fan-outs are the whole reason this returns a list. <c>ITEM_MOD_HIT_RATING</c>
+    /// is not "the hit rating" — there is no such field — it is melee, ranged and spell hit at once.
+    /// </remarks>
+    private static ReadOnlySpan<int> RatingsFor(byte statType) => statType switch
+    {
+        12 => [CrDefenseSkill],
+        13 => [CrDodge],
+        14 => [CrParry],
+        15 => [CrBlock],
+        16 => [CrHitMelee],
+        17 => [CrHitRanged],
+        18 => [CrHitSpell],
+        19 => [CrCritMelee],
+        20 => [CrCritRanged],
+        21 => [CrCritSpell],
+        22 => [CrHitTakenMelee],
+        23 => [CrHitTakenRanged],
+        24 => [CrHitTakenSpell],
+        25 => [CrCritTakenMelee],
+        26 => [CrCritTakenRanged],
+        27 => [CrCritTakenSpell],
+        28 => [CrHasteMelee],
+        29 => [CrHasteRanged],
+        30 => [CrHasteSpell],
+
+        // The combined forms, each feeding all three schools at once.
+        31 => [CrHitMelee, CrHitRanged, CrHitSpell],
+        32 => [CrCritMelee, CrCritRanged, CrCritSpell],
+        33 => [CrHitTakenMelee, CrHitTakenRanged, CrHitTakenSpell],
+
+        // Resilience and crit-taken are the same three ratings — upstream falls one case into the
+        // other, which is easy to read as a missing break.
+        34 or 35 => [CrCritTakenMelee, CrCritTakenRanged, CrCritTakenSpell],
+
+        36 => [CrHasteMelee, CrHasteRanged, CrHasteSpell],
+        37 => [CrExpertise],
+        44 => [CrArmorPenetration],
+        _ => [],
+    };
+
+    /// <summary><c>MAX_SPELL_SCHOOL</c>, and the six that are not armour.</summary>
+    private const int SpellSchools = 7;
+    private const int SchoolHoly = 1;
+    private const int SchoolFire = 2;
+    private const int SchoolNature = 3;
+    private const int SchoolFrost = 4;
+    private const int SchoolShadow = 5;
+    private const int SchoolArcane = 6;
+
+    /// <summary><c>CombatRating</c> and <c>MAX_COMBAT_RATING</c>.</summary>
+    private const int CombatRatings = 25;
+    private const int CrDefenseSkill = 1;
+    private const int CrDodge = 2;
+    private const int CrParry = 3;
+    private const int CrBlock = 4;
+    private const int CrHitMelee = 5;
+    private const int CrHitRanged = 6;
+    private const int CrHitSpell = 7;
+    private const int CrCritMelee = 8;
+    private const int CrCritRanged = 9;
+    private const int CrCritSpell = 10;
+    private const int CrHitTakenMelee = 11;
+    private const int CrHitTakenRanged = 12;
+    private const int CrHitTakenSpell = 13;
+    private const int CrCritTakenMelee = 14;
+    private const int CrCritTakenRanged = 15;
+    private const int CrCritTakenSpell = 16;
+    private const int CrHasteMelee = 17;
+    private const int CrHasteRanged = 18;
+    private const int CrHasteSpell = 19;
+    private const int CrExpertise = 23;
+    private const int CrArmorPenetration = 24;
+
     private static uint ArmorFromEquipment(Player player)
     {
         uint armor = 0;
