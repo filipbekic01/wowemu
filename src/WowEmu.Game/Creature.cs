@@ -261,6 +261,10 @@ public sealed class Creature : Unit
         // A wander that crosses a fence is the ordinary case this fixes: 24,712 of the 77,138
         // wandering spawns have a radius wide enough to put a destination on the far side of
         // something.
+        // The animation flag, separate from the speed below. A creature told to run at walking
+        // speed, or the reverse, plays one and moves at the other.
+        WalkModeChanged = SetWalk(!decision.Run);
+
         if (RouteTo?.Invoke(Position, decision.Destination) is { Count: > 1 } route)
         {
             return MoveAlong(route, decision.Run);
@@ -340,6 +344,34 @@ public sealed class Creature : Unit
     /// running its route would make every critter in the world look alarmed.
     /// </param>
     /// <returns>The first leg, or null when the route has nowhere to go.</returns>
+    /// <summary>
+    /// Sets whether the creature ambles or runs, and says whether that changed.
+    /// </summary>
+    /// <returns>True when the mode actually moved, so the caller knows to tell anyone.</returns>
+    /// <remarks>
+    /// Port of <c>Unit::SetWalk</c>, which returns false when nothing changed for exactly this
+    /// reason — the packet is broadcast to everyone watching, and sending one per waypoint would be
+    /// one per leg for every patrolling creature on the continent.
+    /// </remarks>
+    public bool SetWalk(bool walking)
+    {
+        if (IsWalking == walking)
+        {
+            return false;
+        }
+
+        IsWalking = walking;
+
+        return true;
+    }
+
+    /// <summary>Whether the last movement decision changed this creature between walking and running.</summary>
+    /// <remarks>
+    /// Read and cleared by the map, which is the only thing that can broadcast. A flag rather than a
+    /// callback so a creature stays constructible with no world behind it.
+    /// </remarks>
+    public bool WalkModeChanged { get; set; }
+
     public CreatureMove? MoveAlong(IReadOnlyList<Position> path, bool run = true)
     {
         ArgumentNullException.ThrowIfNull(path);

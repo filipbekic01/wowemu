@@ -456,16 +456,19 @@
               "note": "Vendored (10,731 outfits across 10,711 entries) and written to UNIT_VIRTUAL_ITEM_SLOT_ID. 49,183 spawns name an outfit and were drawn empty-handed. equipment_id is SIGNED: 0 means unarmed (96,587 spawns), a positive value names a variant, and -1 means pick one at random (176) — reading the column as unsigned turns those 176 into requests for outfit 255. The random pick advances a position through the ordered variants rather than indexing by the rolled number, because variant ids are not contiguous. The generator is only consulted for the -1 case, matching upstream, so seeded draw counts stay in step. creature_addon is vendored separately; its auras and emotes are still unread. creature_template_addon is vendored too (8,709 rows), and the addon fields are applied: mount, stand state, visibility flags, animation tier, sheath state and emote. A spawn row REPLACES its entry row outright rather than merging — upstream returns the first that exists — and each packed column is only written when non-zero, because the sheath default is set before the addon and a blanket zero would sheathe the whole world. Applied last in Create for the same reason. Auras on spawn are applied too (2,910 spawns, 1,227 entries): self-cast and permanent, parsed defensively from a space-separated column, unknown spells skipped rather than throwing. Speeds are recomputed afterwards because a spawn aura can be a speed modifier."
             },
             {
-              "done": false,
-              "text": "gameobject_template_addon — per-template faction and flag overrides"
+              "done": true,
+              "text": "gameobject_template_addon — not in our dump",
+              "note": "CANNOT BE DONE WITH OUR DATA. The table does not exist anywhere in the database-wotlk checkout — only gameobject_template and gameobject_template_locale are there. AzerothCore reads it (SELECT entry, faction, flags, mingold, maxgold, artkit0..3 FROM gameobject_template_addon) but the dump we vendor from predates it, the same divergence as playercreateinfo_skills and game_graveyard. The consequence is small and worth stating: per-template faction and flag OVERRIDES are absent, so a gameobject uses whatever gameobject_template itself carries. Revisit only if the dump is updated."
             },
             {
-              "done": false,
-              "text": "item_template"
+              "done": true,
+              "text": "item_template",
+              "note": "Already done — vendored to sql/world/data/item_template.sql and loaded by ItemTemplateStore. The board entry was stale."
             },
             {
-              "done": false,
-              "text": "quest_template, npc_text"
+              "done": true,
+              "text": "quest_template, npc_text",
+              "note": "Already done — both vendored and loaded (QuestStore reads quest_template, GossipStore reads npc_text). The board entry was stale."
             },
             {
               "done": true,
@@ -750,9 +753,9 @@
               "note": "A wander destination now sits on the floor from Map.GetFloor — terrain and models — instead of reusing the spawn height for every point in the radius. On a slope that was wrong by the full height difference, and 1,946 wandering spawns roam more than twenty yards. Handed to the creature as a delegate when the map files it, so Creature still knows nothing about maps or terrain files. Falls back to the spawn height when nothing can answer rather than refusing to move: data/ is 3 GB and uncommitted, so a fresh clone has no tiles, and refusing would freeze every wandering creature in the world silently. Waypoint Z is left alone — that is authored data and already correct."
             },
             {
-              "done": false,
-              "text": "Creature movement does not update UNIT_FIELD_BYTES_1 stand state or emit walk/run flags",
-              "note": "Run versus walk is now chosen per leg — a waypoint's move_type picks the speed. What is still missing is the stand state and the movement flags on the wire, so the client picks the animation from the spline speed rather than being told."
+              "done": true,
+              "text": "Stand state and the walk/run flag on the wire",
+              "note": "The client draws BOTH from state the server sends, and neither was being sent after spawn: a creature that spawned sitting stayed seated through the fight it was having, and every patrol played a run cycle at walking pace. STAND STATE: a sitting creature gets up when it engages (Creature::AtEngage). KNEELING IS THE EXCEPTION and it is deliberate — upstream leaves it alone, so a creature scripted to kneel keeps doing so. Treating every non-standing pose as 'get up' loses that. WALKING IS AN ANIMATION FLAG, SEPARATE FROM SPEED. MOVEMENTFLAG_WALKING picks the cycle; the speed is sent independently in the movement block. Setting one without the other gives a creature that sprints on a walk cycle, or ambles at running speed. SMSG_SPLINE_MOVE_SET_WALK_MODE / _RUN_MODE is a packed guid and nothing else — the opcode is the whole message. SENT ONLY ON CHANGE, like upstream's SetWalk returning false when nothing moved. A packet per leg would be one per waypoint for every creature on the continent. Note the consequence, which caught me in a test: a creature that was ALREADY running and starts a chase sends NOTHING, because running is the default and nothing changed. TWO ENTRY POINTS have to set the mode, which is the wiring mistake I made first: the generator-driven path takes it from the waypoint's move_type, and the MAP's own chase/walk-home path (SendCreatureMove) bypasses that entirely. Setting it only in the generator leaves a creature that was ambling keeping the walk animation while it sprints after someone."
             }
           ]
         },

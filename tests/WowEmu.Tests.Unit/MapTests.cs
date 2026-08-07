@@ -876,5 +876,10 @@ public sealed class MapVisibilityTests
 
         public void SendChat(byte type, uint language, ObjectGuid sender, ObjectGuid receiver, string text) =>
             Heard.Add((type, text));
+
+        /// <summary>Every walk/run change this connection was told, as (opcode, unit).</summary>
+        public List<(Opcode Opcode, ObjectGuid Unit)> SplineModes { get; } = [];
+
+        public void SendSplineMode(Opcode opcode, ObjectGuid unit) => SplineModes.Add((opcode, unit));
     }
 }

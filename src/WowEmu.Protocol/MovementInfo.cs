@@ -24,6 +24,16 @@ public enum MovementFlag : uint
     TurnLeft = 0x00000010,
     TurnRight = 0x00000020,
 
+    /// <summary>
+    /// Ambling rather than running. <c>MOVEMENTFLAG_WALKING</c>.
+    /// </summary>
+    /// <remarks>
+    /// The animation only — the speed is a separate thing entirely, sent as the run or walk speed
+    /// in the movement block. Setting one without the other gives a creature that sprints while
+    /// playing a walk cycle, or ambles at running speed.
+    /// </remarks>
+    Walking = 0x00000100,
+
     /// <summary>Adds four jump fields to the movement block.</summary>
     Falling = 0x00001000,
 

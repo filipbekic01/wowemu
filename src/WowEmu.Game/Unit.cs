@@ -296,6 +296,32 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
     /// </remarks>
     public virtual bool IsPlayerControlled => false;
 
+    /// <summary>
+    /// Standing, sitting, kneeling or dead. <c>UNIT_FIELD_BYTES_1</c> byte 0.
+    /// </summary>
+    /// <remarks>
+    /// The client draws the pose from this and nothing else, so a creature that never leaves its
+    /// spawn state sits through the fight it is having.
+    /// </remarks>
+    public byte StandState
+    {
+        get => Fields.GetByte(UpdateFields.UNIT_FIELD_BYTES_1, 0);
+        set => Fields.SetByte(UpdateFields.UNIT_FIELD_BYTES_1, 0, value);
+    }
+
+    /// <summary>Whether this unit is ambling rather than running.</summary>
+    /// <remarks>
+    /// The animation, not the speed. They are set separately and a creature can end up doing one at
+    /// the rate of the other.
+    /// </remarks>
+    public bool IsWalking
+    {
+        get => (Movement.Flags & MovementFlag.Walking) != 0;
+        set => Movement.Flags = value
+            ? Movement.Flags | MovementFlag.Walking
+            : Movement.Flags & ~MovementFlag.Walking;
+    }
+
     /// <summary>The skill the unit swings with. A creature's is always its level cap.</summary>
     public virtual int WeaponSkillValue => Level * 5;
 
@@ -523,6 +549,14 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
         Victim = victim;
         Target = victim.Guid;
 
+        // A creature that spawned sitting has to get up to fight. Upstream does this in
+        // Creature::AtEngage; without it a sitting quest-giver stays seated through the whole
+        // exchange, swinging from a chair.
+        if (UnitStandState.IsSitting(StandState))
+        {
+            StandState = UnitStandState.Stand;
+        }
+
         if (meleeAttack)
         {
             IsMeleeAttacking = true;
@@ -607,6 +641,31 @@ public abstract class Unit(ObjectGuid guid, TypeId typeId, int fieldCount, uint 
 /// Five states, not two. The gap between <see cref="JustDied"/> and <see cref="Corpse"/> is where
 /// loot is assigned and experience awarded, and it exists precisely so those happen once.
 /// </remarks>
+/// <summary>How a unit is holding itself. <c>UnitStandStateType</c>.</summary>
+public static class UnitStandState
+{
+    public const byte Stand = 0;
+    public const byte Sit = 1;
+    public const byte SitChair = 2;
+    public const byte Sleep = 3;
+    public const byte SitLowChair = 4;
+    public const byte SitMediumChair = 5;
+    public const byte SitHighChair = 6;
+    public const byte Dead = 7;
+    public const byte Kneel = 8;
+    public const byte Submerged = 9;
+
+    /// <summary>
+    /// Whether this pose has to be abandoned to fight.
+    /// </summary>
+    /// <remarks>
+    /// Everything except standing and kneeling. Kneeling is the odd one out and it is deliberate —
+    /// upstream leaves it alone, and a creature scripted to kneel is meant to keep doing so.
+    /// </remarks>
+    public static bool IsSitting(byte state) =>
+        state is not (Stand or Kneel or Dead);
+}
+
 public enum DeathState : byte
 {
     Alive = 0,

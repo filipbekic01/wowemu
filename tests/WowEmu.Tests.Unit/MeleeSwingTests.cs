@@ -774,6 +774,11 @@ internal static class MapCombatFixture
         {
         }
 
+        /// <summary>Every walk/run change this connection was told, as (opcode, unit).</summary>
+        public List<(Opcode Opcode, ObjectGuid Unit)> SplineModes { get; } = [];
+
+        public void SendSplineMode(Opcode opcode, ObjectGuid unit) => SplineModes.Add((opcode, unit));
+
         public void QueueMonsterMove(ObjectGuid mover, CreatureMove move, uint splineId)
         {
         }

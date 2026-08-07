@@ -49,6 +49,9 @@ public interface IPlayerConnection
     /// <summary>Delivers one chat line. Immediate — a spoken line batched is a line delivered late.</summary>
     void SendChat(byte type, uint language, ObjectGuid sender, ObjectGuid receiver, string text);
 
+    /// <summary>Tells this client a unit has changed between walking and running.</summary>
+    void SendSplineMode(Opcode opcode, ObjectGuid unit);
+
 
     /// <summary>
     /// Notes that a creature has started walking somewhere, to go out at the next flush.
@@ -1430,6 +1433,30 @@ public sealed class Map(
     }
 
     /// <summary>
+    /// Tells everyone watching that a creature has changed between walking and running.
+    /// </summary>
+    /// <remarks>
+    /// The client picks the animation from this, not from the speed in the move packet — so without
+    /// it a wandering creature sprints along its patrol on a run cycle at walking pace, which reads
+    /// as the animation being broken rather than the flag being absent.
+    /// <para>
+    /// Sent only when the mode actually changes. A packet per leg would be one per waypoint for
+    /// every creature on the continent, for nothing.
+    /// </para>
+    /// </remarks>
+    private void BroadcastWalkMode(Creature creature)
+    {
+        Opcode opcode = creature.IsWalking
+            ? Opcode.SMSG_SPLINE_MOVE_SET_WALK_MODE
+            : Opcode.SMSG_SPLINE_MOVE_SET_RUN_MODE;
+
+        foreach (Player watcher in PlayersWhoSeeCore(creature.Guid))
+        {
+            watcher.Connection?.SendSplineMode(opcode, creature.Guid);
+        }
+    }
+
+    /// <summary>
     /// Starts a creature on a move and broadcasts it.
     /// </summary>
     /// <remarks>
@@ -1442,6 +1469,12 @@ public sealed class Map(
     {
         creature.ChaseTarget = destination;
 
+        // Every move the map issues is a run — a chase and a walk home are both urgent. The
+        // generator-driven path sets its own mode from the waypoint, and this is the other entry
+        // point; missing it means a creature that was ambling keeps the walk animation while it
+        // sprints after someone.
+        creature.WalkModeChanged |= creature.SetWalk(false);
+
         Movement.CreatureMove? move = FindRoute(creature, destination) is { HasPath: true } route
             ? creature.MoveAlong(route.Points)
             : creature.MoveTo(destination);
@@ -1449,6 +1482,14 @@ public sealed class Map(
         if (move is null)
         {
             return;
+        }
+
+        // Before the move, so the client knows which animation the spline it is about to receive
+        // should be played with.
+        if (creature.WalkModeChanged)
+        {
+            creature.WalkModeChanged = false;
+            BroadcastWalkMode(creature);
         }
 
         foreach (Player watcher in PlayersWhoSeeCore(creature.Guid))

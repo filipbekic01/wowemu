@@ -4955,6 +4955,18 @@ public sealed class WorldSession(
         connection.Send(packet);
     }
 
+    /// <summary>Tells this client a unit changed between walking and running.</summary>
+    /// <remarks>
+    /// A packed guid and nothing else — the opcode is the whole message.
+    /// </remarks>
+    public void SendSplineMode(Opcode opcode, ObjectGuid unit)
+    {
+        ServerPacket packet = new(opcode, 9);
+        packet.Body.WritePackedGuid(unit);
+
+        connection.Send(packet);
+    }
+
     /// <summary>Relays another player's movement to this client.</summary>
     public void SendMovement(Opcode opcode, ObjectGuid mover, MovementInfo movement)
     {
