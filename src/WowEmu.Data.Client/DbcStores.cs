@@ -248,6 +248,193 @@ public sealed record DurabilityCostsEntry(uint ItemLevel, uint[] Multipliers)
 /// </remarks>
 public sealed record DurabilityQualityEntry(uint Id, float Modifier);
 
+/// <summary>What kind of thing a skill line is. <c>SkillCategory</c>.</summary>
+/// <remarks>
+/// The category is what decides how a skill's bar behaves, which is not something the skill row
+/// says in any more direct way. Armour and languages are the two that are not a bar at all.
+/// </remarks>
+public static class SkillCategory
+{
+    public const int Attributes = 5;
+    public const int Weapon = 6;
+    public const int Class = 7;
+    public const int Armor = 8;
+
+    /// <summary>Secondary professions — cooking, fishing, first aid.</summary>
+    public const int Secondary = 9;
+
+    public const int Languages = 10;
+
+    /// <summary>Primary professions, of which a character may have two.</summary>
+    public const int Profession = 11;
+
+    public const int Generic = 12;
+}
+
+/// <summary>The skill ids referred to by name elsewhere. <c>SkillType</c>.</summary>
+public static class SkillType
+{
+    public const uint Swords = 43;
+    public const uint Axes = 44;
+    public const uint Bows = 45;
+    public const uint Guns = 46;
+    public const uint Maces = 54;
+    public const uint TwoHandedSwords = 55;
+    public const uint Defense = 95;
+    public const uint Staves = 136;
+    public const uint TwoHandedMaces = 160;
+    public const uint Unarmed = 162;
+    public const uint TwoHandedAxes = 172;
+    public const uint Daggers = 173;
+    public const uint Thrown = 176;
+    public const uint Crossbows = 226;
+    public const uint Wands = 228;
+    public const uint Polearms = 229;
+    public const uint Assassination = 253;
+    public const uint PlateMail = 293;
+    public const uint Fishing = 356;
+    public const uint Mail = 413;
+    public const uint Leather = 414;
+    public const uint Cloth = 415;
+    public const uint Shield = 433;
+    public const uint FistWeapons = 473;
+    public const uint Lockpicking = 633;
+    public const uint Runeforging = 776;
+    public const uint Mounts = 777;
+
+    /// <summary>
+    /// The skill a weapon subclass is swung with, indexed by subclass. <c>item_weapon_skills</c>.
+    /// </summary>
+    /// <remarks>
+    /// The zeroes are real subclasses with no skill of their own — subclass 9 is the obsolete
+    /// "exotic" pair and 11, 12 and 14 are bear, cat and miscellaneous. They have to stay in place:
+    /// this is indexed by subclass, so removing them shifts every skill after them onto the wrong
+    /// weapon.
+    /// </remarks>
+    private static readonly uint[] WeaponSkills =
+    [
+        Axes, TwoHandedAxes, Bows, Guns, Maces,
+        TwoHandedMaces, Polearms, Swords, TwoHandedSwords, 0,
+        Staves, 0, 0, FistWeapons, 0,
+        Daggers, Thrown, Assassination, Crossbows, Wands,
+        Fishing,
+    ];
+
+    /// <summary>The proficiency an armour subclass needs, indexed by subclass. <c>item_armor_skills</c>.</summary>
+    private static readonly uint[] ArmorSkills =
+        [0, Cloth, Leather, Mail, PlateMail, 0, Shield, 0, 0, 0, 0];
+
+    /// <summary>
+    /// The skill an item is used with, or 0 for something that needs none.
+    /// </summary>
+    /// <remarks>
+    /// Port of <c>ItemTemplate::GetSkill</c>. Only weapons and armour have one — a subclass outside
+    /// either table answers zero rather than throwing, since item data is content and a bad row
+    /// should not take the server down.
+    /// </remarks>
+    public static uint ForItem(byte itemClass, byte subClass) => itemClass switch
+    {
+        DurabilityCostsEntry.ClassWeapon => subClass < WeaponSkills.Length ? WeaponSkills[subClass] : 0,
+        DurabilityCostsEntry.ClassArmor => subClass < ArmorSkills.Length ? ArmorSkills[subClass] : 0,
+        _ => 0,
+    };
+}
+
+/// <summary>
+/// How a skill's bar is scaled, which decides what its maximum means.
+/// </summary>
+/// <remarks>
+/// Port of <c>SkillRangeType</c>. Not a column anywhere: it is derived from the skill's category
+/// and whether it has a tier row, which is why <see cref="SkillLines.RangeOf"/> exists.
+/// </remarks>
+public enum SkillRange
+{
+    /// <summary>Flat 300, learned all at once. Common and Orcish are not practised.</summary>
+    Language,
+
+    /// <summary>1 up to five times the character's level — weapon and defence skills.</summary>
+    Level,
+
+    /// <summary>1..1, a grey monolithic bar. Armour proficiencies, which you either have or not.</summary>
+    Mono,
+
+    /// <summary>1 up to whatever the current tier allows — the professions.</summary>
+    Rank,
+
+    /// <summary>No bar at all, which is what an unknown skill gets.</summary>
+    None,
+}
+
+/// <summary>A row of <c>SkillLine.dbc</c> — a skill, and what kind of thing it is.</summary>
+public sealed record SkillLineEntry(uint Id, int CategoryId, string Name);
+
+/// <summary>
+/// A row of <c>SkillRaceClassInfo.dbc</c> — which races and classes may have a skill.
+/// </summary>
+/// <remarks>
+/// The masks are what makes a skill available at all: a skill with no row matching a character's
+/// race and class cannot be learned by them, which is how the client's own list stays honest.
+/// </remarks>
+public sealed record SkillRaceClassInfoEntry(
+    uint Id, uint SkillId, uint RaceMask, uint ClassMask, uint Flags, uint SkillTierId)
+{
+    /// <summary>The skill starts at its maximum rather than at 1. <c>SKILL_FLAG_ALWAYS_MAX_VALUE</c>.</summary>
+    public const uint AlwaysMaxValue = 0x10;
+
+    /// <summary>Whether this row covers a given race and class.</summary>
+    /// <remarks>
+    /// A zero mask means "all", which is not the same as "none" — reading it literally would make
+    /// every skill unavailable to everyone, since most rows leave both columns at zero.
+    /// </remarks>
+    public bool Covers(byte race, byte characterClass) =>
+        (RaceMask == 0 || (RaceMask & (1u << (race - 1))) != 0)
+        && (ClassMask == 0 || (ClassMask & (1u << (characterClass - 1))) != 0);
+}
+
+/// <summary>
+/// A row of <c>SkillTiers.dbc</c> — the sixteen maximums a ranked skill steps through.
+/// </summary>
+public sealed record SkillTiersEntry(uint Id, uint[] Values)
+{
+    /// <summary>How many steps a ranked skill can have. <c>MAX_SKILL_STEP</c>.</summary>
+    public const int MaxSteps = 16;
+
+    /// <summary>The maximum at a given rank, which is 1-based — apprentice is rank 1.</summary>
+    public uint MaxAt(ushort rank)
+    {
+        int index = Math.Max(rank - 1, 0);
+
+        return index < Values.Length ? Values[index] : 0;
+    }
+}
+
+/// <summary>
+/// A row of <c>SkillLineAbility.dbc</c> — a spell, and the skill it belongs to.
+/// </summary>
+/// <remarks>
+/// This is what connects the spellbook to the skill bar. Learning a spell whose row says
+/// <see cref="LearnedOnSkillLearn"/> grants the skill itself, which is how a fresh warrior ends up
+/// with Swords and Defense without any table saying so directly.
+/// </remarks>
+public sealed record SkillLineAbilityEntry(
+    uint Id,
+    uint SkillLine,
+    uint Spell,
+    uint RaceMask,
+    uint ClassMask,
+    uint MinSkillLineRank,
+    uint SupercededBySpell,
+    uint AcquireMethod,
+    uint TrivialSkillLineRankHigh,
+    uint TrivialSkillLineRankLow)
+{
+    /// <summary>The spell's availability tracks the skill's value. <c>..._ON_SKILL_VALUE</c>.</summary>
+    public const uint LearnedOnSkillValue = 1;
+
+    /// <summary>The spell comes and goes with the whole skill. <c>..._ON_SKILL_LEARN</c>.</summary>
+    public const uint LearnedOnSkillLearn = 2;
+}
+
 /// <summary>A row of <c>LiquidType.dbc</c>.</summary>
 /// <remarks>
 /// Two columns of forty-five. <see cref="SoundBank"/> is what upstream calls <c>Type</c>, and it is
@@ -348,6 +535,22 @@ public sealed class DbcStores
     /// <summary>An id and one float. <c>DurabilityQualityfmt</c>.</summary>
     private const string DurabilityQualityFormat = "nf";
 
+    /// <summary>Fifty-six columns, most of them localised text. <c>SkillLinefmt</c>.</summary>
+    private const string SkillLineFormat =
+        "nixssssssssssssssssxxxxxxxxxxxxxxxxxxixxxxxxxxxxxxxxxxxi";
+
+    /// <summary>
+    /// <c>SkillRaceClassInfofmt</c>. The leading <c>d</c> is the row id, which is present in the
+    /// file but not part of upstream's struct — we keep it, since it is what indexes the store.
+    /// </summary>
+    private const string SkillRaceClassInfoFormat = "diiiixix";
+
+    /// <summary>An id, sixteen costs we skip, then sixteen maximums. <c>SkillTiersfmt</c>.</summary>
+    private const string SkillTiersFormat = "nxxxxxxxxxxxxxxxxiiiiiiiiiiiiiiii";
+
+    /// <summary>Fourteen columns. <c>SkillLineAbilityfmt</c>.</summary>
+    private const string SkillLineAbilityFormat = "niiiixxiiiiixx";
+
     private DbcStores(
         DbcStore<ChrRacesEntry> races,
         DbcStore<ChrClassesEntry> classes,
@@ -358,8 +561,10 @@ public sealed class DbcStores
         DbcStore<LiquidTypeEntry> liquidTypes,
         DbcStore<AreaTableEntry> areas,
         DbcStore<DurabilityCostsEntry> durabilityCosts,
-        DbcStore<DurabilityQualityEntry> durabilityQuality)
+        DbcStore<DurabilityQualityEntry> durabilityQuality,
+        SkillLines skills)
     {
+        Skills = skills;
         DurabilityCosts = durabilityCosts;
         DurabilityQuality = durabilityQuality;
         QuestXp = questXp;
@@ -413,6 +618,9 @@ public sealed class DbcStores
     /// <summary>How an item's quality scales that cost.</summary>
     public DbcStore<DurabilityQualityEntry> DurabilityQuality { get; }
 
+    /// <summary>The skill tables, and the cross-table lookups worth having.</summary>
+    public SkillLines Skills { get; }
+
     /// <summary>
     /// The zone an area belongs to, which is the area itself when it is already a zone.
     /// </summary>
@@ -430,7 +638,7 @@ public sealed class DbcStores
     public int TotalRows =>
         Races.Count + Classes.Count + Maps.Count + FactionTemplates.Count + WorldSafeLocs.Count
         + QuestXp.Count + LiquidTypes.Count + Areas.Count
-        + DurabilityCosts.Count + DurabilityQuality.Count;
+        + DurabilityCosts.Count + DurabilityQuality.Count + Skills.TotalRows;
 
     /// <summary>
     /// Loads every store from a directory of extracted <c>.dbc</c> files.
@@ -608,6 +816,72 @@ public sealed class DbcStores
                 DurabilityQualityFormat,
                 idField: 0,
                 (in DbcRecord record) => new DurabilityQualityEntry(
-                    record.GetUInt32(0), record.GetFloat(1))));
+                    record.GetUInt32(0), record.GetFloat(1))),
+
+            LoadSkills(directory, locale));
+    }
+
+    /// <summary>The four skill tables, loaded together because none of them is useful alone.</summary>
+    private static SkillLines LoadSkills(string directory, int locale)
+    {
+        DbcStore<SkillLineEntry> lines = DbcStore<SkillLineEntry>.Load(
+            Path.Combine(directory, "SkillLine.dbc"),
+            SkillLineFormat,
+            idField: 0,
+            (in DbcRecord record) => new SkillLineEntry(
+                Id: record.GetUInt32(0),
+                CategoryId: record.GetInt32(1),
+                Name: record.GetLocalizedString(3, locale)));
+
+        DbcStore<SkillRaceClassInfoEntry> raceClassInfo = DbcStore<SkillRaceClassInfoEntry>.Load(
+            Path.Combine(directory, "SkillRaceClassInfo.dbc"),
+            SkillRaceClassInfoFormat,
+            idField: 0,
+            (in DbcRecord record) => new SkillRaceClassInfoEntry(
+                Id: record.GetUInt32(0),
+                SkillId: record.GetUInt32(1),
+                RaceMask: record.GetUInt32(2),
+                ClassMask: record.GetUInt32(3),
+                Flags: record.GetUInt32(4),
+                SkillTierId: record.GetUInt32(6)));
+
+        DbcStore<SkillTiersEntry> tiers = DbcStore<SkillTiersEntry>.Load(
+            Path.Combine(directory, "SkillTiers.dbc"),
+            SkillTiersFormat,
+            idField: 0,
+            (in DbcRecord record) =>
+            {
+                uint[] values = new uint[SkillTiersEntry.MaxSteps];
+
+                for (int step = 0; step < values.Length; step++)
+                {
+                    // The sixteen costs sit between the id and the maximums and are skipped in the
+                    // format string, but they still occupy columns — the values start at 17.
+                    values[step] = record.GetUInt32(17 + step);
+                }
+
+                return new SkillTiersEntry(record.GetUInt32(0), values);
+            });
+
+        DbcStore<SkillLineAbilityEntry> abilities = DbcStore<SkillLineAbilityEntry>.Load(
+            Path.Combine(directory, "SkillLineAbility.dbc"),
+            SkillLineAbilityFormat,
+            idField: 0,
+            (in DbcRecord record) => new SkillLineAbilityEntry(
+                Id: record.GetUInt32(0),
+                SkillLine: record.GetUInt32(1),
+                Spell: record.GetUInt32(2),
+                RaceMask: record.GetUInt32(3),
+                ClassMask: record.GetUInt32(4),
+                MinSkillLineRank: record.GetUInt32(7),
+                SupercededBySpell: record.GetUInt32(8),
+                AcquireMethod: record.GetUInt32(9),
+                TrivialSkillLineRankHigh: record.GetUInt32(10),
+                TrivialSkillLineRankLow: record.GetUInt32(11)));
+
+        return new SkillLines(lines, raceClassInfo, tiers, abilities)
+        {
+            TotalRows = lines.Count + raceClassInfo.Count + tiers.Count + abilities.Count,
+        };
     }
 }

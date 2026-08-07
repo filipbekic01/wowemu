@@ -49,6 +49,11 @@ public sealed class Player : Unit
 
     private Buyback? _buyback;
 
+    /// <summary>What this character is trained in.</summary>
+    public PlayerSkills Skills => _skills ??= new PlayerSkills(this);
+
+    private PlayerSkills? _skills;
+
     /// <summary>Drowning, fatigue and standing in lava.</summary>
     public PlayerEnvironment Environment { get; } = new();
 
@@ -217,6 +222,39 @@ public sealed class Player : Unit
         PowerFocus => 100,
         _ => 0,
     };
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// The skill for whatever is in the main hand, or Unarmed with nothing there.
+    /// <para>
+    /// <b>Falls back to the level cap when the skill is unknown</b>, rather than to zero. A player
+    /// who has never been granted the skill is a gap in our data, not a character who cannot hold a
+    /// sword — and zero here means missing every swing, which is a far worse failure than being
+    /// slightly too good at it. The fallback stops mattering once every character is granted their
+    /// starting skills; until then it keeps combat honest.
+    /// </para>
+    /// </remarks>
+    public override int WeaponSkillValue
+    {
+        get
+        {
+            Item? weapon = Inventory.Equipped(InventorySlots.MainHand);
+
+            uint skillId = weapon is null
+                ? SkillType.Unarmed
+                : SkillType.ForItem(weapon.Template.Class, weapon.Template.SubClass);
+
+            return SkillOr(skillId, base.WeaponSkillValue);
+        }
+    }
+
+    /// <inheritdoc/>
+    /// <remarks>Defence is one skill for everyone, unlike the weapon skills.</remarks>
+    public override int DefenseSkillValue => SkillOr(SkillType.Defense, base.DefenseSkillValue);
+
+    /// <summary>A skill's value, or a fallback when the character has not been granted it.</summary>
+    private int SkillOr(uint skillId, int fallback) =>
+        skillId != 0 && Skills.Has(skillId) ? Skills.Value(skillId) : fallback;
 
     /// <inheritdoc/>
     public override float DodgeChance => Fields.GetFloat(UpdateFields.PLAYER_DODGE_PERCENTAGE);

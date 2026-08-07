@@ -67,6 +67,16 @@ public interface IInventoryRepository
         IReadOnlyCollection<uint> spells,
         CancellationToken cancellationToken = default);
 
+    /// <summary>What a character is trained in, as (skill, value, max, step) rows.</summary>
+    Task<IReadOnlyList<(ushort Skill, ushort Value, ushort Max, ushort Step)>> LoadSkillsAsync(
+        uint characterId, CancellationToken cancellationToken = default);
+
+    /// <inheritdoc cref="SaveAsync"/>
+    Task SaveSkillsAsync(
+        uint characterId,
+        IReadOnlyCollection<(ushort Skill, ushort Value, ushort Max, ushort Step)> skills,
+        CancellationToken cancellationToken = default);
+
     /// <summary>What is on a character's action bars, as (button, packed action) pairs.</summary>
     Task<IReadOnlyList<(byte Button, uint Packed)>> LoadActionsAsync(
         uint characterId, CancellationToken cancellationToken = default);
@@ -306,6 +316,52 @@ public sealed class InventoryRepository(IDbContextFactory<CharactersDbContext> c
         foreach (uint spellId in spells)
         {
             context.Spells.Add(new CharacterSpellEntity { CharacterId = characterId, SpellId = spellId });
+        }
+
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<IReadOnlyList<(ushort Skill, ushort Value, ushort Max, ushort Step)>> LoadSkillsAsync(
+        uint characterId, CancellationToken cancellationToken = default)
+    {
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        List<CharacterSkillEntity> rows = await context.Skills
+            .AsNoTracking()
+            .Where(row => row.CharacterId == characterId)
+            .ToListAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        return [.. rows.Select(row => (row.SkillId, row.Value, row.MaxValue, row.Step))];
+    }
+
+    public async Task SaveSkillsAsync(
+        uint characterId,
+        IReadOnlyCollection<(ushort Skill, ushort Value, ushort Max, ushort Step)> skills,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(skills);
+
+        await using CharactersDbContext context = await contextFactory
+            .CreateDbContextAsync(cancellationToken).ConfigureAwait(false);
+
+        // Whole-set, like the spells: a skill forgotten has no row to update.
+        await context.Skills
+            .Where(row => row.CharacterId == characterId)
+            .ExecuteDeleteAsync(cancellationToken)
+            .ConfigureAwait(false);
+
+        foreach ((ushort skill, ushort value, ushort max, ushort step) in skills)
+        {
+            context.Skills.Add(new CharacterSkillEntity
+            {
+                CharacterId = characterId,
+                SkillId = skill,
+                Value = value,
+                MaxValue = max,
+                Step = step,
+            });
         }
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);

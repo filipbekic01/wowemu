@@ -1953,9 +1953,9 @@
               "text": "Spell ranks — a higher rank does not supersede a lower one, so both stay in the book"
             },
             {
-              "done": false,
-              "text": "Skills, so a trainer's skill requirements always pass",
-              "note": "A profession trainer offers its whole list in green; only level and money refuse a purchase."
+              "done": true,
+              "text": "Skills — the block, the tables, and the trainer requirements that read them",
+              "note": "Done. Skills live entirely in update fields — 127 slots of three words at PLAYER_SKILL_INFO_1_1, no packet at all — so writing them correctly IS making the skill window appear. The bonus word is packed the opposite way round from the two above it: temporary in the LOW half, permanent in the HIGH one (SKILL_TEMP_BONUS is PAIR32_LOPART). A slot's position is not the skill id — skills take the first free slot in the order learned and nothing sorts them, which is why the slot is remembered rather than computed and why it is not worth saving. NOTHING GRANTS A SKILL DIRECTLY: no table lists a warrior's starting skills. They arrive through SkillLineAbility rows whose AcquireMethod is 2, as a side effect of learning a spell — verified against a real client, a level-1 human warrior derives exactly 18 skills from playercreateinfo_spell (every weapon skill 1/5, the armour proficiencies 1/1, Common 300/300, Arms 5/5). How a bar is scaled is not a column anywhere: it comes from the category plus whether the skill has a tier row, and the check ORDER is the whole of it — a tier row wins over the category, then Runeforging is named outright against its own category (it is SKILL_CATEGORY_CLASS, which would otherwise give it a level bar), then armour is mono and languages are flat 300. Level-up raises the ceiling only, and leaves a maximum of 1 alone — that is how the grey bars are recognised without re-deriving the range. Death knights start level-scaled skills at (level-1)*5, not 1, or their starting zone is unplayable at 55. Trainer skill requirements are now enforced, and the check is TWO conditions: the skill must be present AND its value must meet the rank. A rank check alone passes trivially, since a missing skill reads as zero — and most rows have a rank of zero, so that mistake would leave the feature barely working. Player weapon/defence skill now reads the real value, falling back to level*5 when the skill is absent rather than to zero. Persisted in character_skills (value, max and step only — not the slot, not the bonuses)."
             },
             {
               "done": true,
@@ -2448,7 +2448,7 @@
       "category": "Spellbook",
       "items": [
         "No spell ranks. A higher rank does not supersede a lower one, so a player who learns rank 2 keeps rank 1 in the book as well.",
-        "NO SKILLS, so a trainer's skill requirements always pass. A profession trainer offers its whole list in green and only level and money refuse a purchase.",
+        "Trainer skill requirements are enforced now, but there is no skill GAIN: nothing raises a skill through use, so a profession sits at whatever it was granted at and the higher tiers are unreachable. Skill tiers (apprentice through master) are read but never stepped up.",
         "No talents, no specs, no glyphs.",
         "Spell cooldowns do not survive a logout — SMSG_INITIAL_SPELLS always reports none."
       ]

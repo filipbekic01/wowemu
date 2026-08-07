@@ -1889,6 +1889,10 @@ public sealed class WorldSession(
 
         if (_player.Spells.Learn(spellId))
         {
+            // A trained spell can bring a skill with it — this is how a profession is picked up at
+            // all, since the trainer teaches the spell and the skill follows from it.
+            SkillLearning.LearnSkillsFromSpell(_player, world.Stores.Skills, spellId);
+
             ServerPacket learned = new(Opcode.SMSG_LEARNED_SPELL, 8);
             InitialSpells.WriteLearned(learned.Body, spellId);
 
@@ -1935,27 +1939,9 @@ public sealed class WorldSession(
         connection.Send(packet);
     }
 
-    /// <summary>
-    /// Whether a trainer line is teachable, known, or out of reach.
-    /// </summary>
-    /// <remarks>
-    /// <b>Skill requirements always pass</b>, because there are no skills. A profession trainer
-    /// therefore offers its whole list in green, and buying is refused only by level and money.
-    /// </remarks>
-    private byte StateOf(in TrainerSpell spell)
-    {
-        if (_player is null)
-        {
-            return TrainerSpellState.Grey;
-        }
-
-        if (_player.Spells.Knows(spell.SpellId))
-        {
-            return TrainerSpellState.Red;
-        }
-
-        return _player.Level >= spell.RequiredLevel ? TrainerSpellState.Green : TrainerSpellState.Grey;
-    }
+    /// <summary>This session's view of a trainer line.</summary>
+    private byte StateOf(in TrainerSpell spell) =>
+        _player is null ? TrainerSpellState.Grey : TrainerRules.StateOf(_player, spell);
 
     /// <summary>Runs one purchase, reporting whatever went wrong.</summary>
     private void Buy(Creature vendor, ObjectGuid vendorGuid, uint itemId, uint oneBasedSlot, uint count)
@@ -2729,7 +2715,7 @@ public sealed class WorldSession(
         if (experience > 0)
         {
             IReadOnlyList<LevelUp> levels = Experience.Give(
-                _player, experience, world.ExperienceTable, world.Stats);
+                _player, experience, world.ExperienceTable, world.Stats, world.Stores.Skills);
 
             SendExperienceGain(ObjectGuid.Empty, experience, levels);
         }
@@ -4575,6 +4561,10 @@ public sealed class WorldSession(
             .ConfigureAwait(true);
 
         await inventory
+            .SaveSkillsAsync(player.Guid.Counter, [.. player.Skills.Snapshot()], cancellationToken)
+            .ConfigureAwait(true);
+
+        await inventory
             .SaveActionsAsync(player.Guid.Counter, player.Actions.Buttons, cancellationToken)
             .ConfigureAwait(true);
 
@@ -4642,6 +4632,7 @@ public sealed class WorldSession(
         // Before the create block: knowing Dual Wield changes what may be in the off hand, and the
         // block carries the equipment.
         await LoadSpellsAsync(player, cancellationToken).ConfigureAwait(true);
+        await LoadSkillsAsync(player, cancellationToken).ConfigureAwait(true);
         await LoadActionsAsync(player, cancellationToken).ConfigureAwait(true);
 
         _player = player;
@@ -4738,6 +4729,10 @@ public sealed class WorldSession(
             player.Spells.Learn(spellId);
         }
 
+        // Skills come from the spells, not from a table of their own — SkillLineAbility ties the
+        // two together, which is how a fresh warrior ends up with Swords and Defense.
+        GrantSkillsFromSpells(player);
+
         foreach (PlayerCreateAction button in world.StartingActions.For(player.Race, player.Class))
         {
             player.Actions.Set(button.Button, button.Packed);
@@ -4745,6 +4740,10 @@ public sealed class WorldSession(
 
         await inventory
             .SaveSpellsAsync(created.Id, [.. player.Spells.Known], cancellationToken)
+            .ConfigureAwait(true);
+
+        await inventory
+            .SaveSkillsAsync(created.Id, [.. player.Skills.Snapshot()], cancellationToken)
             .ConfigureAwait(true);
 
         await inventory
@@ -4899,6 +4898,35 @@ public sealed class WorldSession(
         foreach (uint spellId in world.StartingSpells.For(player.Race, player.Class))
         {
             player.Spells.Learn(spellId);
+        }
+    }
+
+    /// <summary>
+    /// Rebuilds a character's skills, and grants any their spellbook implies they should have.
+    /// </summary>
+    /// <remarks>
+    /// Both halves are needed and neither is enough alone. Restoring is what keeps a profession at
+    /// the value it was practised to; re-deriving from the spellbook afterwards is what repairs a
+    /// character made before skills existed, or one whose class was given a new starting spell. The
+    /// grant is skipped for anything already known, so a restored miner at 300 is not reset to 1.
+    /// </remarks>
+    private async Task LoadSkillsAsync(Player player, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<(ushort Skill, ushort Value, ushort Max, ushort Step)> stored = await inventory
+            .LoadSkillsAsync(player.Guid.Counter, cancellationToken)
+            .ConfigureAwait(true);
+
+        player.Skills.Restore(stored);
+
+        GrantSkillsFromSpells(player);
+    }
+
+    /// <summary>Walks the spellbook, granting whatever skills the spells carry with them.</summary>
+    private void GrantSkillsFromSpells(Player player)
+    {
+        foreach (uint spellId in player.Spells.Known)
+        {
+            SkillLearning.LearnSkillsFromSpell(player, world.Stores.Skills, spellId);
         }
     }
 

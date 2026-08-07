@@ -459,6 +459,9 @@ public sealed class Map(
     /// </remarks>
     public DbcStore<AreaTableEntry>? Areas { get; init; }
 
+    /// <summary>The skill tables, so a level-up raises what a character can practise to.</summary>
+    public SkillLines? Skills { get; init; }
+
     /// <summary>Whether one point on this map can see another.</summary>
     /// <remarks>Clear when there is no collision data: a missing file must not blind the world.</remarks>
     public bool IsInLineOfSight(Position from, Position to) =>
@@ -2195,7 +2198,7 @@ public sealed class Map(
                 continue;
             }
 
-            IReadOnlyList<LevelUp> levels = Experience.Give(killer, gain, _xpTable, _playerStats);
+            IReadOnlyList<LevelUp> levels = Experience.Give(killer, gain, _xpTable, _playerStats, Skills);
 
             killer.Connection?.SendExperienceGain(victim.Guid, gain, levels);
         }

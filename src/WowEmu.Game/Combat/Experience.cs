@@ -1,3 +1,4 @@
+using WowEmu.Data.Client;
 using WowEmu.Data.Db;
 using WowEmu.Protocol;
 
@@ -32,8 +33,17 @@ public static class Experience
     /// </para>
     /// </remarks>
     /// <returns>Every level gained, in order. Empty when the experience was not enough.</returns>
+    /// <param name="skills">
+    /// The skill tables, so every level-scaled skill's ceiling rises with the character. Optional
+    /// only because a caller without a client extracted has none to give — a level-up without it
+    /// leaves weapon skill capped where it was, which is a visible bug rather than a silent one.
+    /// </param>
     public static IReadOnlyList<LevelUp> Give(
-        Player player, uint amount, PlayerXpStore xpTable, PlayerStatsStore stats)
+        Player player,
+        uint amount,
+        PlayerXpStore xpTable,
+        PlayerStatsStore stats,
+        SkillLines? skills = null)
     {
         ArgumentNullException.ThrowIfNull(player);
         ArgumentNullException.ThrowIfNull(xpTable);
@@ -76,6 +86,13 @@ public static class Experience
 
         player.Xp = newXp;
         player.NextLevelXp = xpTable.XpToLeave(player.Level);
+
+        if (gained.Count > 0 && skills is not null)
+        {
+            // Once, not per level gained: the ceiling is computed from the level, so raising it for
+            // each intermediate level would arrive at the same number by a longer route.
+            SkillLearning.UpdateForLevel(player, skills);
+        }
 
         return gained;
     }

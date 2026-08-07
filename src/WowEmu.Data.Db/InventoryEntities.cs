@@ -126,6 +126,33 @@ public sealed class CharacterSpellEntity
     public uint SpellId { get; set; }
 }
 
+/// <summary>
+/// One skill a character has, and how far along it is.
+/// </summary>
+/// <remarks>
+/// The value and its maximum are stored, but not the slot. A skill's position in the update-field
+/// block is whatever was free when it was learned and means nothing outside a live session — saving
+/// it would pin a character to a layout that the next login has no reason to reproduce.
+/// <para>
+/// The bonuses are not stored either: the permanent one belongs to whatever enchantment or book
+/// granted it, and re-deriving it from that source is the only way it stays correct when the source
+/// goes away.
+/// </para>
+/// </remarks>
+public sealed class CharacterSkillEntity
+{
+    public uint CharacterId { get; set; }
+
+    public ushort SkillId { get; set; }
+
+    public ushort Value { get; set; }
+
+    public ushort MaxValue { get; set; }
+
+    /// <summary>Which tier a ranked skill has reached. Zero for everything that has no tiers.</summary>
+    public ushort Step { get; set; }
+}
+
 /// <summary>One button on a character's action bars.</summary>
 /// <remarks>
 /// The action and its type are stored apart even though the client wants them packed into one

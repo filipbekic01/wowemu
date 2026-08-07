@@ -146,7 +146,8 @@ builder.Services.AddSingleton(services => new MapManager(
     services.GetRequiredService<QuestStore>(),
     services.GetRequiredService<DbcStores>().LiquidTypes,
     services.GetRequiredService<DbcStores>().Areas,
-    services.GetRequiredService<NavMeshManager>()));
+    services.GetRequiredService<NavMeshManager>(),
+    services.GetRequiredService<DbcStores>().Skills));
 
 // The tick has to be running before the listener accepts anyone: a session that queues a packet
 // with nothing draining it would sit at the loading screen forever. Hosted services start in

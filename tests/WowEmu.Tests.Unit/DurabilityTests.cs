@@ -319,39 +319,18 @@ public sealed class DurabilityTests
         uint[] multipliers = new uint[DurabilityCostsEntry.MultiplierCount];
         Array.Fill(multipliers, MultiplierForTest);
 
-        return Store(e => e.ItemLevel, new DurabilityCostsEntry(TestItemLevel, multipliers));
+        return DbcFixture.Store(e => e.ItemLevel, new DurabilityCostsEntry(TestItemLevel, multipliers));
     }
 
     /// <summary>Quality rows whose modifiers differ, so a wrong row is detectable.</summary>
     private static DbcStore<DurabilityQualityEntry> Quality() =>
-        Store(e => e.Id, new DurabilityQualityEntry(1, 0.5f), new DurabilityQualityEntry(4, 1.0f));
+        DbcFixture.Store(e => e.Id, new DurabilityQualityEntry(1, 0.5f), new DurabilityQualityEntry(4, 1.0f));
 
     /// <summary>An artifact-shaped table, whose modifier is zero.</summary>
     private static DbcStore<DurabilityQualityEntry> ZeroQuality() =>
-        Store(e => e.Id, new DurabilityQualityEntry(ArtifactRow, 0f));
+        DbcFixture.Store(e => e.Id, new DurabilityQualityEntry(ArtifactRow, 0f));
 
     /// <summary>The quality row an artifact reads — <c>(6 + 1) * 2</c>.</summary>
     private const uint ArtifactRow = (ItemQuality.Artifact + 1) * 2;
 
-    /// <summary>
-    /// A store made of literal rows, since <c>DbcStore</c> can only be loaded from a file.
-    /// </summary>
-    private static DbcStore<TEntry> Store<TEntry>(Func<TEntry, uint> id, params TEntry[] rows)
-    {
-        DbcStore<TEntry> store = (DbcStore<TEntry>)System.Runtime.CompilerServices.RuntimeHelpers
-            .GetUninitializedObject(typeof(DbcStore<TEntry>));
-
-        Dictionary<uint, TEntry> map = [];
-
-        foreach (TEntry row in rows)
-        {
-            map[id(row)] = row;
-        }
-
-        typeof(DbcStore<TEntry>)
-            .GetField("_entries", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
-            .SetValue(store, map);
-
-        return store;
-    }
 }

@@ -112,6 +112,8 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
 
     public DbSet<CharacterActionEntity> Actions => Set<CharacterActionEntity>();
 
+    public DbSet<CharacterSkillEntity> Skills => Set<CharacterSkillEntity>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         ArgumentNullException.ThrowIfNull(modelBuilder);
@@ -217,6 +219,20 @@ public sealed class CharactersDbContext(DbContextOptions<CharactersDbContext> op
 
             entity.Property(row => row.CharacterId).HasColumnName("guid");
             entity.Property(row => row.SpellId).HasColumnName("spell");
+        });
+
+        modelBuilder.Entity<CharacterSkillEntity>(entity =>
+        {
+            entity.ToTable("character_skills");
+
+            // Composite: a character has a skill once, at one value.
+            entity.HasKey(row => new { row.CharacterId, row.SkillId });
+
+            entity.Property(row => row.CharacterId).HasColumnName("guid");
+            entity.Property(row => row.SkillId).HasColumnName("skill");
+            entity.Property(row => row.Value).HasColumnName("value");
+            entity.Property(row => row.MaxValue).HasColumnName("max");
+            entity.Property(row => row.Step).HasColumnName("step");
         });
 
         modelBuilder.Entity<CharacterActionEntity>(entity =>
