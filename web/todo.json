@@ -1670,7 +1670,8 @@
             },
             {
               "done": false,
-              "text": "Item and gameobject loot templates, and the conditions system that gates rows"
+              "text": "Item and gameobject loot templates, and the conditions system that gates rows",
+              "note": "MEASURED, and it is not the cheap win it looks like: 38,481 of the 38,594 spawned chests are LOCKED (gameobject_template.data0), so opening them without a lock system would be wrong for 99.7% of them — herb nodes gatherable without herbalism, locked chests opened without a key. Locks need Lock.dbc, and most of its entries are skill requirements, so this is gated on skills like proficiency is. The 113 unlocked spawns and the key-locked ones would work; the rest should refuse."
             }
           ]
         },
@@ -1877,7 +1878,8 @@
             },
             {
               "done": false,
-              "text": "Buyback, repair, and the reputation discount on prices"
+              "text": "Repair, and the reputation discount on prices",
+              "note": "Buyback is done: selling puts the item on a twelve-slot rack instead of destroying it, and buying it back costs exactly the refund — charging the buy price would take several times the refund back for undoing a misclick. A full rack displaces the OLDEST entry, which is why the timestamp is stored rather than a cursor: buy one back and sell again and the slots refill out of order. The slot on the wire is BUYBACK_SLOT_START + n = 74 + n, not an index. Repair and the reputation discount are still open."
             },
             {
               "done": false,

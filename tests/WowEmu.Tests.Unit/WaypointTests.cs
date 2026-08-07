@@ -551,6 +551,35 @@ public sealed class WaypointTests
         Assert.False(creature.IsFollowingPath);
     }
 
+    /// <summary>
+    /// The walk home is routed too.
+    /// </summary>
+    /// <remarks>
+    /// It comes free rather than by design: going home is a movement <i>generator</i>, so its
+    /// destination goes through the same routing every other generator's does. Worth pinning
+    /// anyway — a creature kited into a building and left alone would otherwise walk home through
+    /// the walls, and nothing else here would have noticed.
+    /// </remarks>
+    [Fact]
+    public void TheWalkHome_IsRoutedLikeAnythingElse()
+    {
+        Creature creature = CreatureFixture.Build(position: new Position(0f, 0f, 0f, 0f));
+
+        creature.Position = new Position(60f, 0f, 0f, 0f);
+        creature.RouteTo = (from, to) => [from, new Position(30f, 25f, 0f, 0f), to];
+
+        CreatureAi.Evade(creature);
+
+        CreatureMove? move = creature.Update(100);
+
+        Assert.NotNull(move);
+        Assert.True(creature.IsFollowingPath, "the walk home ignored the route");
+
+        // The first leg heads for the detour's corner, not straight at the spawn point.
+        Assert.Equal(30f, move!.Value.Destination.X, 0.001f);
+        Assert.Equal(25f, move.Value.Destination.Y, 0.001f);
+    }
+
     /// <summary>Ticks until the current leg finishes and reports whatever started next.</summary>
     private static CreatureMove? RunToNextLeg(Creature creature)
     {

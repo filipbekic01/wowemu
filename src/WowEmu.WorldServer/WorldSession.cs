@@ -392,6 +392,10 @@ public sealed class WorldSession(
                 HandleGameObjectUse(payload);
                 return;
 
+            case Opcode.CMSG_BUYBACK_ITEM:
+                HandleBuybackItem(payload);
+                return;
+
             case Opcode.CMSG_QUESTGIVER_QUERY_QUEST:
                 HandleQuestGiverQueryQuest(payload);
                 return;
@@ -1680,15 +1684,85 @@ public sealed class WorldSession(
             return;
         }
 
+        uint paid = item.Template.SellPrice * selling;
+
         _player.Inventory.Destroy(position, selling, out Item? removed);
-        _player.Money += item.Template.SellPrice * selling;
+        _player.Money += paid;
 
         if (removed is not null)
         {
-            _knownItems.Remove(removed.Guid);
-            _pendingUpdates.AddOutOfRange(removed.Guid);
+            // Onto the buyback rack rather than gone. The item keeps its guid and the client keeps
+            // its copy, so no destroy goes out — telling it to forget the item would leave the
+            // buyback tab drawing a square it has nothing for.
+            _player.Buyback.Add(removed, paid, GameTime.Now);
         }
     }
+
+    /// <summary>
+    /// Buys back something just sold. <c>CMSG_BUYBACK_ITEM</c>.
+    /// </summary>
+    /// <remarks>
+    /// <b>The slot arrives as an inventory slot, not a buyback index</b> — the client sends
+    /// <c>BUYBACK_SLOT_START + n</c>, so the first one is 74. Reading it as an index takes the
+    /// wrong item, or none at all.
+    /// <para>
+    /// The price is what the player was given, so undoing a misclick is free. Charging the item's
+    /// buy price instead would take several times the refund back.
+    /// </para>
+    /// </remarks>
+    private void HandleBuybackItem(ReadOnlyMemory<byte> payload)
+    {
+        if (_player is null || _map is null)
+        {
+            return;
+        }
+
+        PacketReader reader = new(payload.Span);
+
+        if (!reader.TryReadUInt64(out ulong rawGuid) || !reader.TryReadUInt32(out uint wireSlot))
+        {
+            return;
+        }
+
+        ObjectGuid vendorGuid = new(rawGuid);
+
+        if (FindInteractable(vendorGuid) is null)
+        {
+            SendBuyFailed(vendorGuid, 0, BuyResult.CantFindItem);
+            return;
+        }
+
+        int slot = (int)wireSlot - InventorySlots.BuybackStart;
+
+        if (_player.Buyback.At(slot) is not { } item)
+        {
+            SendBuyFailed(vendorGuid, 0, BuyResult.CantFindItem);
+            return;
+        }
+
+        uint price = _player.Buyback.PriceAt(slot);
+
+        if (_player.Money < price)
+        {
+            SendBuyFailed(vendorGuid, item.Entry, BuyResult.NotEnoughMoney);
+            return;
+        }
+
+        if (_player.Inventory.CanStore(item.Template, item.Count, out _) != InventoryResult.Ok)
+        {
+            SendEquipError(InventoryResult.InventoryFull);
+            return;
+        }
+
+        // Off the rack before it is stored: leaving it on both would have the same item in a bag
+        // and in the buyback tab, and buying it back twice would duplicate it.
+        _player.Buyback.Remove(slot);
+
+        _player.Inventory.Store(item.Template, item.Count, itemGuids.Next, out _);
+        _player.Money -= price;
+    }
+
+
 
     /// <summary>Opens a trainer's list. <c>CMSG_TRAINER_LIST</c>.</summary>
     private void HandleTrainerList(ReadOnlyMemory<byte> payload)

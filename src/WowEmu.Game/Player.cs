@@ -44,6 +44,11 @@ public sealed class Player : Unit
     /// <summary>What is on this character's action bars.</summary>
     public ActionBar Actions { get; } = new();
 
+    /// <summary>What this character has sold and can still buy back.</summary>
+    public Buyback Buyback => _buyback ??= new Buyback(this);
+
+    private Buyback? _buyback;
+
     /// <summary>Drowning, fatigue and standing in lava.</summary>
     public PlayerEnvironment Environment { get; } = new();
 
